@@ -1,0 +1,2 @@
+# Roslynaut
+Roslyn/MSBuild MCP
