@@ -15,6 +15,7 @@ public static class Program
 
         await using var services = new ServiceCollection()
             .AddSingleton<WorkspaceService>()
+            .AddSingleton<ResultCache>()
             .AddSingleton<IMcpTool, ProjectInfoTool>()
             .AddSingleton<IMcpTool, WorkspaceSymbolsTool>()
             .AddSingleton<IMcpTool, DocumentSymbolsTool>()

@@ -17,7 +17,7 @@ public sealed record LoadedWorkspace(Solution Solution, IReadOnlyList<IAnalyzerR
 
 /// <summary>
 /// Loads projects and solutions through Buildalyzer and keeps the resulting Roslyn workspaces in sync with the file system:
-/// every call picks up changed, added and deleted C# files, and reloads after project or build file changes.
+/// file watchers queue changed, added and deleted C# files for the next call, and project or build file changes trigger a reload.
 /// </summary>
 public sealed class WorkspaceService
 {
@@ -54,59 +54,144 @@ public sealed class WorkspaceService
             ?? throw new McpException($"No symbol found at {document.FilePath}:{line}:{column}.");
     }
 
-    /// <summary>A loaded workspace plus the file timestamps it reflects.</summary>
+    /// <summary>A loaded workspace plus the file watchers that queue changes for it.</summary>
     private sealed class TrackedWorkspace(string path)
     {
         private readonly Lock _lock = new();
+        private readonly ConcurrentQueue<(string Path, bool Created)> _changes = new();
+        private FileSystemWatcher[]? _watchers;
         private LoadedWorkspace? _loaded;
-        private string[] _roots = [];
-        private Dictionary<string, DateTimeOffset> _files = [];
+        private int _overflowed;
 
-        // ponytail: rescans the project directories on every call; switch to a FileSystemWatcher if huge repositories make that slow.
+        /// <summary>Applies the changes queued since the previous call, loading or reloading the workspace when needed.</summary>
         public LoadedWorkspace Sync()
         {
             lock (_lock)
             {
-                var files = Scan(_roots);
-                var changed = files.Where(file => !_files.TryGetValue(file.Key, out var time) || time != file.Value).Select(file => file.Key)
-                    .Concat(_files.Keys.Where(file => !files.ContainsKey(file)))
-                    .ToList();
+                if (_loaded is null || Interlocked.Exchange(ref _overflowed, 0) == 1)
+                    return Reload();
+
+                var changes = TakeChanges(_loaded.Solution);
 
                 // ponytail: any project or build file change reloads everything; reload only the affected projects if that gets slow.
-                if (_loaded is null || changed.Any(file => !file.EndsWith(".cs", StringComparison.OrdinalIgnoreCase)))
-                {
-                    _loaded = Load(path);
-                    _roots = GetRoots(_loaded.Solution);
-                    files = Scan(_roots);
-                }
-                else if (changed.Count > 0)
-                {
-                    _loaded = _loaded with { Solution = Apply(_loaded.Solution, changed, files) };
-                }
+                if (changes.Keys.Any(IsBuildFile))
+                    return Reload();
 
-                _files = files;
-                return _loaded;
+                if (changes.Count == 0)
+                    return _loaded;
+
+                try
+                {
+                    return _loaded = _loaded with { Solution = Apply(_loaded.Solution, changes) };
+                }
+                catch
+                {
+                    // Typically a file still locked by its writer: keep the changes for the next call.
+                    foreach (var (file, created) in changes)
+                        _changes.Enqueue((file, created));
+                    throw;
+                }
             }
         }
 
-        private Solution Apply(Solution solution, List<string> changed, Dictionary<string, DateTimeOffset> files)
+        private LoadedWorkspace Reload()
         {
-            foreach (var file in changed)
+            // On the first load, already watch the project or solution directory so edits made while loading are not lost.
+            _watchers ??= [Watch(Path.GetDirectoryName(path)!)];
+            _changes.Clear();
+            _overflowed = 0;
+
+            var loaded = Load(path);
+            var previous = _watchers;
+            _watchers = [.. GetRoots(loaded.Solution).Select(Watch)];
+            foreach (var watcher in previous)
+                watcher.Dispose();
+
+            return _loaded = loaded;
+        }
+
+        private FileSystemWatcher Watch(string root)
+        {
+            var watcher = new FileSystemWatcher(root)
+            {
+                IncludeSubdirectories = true,
+                InternalBufferSize = 64 * 1024,
+                NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.LastWrite,
+            };
+            watcher.Created += (_, e) => Enqueue(root, e.FullPath, created: true);
+            watcher.Changed += (_, e) => Enqueue(root, e.FullPath, created: false);
+            watcher.Deleted += (_, e) => Enqueue(root, e.FullPath, created: false);
+            watcher.Renamed += (_, e) =>
+            {
+                Enqueue(root, e.OldFullPath, created: false);
+                Enqueue(root, e.FullPath, created: true);
+            };
+
+            // ponytail: a buffer overflow loses events, so everything is reloaded.
+            watcher.Error += (_, _) => Interlocked.Exchange(ref _overflowed, 1);
+            watcher.EnableRaisingEvents = true;
+            return watcher;
+        }
+
+        private void Enqueue(string root, string file, bool created)
+        {
+            var ignored = Path.GetRelativePath(root, file).Split(Path.DirectorySeparatorChar).Any(segment => IsSkipped(segment))
+                || (!IsTracked(file) && File.Exists(file));
+            if (!ignored)
+                _changes.Enqueue((file, created));
+        }
+
+        /// <summary>Drains the queue into tracked files and whether each was created.</summary>
+        private Dictionary<string, bool> TakeChanges(Solution solution)
+        {
+            var changes = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+            void Mark(string file, bool created) => changes[file] = created || changes.GetValueOrDefault(file);
+
+            while (_changes.TryDequeue(out var change))
+            {
+                if (Directory.Exists(change.Path))
+                {
+                    // A directory that was created or moved in brings its files without events of their own.
+                    if (change.Created)
+                        foreach (var file in Enumerate(change.Path))
+                            Mark(file, created: true);
+                }
+                else if (IsTracked(change.Path))
+                {
+                    Mark(change.Path, change.Created);
+                }
+                else
+                {
+                    // A directory that was deleted or moved out only reports itself.
+                    var known = solution.Projects.SelectMany(project => project.Documents.Select(document => document.FilePath).Append(project.FilePath));
+                    foreach (var file in known.OfType<string>().Where(file => IsUnder(file, change.Path)))
+                        Mark(file, created: false);
+                }
+            }
+
+            return changes;
+        }
+
+        private static Solution Apply(Solution solution, Dictionary<string, bool> changes)
+        {
+            foreach (var (file, created) in changes)
             {
                 var ids = solution.GetDocumentIdsWithFilePath(file);
-                if (!files.ContainsKey(file))
+                if (!File.Exists(file))
                     solution = solution.RemoveDocuments(ids);
                 else if (!ids.IsEmpty)
                     solution = solution.WithDocumentText(ids, Read(file));
                 // ponytail: a new file joins the deepest enclosing project, as with default globbing; explicit Compile items need a project file change.
-                else if (!_files.ContainsKey(file) && FindOwner(solution, file) is { } project)
+                else if (created && FindOwner(solution, file) is { } project)
                     solution = project.AddDocument(Path.GetFileName(file), Read(file), filePath: file).Project.Solution;
             }
 
-            return solution;
+            // Apply to the workspace too, so it does not keep the previous snapshot alive.
+            solution.Workspace.TryApplyChanges(solution);
+            return solution.Workspace.CurrentSolution;
         }
 
-        /// <summary>The directories to scan: the solution's and the projects', without nested duplicates.</summary>
+        /// <summary>The directories to watch: the solution's and the projects', without nested duplicates.</summary>
         private string[] GetRoots(Solution solution)
         {
             var directories = solution.Projects.Select(project => Path.GetDirectoryName(project.FilePath))
@@ -117,24 +202,18 @@ public sealed class WorkspaceService
             return [.. directories.Where(directory => !directories.Any(other => IsUnder(directory, other)))];
         }
 
-        private static Dictionary<string, DateTimeOffset> Scan(string[] roots)
-        {
-            var options = new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true };
-            var files = new Dictionary<string, DateTimeOffset>(StringComparer.OrdinalIgnoreCase);
-            foreach (var root in roots.Where(Directory.Exists))
+        private static IEnumerable<string> Enumerate(string directory) =>
+            new FileSystemEnumerable<string>(directory, (ref FileSystemEntry entry) => entry.ToFullPath(), new() { RecurseSubdirectories = true, IgnoreInaccessible = true })
             {
-                var entries = new FileSystemEnumerable<(string Path, DateTimeOffset Time)>(root, (ref FileSystemEntry entry) => (entry.ToFullPath(), entry.LastWriteTimeUtc), options)
-                {
-                    ShouldRecursePredicate = (ref FileSystemEntry entry) => entry.FileName is not ("bin" or "obj" or ".git" or ".vs" or "node_modules"),
-                    ShouldIncludePredicate = (ref FileSystemEntry entry) =>
-                        !entry.IsDirectory && Path.GetExtension(entry.FileName) is ".cs" or ".csproj" or ".props" or ".targets" or ".sln" or ".slnx",
-                };
-                foreach (var (file, time) in entries)
-                    files[file] = time;
-            }
+                ShouldRecursePredicate = (ref FileSystemEntry entry) => !IsSkipped(entry.FileName),
+                ShouldIncludePredicate = (ref FileSystemEntry entry) => !entry.IsDirectory && IsTracked(entry.ToFullPath()),
+            };
 
-            return files;
-        }
+        private static bool IsSkipped(ReadOnlySpan<char> directory) => directory is "bin" or "obj" or ".git" or ".vs" or "node_modules";
+
+        private static bool IsTracked(string file) => file.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) || IsBuildFile(file);
+
+        private static bool IsBuildFile(string file) => Path.GetExtension(file).ToLowerInvariant() is ".csproj" or ".props" or ".targets" or ".sln" or ".slnx";
 
         private static Project? FindOwner(Solution solution, string file) => solution.Projects
             .Where(project => project.Language == LanguageNames.CSharp && project.FilePath is not null && IsUnder(file, Path.GetDirectoryName(project.FilePath)!))
@@ -145,6 +224,7 @@ public sealed class WorkspaceService
 
         private static SourceText Read(string file) => SourceText.From(File.ReadAllText(file));
     }
+
 
     private static LoadedWorkspace Load(string path)
     {

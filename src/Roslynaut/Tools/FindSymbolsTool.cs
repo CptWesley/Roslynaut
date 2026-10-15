@@ -21,23 +21,31 @@ public enum SymbolCategory
     Variable,
 }
 
-public sealed class FindSymbolsTool(WorkspaceService workspace) : IMcpTool
+public sealed class FindSymbolsTool(WorkspaceService workspace, ResultCache cache) : IMcpTool
 {
     public Delegate Handler => FindSymbolsAsync;
 
     [McpServerTool(Name = "find_symbols", ReadOnly = true)]
     [Description("Searches symbols (namespaces, types, members, parameters, locals) by name in the whole solution or within a scope. "
-        + "Outer symbols come first; at most 100 results.")]
-    private async Task<IEnumerable<SymbolEntry>> FindSymbolsAsync(
+        + "Outer symbols come first. Paged.")]
+    private async Task<PagedResult<SymbolEntry>> FindSymbolsAsync(
         [Description(ToolDefaults.ProjectPath)] string projectPath,
         [Description("Case-insensitive .NET regular expression matched against symbol names, e.g. 'cache', '^Get.*Async$' or 'path|file'. "
             + "Omit to return everything in scope.")] string? query = null,
         [Description("Optional path of a C# file, or a symbol path to search within. " + ToolDefaults.SymbolPath)] string? scope = null,
         [Description("Kind of symbols to return. Variable means locals and parameters.")] SymbolCategory kind = SymbolCategory.Any,
+        [Description(ToolDefaults.Page)] int page = 0,
+        [Description(ToolDefaults.PageSize)] int pageSize = ToolDefaults.DefaultPageSize,
         CancellationToken cancellationToken = default)
     {
         var regex = ParseQuery(query);
         var solution = (await workspace.GetAsync(projectPath)).Solution;
+        return await cache.GetPageAsync(solution, $"find_symbols|{query}|{scope}|{kind}", page, pageSize,
+            () => SearchAsync(solution, regex, scope, kind, cancellationToken));
+    }
+
+    private static async Task<IEnumerable<SymbolEntry>> SearchAsync(Solution solution, Regex? regex, string? scope, SymbolCategory kind, CancellationToken cancellationToken)
+    {
         var includeLocals = kind is SymbolCategory.Any or SymbolCategory.Method or SymbolCategory.Variable;
 
         IAsyncEnumerable<ISymbol> symbols;
@@ -60,7 +68,6 @@ public sealed class FindSymbolsTool(WorkspaceService workspace) : IMcpTool
             .Where(symbol => IsKind(symbol, kind) && (regex?.IsMatch(symbol.Name) ?? true))
             .Select(symbol => SymbolEntry.From(symbol))
             .Distinct()
-            .Take(ToolDefaults.MaxResults)
             .ToListAsync(cancellationToken);
     }
 

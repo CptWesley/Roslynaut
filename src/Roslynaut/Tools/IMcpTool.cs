@@ -20,7 +20,9 @@ internal static class ToolDefaults
     public const string SymbolPath = "Symbol path: a dotted name, optionally partially qualified, with a parameter list to pick an overload, "
         + "e.g. 'Roslynaut.Tools', 'WorkspaceService', 'WorkspaceService.GetAsync(string)' or 'WorkspaceService.GetAsync.path'. "
         + "A result's Container plus '.' plus its Name is a valid path.";
-    public const int MaxResults = 100;
+    public const string Page = "0-based page number; hasMore in the result tells whether a next page exists.";
+    public const string PageSize = "Number of results per page.";
+    public const int DefaultPageSize = 100;
 }
 
 public sealed record SourceLocation(string FilePath, int Line, int Column, string Text)
