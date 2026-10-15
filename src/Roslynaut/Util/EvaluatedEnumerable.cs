@@ -10,12 +10,28 @@ namespace Roslynaut.Util;
 public class EvaluatedEnumerable<T> : IEnumerable<T>, IDisposable
 {
     private readonly List<T> cached = new();
+    private readonly int? count;
     private IEnumerator<T>? source;
 
     public EvaluatedEnumerable(IEnumerable<T>? source)
     {
         this.source = source?.GetEnumerator();
+
+        if (source is IReadOnlyCollection<T> tc)
+        {
+            count = tc.Count;
+        }
+        else if (source is ICollection c)
+        {
+            count = c.Count;
+        }
     }
+
+    public int EvaluatedCount => cached.Count;
+
+    public int? TotalCount => source is null
+        ? EvaluatedCount
+        : count;
 
     public List<T> Slice(int start, int length)
     {
