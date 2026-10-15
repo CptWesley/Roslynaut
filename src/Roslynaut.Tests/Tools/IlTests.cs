@@ -175,6 +175,55 @@ public class IlTests
     }
 
     [Test]
+    public void AssemblyLoader_WhenFull_EvictsLeastRecentlyUsedFile()
+    {
+        var directory = Directory.CreateTempSubdirectory();
+        try
+        {
+            var (a, b, c) = (Copy("A"), Copy("B"), Copy("C"));
+            var loader = new AssemblyLoader(capacity: 2);
+            var (moduleA, moduleB) = (loader.Read(a), loader.Read(b));
+            loader.Read(a);
+            loader.Read(c);
+
+            loader.Read(a).Should().BeSameAs(moduleA);
+            loader.Read(b).Should().NotBeSameAs(moduleB);
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
+
+        string Copy(string name)
+        {
+            var path = Path.Combine(directory.FullName, $"{name}.dll");
+            File.Copy(typeof(IlTests).Assembly.Location, path);
+            return path;
+        }
+    }
+
+    [Test]
+    public void AssemblyLoader_WhenFull_KeepsFilesIfReadingAnotherFails()
+    {
+        var directory = Directory.CreateTempSubdirectory();
+        try
+        {
+            var (dll, broken) = (Path.Combine(directory.FullName, "A.dll"), Path.Combine(directory.FullName, "Broken.dll"));
+            File.Copy(typeof(IlTests).Assembly.Location, dll);
+            File.WriteAllText(broken, "not a dll");
+            var loader = new AssemblyLoader(capacity: 1);
+            var module = loader.Read(dll);
+
+            loader.Invoking(l => l.Read(broken)).Should().Throw<McpException>();
+            loader.Read(dll).Should().BeSameAs(module);
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
+    }
+
+    [Test]
     public void AssemblyLoader_NotAnAssembly_Throws()
     {
         var file = Path.GetTempFileName();

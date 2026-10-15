@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.Emit;
@@ -12,11 +11,12 @@ namespace Roslynaut;
 /// Reads assemblies with Mono.Cecil: files, which are read again once they change, and compilations, which are emitted from current source.
 /// Files are read fully into memory, so builds can still overwrite them. Cecil modules are not thread-safe: lock a module while reading it.
 /// </summary>
-public sealed class AssemblyLoader
+/// <param name="capacity">How many files to keep in memory. Reading another one evicts the least recently used.</param>
+public sealed class AssemblyLoader(int capacity = 32)
 {
-    // ponytail: keeps every file it read until restart; evict the least recently used modules if memory matters.
-    private readonly ConcurrentDictionary<string, (DateTime Timestamp, ModuleDefinition Module)> _files = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, CachedFile> _files = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConditionalWeakTable<Compilation, Task<ModuleDefinition>> _compilations = new();
+    private long _clock;
 
     public ModuleDefinition Read(string assemblyPath)
     {
@@ -25,10 +25,20 @@ public sealed class AssemblyLoader
             throw new McpException($"Assembly not found: {path}");
 
         var timestamp = File.GetLastWriteTimeUtc(path);
-        return _files.AddOrUpdate(
-            path,
-            key => (timestamp, ReadFile(key)),
-            (key, cached) => cached.Timestamp == timestamp ? cached : (timestamp, ReadFile(key))).Module;
+        lock (_files)
+        {
+            if (!_files.TryGetValue(path, out var file) || file.Timestamp != timestamp)
+            {
+                // Read first, so a file that fails to read does not evict another.
+                var module = ReadFile(path);
+                if (file is null && _files.Count >= capacity)
+                    _files.Remove(_files.MinBy(entry => entry.Value.LastUsed).Key);
+                _files[path] = file = new(timestamp, module);
+            }
+
+            file.LastUsed = ++_clock;
+            return file.Module;
+        }
     }
 
     /// <summary>Emits the compilation with a PDB, so its IL maps to source lines. Each compilation is emitted once.</summary>
@@ -67,5 +77,10 @@ public sealed class AssemblyLoader
 
         pe.Position = pdb.Position = 0;
         return ModuleDefinition.ReadModule(pe, new ReaderParameters { ReadSymbols = true, SymbolStream = pdb });
+    }
+
+    private sealed record CachedFile(DateTime Timestamp, ModuleDefinition Module)
+    {
+        public long LastUsed { get; set; }
     }
 }
