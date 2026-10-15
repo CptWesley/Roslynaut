@@ -17,6 +17,9 @@ internal static class ToolDefaults
     public const string FilePath = "Path to a C# source file in the project.";
     public const string Line = "1-based line number.";
     public const string Column = "1-based column number of the symbol.";
+    public const string SymbolPath = "Symbol path: a dotted name, optionally partially qualified, with a parameter list to pick an overload, "
+        + "e.g. 'Roslynaut.Tools', 'WorkspaceService', 'WorkspaceService.GetAsync(string)' or 'WorkspaceService.GetAsync.path'. "
+        + "A result's Container plus '.' plus its Name is a valid path.";
     public const int MaxResults = 100;
 }
 
@@ -30,12 +33,16 @@ public sealed record SourceLocation(string FilePath, int Line, int Column, strin
     }
 }
 
-public sealed record SymbolEntry(string Name, string Kind, string Signature, SourceLocation? Location)
+public sealed record SymbolEntry(string Name, string Kind, string Signature, string? Container, SourceLocation? Location)
 {
+    // The default format omits the type of locals.
+    private static readonly SymbolDisplayFormat Format = SymbolDisplayFormat.CSharpErrorMessageFormat.AddLocalOptions(SymbolDisplayLocalOptions.IncludeType);
+
     public static SymbolEntry From(ISymbol symbol, Location? location = null) => new(
         symbol.Name,
         KindOf(symbol),
-        symbol.ToDisplayString(),
+        symbol.ToDisplayString(Format),
+        symbol.ContainingSymbol is { } container and not INamespaceSymbol { IsGlobalNamespace: true } ? container.ToDisplayString() : null,
         (location ?? symbol.Locations.FirstOrDefault(l => l.IsInSource)) is { } source ? SourceLocation.From(source) : null);
 
     public static string KindOf(ISymbol symbol) => symbol is INamedTypeSymbol type ? type.TypeKind.ToString() : symbol.Kind.ToString();

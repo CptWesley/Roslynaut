@@ -17,9 +17,9 @@ public sealed class ReferencesTool(WorkspaceService workspace) : IMcpTool
         [Description(ToolDefaults.Column)] int column,
         CancellationToken cancellationToken)
     {
-        var symbol = await workspace.GetSymbolAtAsync(projectPath, filePath, line, column, cancellationToken);
-        var solution = (await workspace.GetAsync(projectPath)).Solution;
-        var references = await SymbolFinder.FindReferencesAsync(symbol, solution, cancellationToken);
+        var document = await workspace.GetDocumentAsync(projectPath, filePath);
+        var symbol = await WorkspaceService.GetSymbolAtAsync(document, line, column, cancellationToken);
+        var references = await SymbolFinder.FindReferencesAsync(symbol, document.Project.Solution, cancellationToken);
         return references.SelectMany(reference => reference.Locations).Select(reference => SourceLocation.From(reference.Location)).Distinct();
     }
 }

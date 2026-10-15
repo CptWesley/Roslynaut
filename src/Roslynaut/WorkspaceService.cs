@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.IO.Enumeration;
 using Buildalyzer;
 using Buildalyzer.Environment;
 using Buildalyzer.IO;
@@ -6,6 +7,7 @@ using Buildalyzer.Workspaces;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.FindSymbols;
+using Microsoft.CodeAnalysis.Text;
 using ModelContextProtocol;
 
 namespace Roslynaut;
@@ -13,11 +15,13 @@ namespace Roslynaut;
 /// <summary>A Roslyn solution plus the MSBuild design-time build results it was created from.</summary>
 public sealed record LoadedWorkspace(Solution Solution, IReadOnlyList<IAnalyzerResult> Results);
 
-/// <summary>Loads projects and solutions through Buildalyzer and caches the resulting Roslyn workspaces.</summary>
+/// <summary>
+/// Loads projects and solutions through Buildalyzer and keeps the resulting Roslyn workspaces in sync with the file system:
+/// every call picks up changed, added and deleted C# files, and reloads after project or build file changes.
+/// </summary>
 public sealed class WorkspaceService
 {
-    // ponytail: cached until restart, so file edits after the first load are not seen. Add a file watcher or reload tool when that matters.
-    private readonly ConcurrentDictionary<string, Lazy<Task<LoadedWorkspace>>> _cache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, TrackedWorkspace> _workspaces = new(StringComparer.OrdinalIgnoreCase);
 
     public Task<LoadedWorkspace> GetAsync(string projectPath)
     {
@@ -25,27 +29,121 @@ public sealed class WorkspaceService
         if (!File.Exists(path))
             throw new McpException($"Project or solution not found: {path}");
 
-        return _cache.GetOrAdd(path, key => new(() => Task.Run(() => Load(key)))).Value;
+        var workspace = _workspaces.GetOrAdd(path, key => new TrackedWorkspace(key));
+        return Task.Run(workspace.Sync);
     }
 
-    public async Task<Document> GetDocumentAsync(string projectPath, string filePath)
+    public async Task<Document> GetDocumentAsync(string projectPath, string filePath) =>
+        GetDocument((await GetAsync(projectPath)).Solution, filePath);
+
+    public static Document GetDocument(Solution solution, string filePath)
     {
-        var solution = (await GetAsync(projectPath)).Solution;
         var id = solution.GetDocumentIdsWithFilePath(Path.GetFullPath(filePath)).FirstOrDefault()
-            ?? throw new McpException($"'{filePath}' is not part of '{projectPath}'.");
+            ?? throw new McpException($"'{filePath}' is not part of the loaded project or solution.");
         return solution.GetDocument(id)!;
     }
 
-    public async Task<ISymbol> GetSymbolAtAsync(string projectPath, string filePath, int line, int column, CancellationToken cancellationToken)
+    public static async Task<ISymbol> GetSymbolAtAsync(Document document, int line, int column, CancellationToken cancellationToken)
     {
-        var document = await GetDocumentAsync(projectPath, filePath);
         var text = await document.GetTextAsync(cancellationToken);
         if (line < 1 || line > text.Lines.Count || column < 1)
-            throw new McpException($"Position {line}:{column} is outside '{filePath}'.");
+            throw new McpException($"Position {line}:{column} is outside '{document.FilePath}'.");
 
         var position = text.Lines[line - 1].Start + column - 1;
         return await SymbolFinder.FindSymbolAtPositionAsync(document, position, cancellationToken)
-            ?? throw new McpException($"No symbol found at {filePath}:{line}:{column}.");
+            ?? throw new McpException($"No symbol found at {document.FilePath}:{line}:{column}.");
+    }
+
+    /// <summary>A loaded workspace plus the file timestamps it reflects.</summary>
+    private sealed class TrackedWorkspace(string path)
+    {
+        private readonly Lock _lock = new();
+        private LoadedWorkspace? _loaded;
+        private string[] _roots = [];
+        private Dictionary<string, DateTimeOffset> _files = [];
+
+        // ponytail: rescans the project directories on every call; switch to a FileSystemWatcher if huge repositories make that slow.
+        public LoadedWorkspace Sync()
+        {
+            lock (_lock)
+            {
+                var files = Scan(_roots);
+                var changed = files.Where(file => !_files.TryGetValue(file.Key, out var time) || time != file.Value).Select(file => file.Key)
+                    .Concat(_files.Keys.Where(file => !files.ContainsKey(file)))
+                    .ToList();
+
+                // ponytail: any project or build file change reloads everything; reload only the affected projects if that gets slow.
+                if (_loaded is null || changed.Any(file => !file.EndsWith(".cs", StringComparison.OrdinalIgnoreCase)))
+                {
+                    _loaded = Load(path);
+                    _roots = GetRoots(_loaded.Solution);
+                    files = Scan(_roots);
+                }
+                else if (changed.Count > 0)
+                {
+                    _loaded = _loaded with { Solution = Apply(_loaded.Solution, changed, files) };
+                }
+
+                _files = files;
+                return _loaded;
+            }
+        }
+
+        private Solution Apply(Solution solution, List<string> changed, Dictionary<string, DateTimeOffset> files)
+        {
+            foreach (var file in changed)
+            {
+                var ids = solution.GetDocumentIdsWithFilePath(file);
+                if (!files.ContainsKey(file))
+                    solution = solution.RemoveDocuments(ids);
+                else if (!ids.IsEmpty)
+                    solution = solution.WithDocumentText(ids, Read(file));
+                // ponytail: a new file joins the deepest enclosing project, as with default globbing; explicit Compile items need a project file change.
+                else if (!_files.ContainsKey(file) && FindOwner(solution, file) is { } project)
+                    solution = project.AddDocument(Path.GetFileName(file), Read(file), filePath: file).Project.Solution;
+            }
+
+            return solution;
+        }
+
+        /// <summary>The directories to scan: the solution's and the projects', without nested duplicates.</summary>
+        private string[] GetRoots(Solution solution)
+        {
+            var directories = solution.Projects.Select(project => Path.GetDirectoryName(project.FilePath))
+                .Append(Path.GetDirectoryName(path))
+                .OfType<string>()
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            return [.. directories.Where(directory => !directories.Any(other => IsUnder(directory, other)))];
+        }
+
+        private static Dictionary<string, DateTimeOffset> Scan(string[] roots)
+        {
+            var options = new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true };
+            var files = new Dictionary<string, DateTimeOffset>(StringComparer.OrdinalIgnoreCase);
+            foreach (var root in roots.Where(Directory.Exists))
+            {
+                var entries = new FileSystemEnumerable<(string Path, DateTimeOffset Time)>(root, (ref FileSystemEntry entry) => (entry.ToFullPath(), entry.LastWriteTimeUtc), options)
+                {
+                    ShouldRecursePredicate = (ref FileSystemEntry entry) => entry.FileName is not ("bin" or "obj" or ".git" or ".vs" or "node_modules"),
+                    ShouldIncludePredicate = (ref FileSystemEntry entry) =>
+                        !entry.IsDirectory && Path.GetExtension(entry.FileName) is ".cs" or ".csproj" or ".props" or ".targets" or ".sln" or ".slnx",
+                };
+                foreach (var (file, time) in entries)
+                    files[file] = time;
+            }
+
+            return files;
+        }
+
+        private static Project? FindOwner(Solution solution, string file) => solution.Projects
+            .Where(project => project.Language == LanguageNames.CSharp && project.FilePath is not null && IsUnder(file, Path.GetDirectoryName(project.FilePath)!))
+            .MaxBy(project => Path.GetDirectoryName(project.FilePath)!.Length);
+
+        private static bool IsUnder(string path, string directory) =>
+            path.StartsWith(directory + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+
+        private static SourceText Read(string file) => SourceText.From(File.ReadAllText(file));
     }
 
     private static LoadedWorkspace Load(string path)

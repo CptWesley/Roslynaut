@@ -1,0 +1,89 @@
+using System.ComponentModel;
+using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
+using Microsoft.CodeAnalysis;
+using ModelContextProtocol;
+using ModelContextProtocol.Server;
+
+namespace Roslynaut.Tools;
+
+[JsonConverter(typeof(JsonStringEnumConverter<SymbolCategory>))]
+public enum SymbolCategory
+{
+    Any,
+    Namespace,
+    Type,
+    Method,
+    Property,
+    Field,
+
+    /// <summary>Locals, parameters and query range variables.</summary>
+    Variable,
+}
+
+public sealed class FindSymbolsTool(WorkspaceService workspace) : IMcpTool
+{
+    public Delegate Handler => FindSymbolsAsync;
+
+    [McpServerTool(Name = "find_symbols", ReadOnly = true)]
+    [Description("Searches symbols (namespaces, types, members, parameters, locals) by name in the whole solution or within a scope. "
+        + "Outer symbols come first; at most 100 results.")]
+    private async Task<IEnumerable<SymbolEntry>> FindSymbolsAsync(
+        [Description(ToolDefaults.ProjectPath)] string projectPath,
+        [Description("Case-insensitive .NET regular expression matched against symbol names, e.g. 'cache', '^Get.*Async$' or 'path|file'. "
+            + "Omit to return everything in scope.")] string? query = null,
+        [Description("Optional path of a C# file, or a symbol path to search within. " + ToolDefaults.SymbolPath)] string? scope = null,
+        [Description("Kind of symbols to return. Variable means locals and parameters.")] SymbolCategory kind = SymbolCategory.Any,
+        CancellationToken cancellationToken = default)
+    {
+        var regex = ParseQuery(query);
+        var solution = (await workspace.GetAsync(projectPath)).Solution;
+        var includeLocals = kind is SymbolCategory.Any or SymbolCategory.Method or SymbolCategory.Variable;
+
+        IAsyncEnumerable<ISymbol> symbols;
+        if (scope is null)
+        {
+            symbols = SymbolTree.GetDescendantsAsync(solution, await SymbolTree.GetRootNamespacesAsync(solution, cancellationToken), includeLocals, cancellationToken);
+        }
+        else if (scope.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+        {
+            var root = await WorkspaceService.GetDocument(solution, scope).GetSyntaxRootAsync(cancellationToken);
+            symbols = (await SymbolTree.GetDeclaredInAsync(solution, [root!], cancellationToken)).ToAsyncEnumerable();
+        }
+        else
+        {
+            var roots = (await SymbolTree.ResolveAsync(solution, scope, cancellationToken)).Select(SymbolTree.TypeOrSelf);
+            symbols = SymbolTree.GetDescendantsAsync(solution, roots, includeLocals, cancellationToken);
+        }
+
+        return await symbols
+            .Where(symbol => IsKind(symbol, kind) && (regex?.IsMatch(symbol.Name) ?? true))
+            .Select(symbol => SymbolEntry.From(symbol))
+            .Distinct()
+            .Take(ToolDefaults.MaxResults)
+            .ToListAsync(cancellationToken);
+    }
+
+    private static Regex? ParseQuery(string? query)
+    {
+        try
+        {
+            return query is null ? null : new Regex(query, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        }
+        catch (ArgumentException e)
+        {
+            throw new McpException($"Invalid query: {e.Message}");
+        }
+    }
+
+    private static bool IsKind(ISymbol symbol, SymbolCategory kind) => kind switch
+    {
+        SymbolCategory.Namespace => symbol is INamespaceSymbol,
+        SymbolCategory.Type => symbol is ITypeSymbol,
+        SymbolCategory.Method => symbol is IMethodSymbol,
+        SymbolCategory.Property => symbol is IPropertySymbol,
+        SymbolCategory.Field => symbol is IFieldSymbol,
+        SymbolCategory.Variable => symbol is ILocalSymbol or IParameterSymbol or IRangeVariableSymbol,
+        _ => true,
+    };
+}

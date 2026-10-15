@@ -16,7 +16,8 @@ public sealed class DefinitionTool(WorkspaceService workspace) : IMcpTool
         [Description(ToolDefaults.Column)] int column,
         CancellationToken cancellationToken)
     {
-        var symbol = await workspace.GetSymbolAtAsync(projectPath, filePath, line, column, cancellationToken);
+        var document = await workspace.GetDocumentAsync(projectPath, filePath);
+        var symbol = await WorkspaceService.GetSymbolAtAsync(document, line, column, cancellationToken);
         return new(
             SymbolEntry.KindOf(symbol),
             symbol.ToDisplayString(),

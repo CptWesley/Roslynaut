@@ -18,6 +18,8 @@ public static class Program
             .AddSingleton<IMcpTool, ProjectInfoTool>()
             .AddSingleton<IMcpTool, WorkspaceSymbolsTool>()
             .AddSingleton<IMcpTool, DocumentSymbolsTool>()
+            .AddSingleton<IMcpTool, ListSymbolsTool>()
+            .AddSingleton<IMcpTool, FindSymbolsTool>()
             .AddSingleton<IMcpTool, DefinitionTool>()
             .AddSingleton<IMcpTool, ReferencesTool>()
             .AddSingleton<IMcpTool, DiagnosticsTool>()
