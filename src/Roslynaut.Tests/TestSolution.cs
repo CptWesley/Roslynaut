@@ -1,4 +1,6 @@
+using System.Text;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Text;
 using Roslynaut.Tools;
 
@@ -23,8 +25,9 @@ internal static class TestSolution
 
     public static Solution Create(string code) => new AdhocWorkspace()
         .AddProject("Test", LanguageNames.CSharp)
+        .WithCompilationOptions(new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary))
         .AddMetadataReference(MetadataReference.CreateFromFile(typeof(object).Assembly.Location))
-        .AddDocument("Test.cs", SourceText.From(code))
+        .AddDocument("Test.cs", SourceText.From(code, Encoding.UTF8))
         .Project.Solution;
 
     /// <summary>The entry's container plus its name, e.g. "Some.Foo.Package.Foo.Bar".</summary>

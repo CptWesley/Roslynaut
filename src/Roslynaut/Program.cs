@@ -16,6 +16,7 @@ public static class Program
         await using var services = new ServiceCollection()
             .AddSingleton<WorkspaceService>()
             .AddSingleton<ResultCache>()
+            .AddSingleton<AssemblyLoader>()
             .AddSingleton<IMcpTool, ProjectInfoTool>()
             .AddSingleton<IMcpTool, WorkspaceSymbolsTool>()
             .AddSingleton<IMcpTool, DocumentSymbolsTool>()
@@ -24,6 +25,8 @@ public static class Program
             .AddSingleton<IMcpTool, DefinitionTool>()
             .AddSingleton<IMcpTool, ReferencesTool>()
             .AddSingleton<IMcpTool, DiagnosticsTool>()
+            .AddSingleton<IMcpTool, AssemblyIlTool>()
+            .AddSingleton<IMcpTool, SymbolIlTool>()
             .AddSingleton<McpServerService>()
             .BuildServiceProvider();
 

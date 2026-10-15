@@ -11,25 +11,26 @@ namespace Roslynaut.Tools;
 public sealed record PagedResult<T>(IEnumerable<T> Items, int Page, int PageSize, bool HasMore, int? TotalCount);
 
 /// <summary>
-/// Caches the results of tools per solution snapshot. Every file change produces a new snapshot, so cached results
-/// always match the current code, and results for older snapshots are collected together with them.
+/// Caches the results of tools per snapshot: a <see cref="Solution"/>, or a module read by <see cref="AssemblyLoader"/>.
+/// Every file change produces a new snapshot, so cached results always match the current code,
+/// and results for older snapshots are collected together with them.
 /// Results are evaluated lazily, only as far as the requested pages need.
 /// </summary>
 public sealed class ResultCache
 {
-    private readonly ConditionalWeakTable<Solution, ConcurrentDictionary<string, object>> _results = new();
+    private readonly ConditionalWeakTable<object, ConcurrentDictionary<string, object>> _results = new();
 
     /// <summary>
     /// Returns one page of the results stored under <paramref name="key"/>: the tool name plus the arguments that shape its results.
     /// Computes and stores them first on a miss; failures are not stored. Evaluation of the results continues in later requests,
     /// so their lazy parts should not observe the cancellation token of the request that computed them.
     /// </summary>
-    public async Task<PagedResult<T>> GetPageAsync<T>(Solution solution, string key, int page, int pageSize, Func<Task<IEnumerable<T>>> compute)
+    public async Task<PagedResult<T>> GetPageAsync<T>(object snapshot, string key, int page, int pageSize, Func<Task<IEnumerable<T>>> compute)
     {
         if (page < 0 || pageSize < 1)
             throw new McpException("page must be at least 0 and pageSize at least 1.");
 
-        var results = _results.GetOrCreateValue(solution);
+        var results = _results.GetOrCreateValue(snapshot);
         if (!results.TryGetValue(key, out var cached))
             results[key] = cached = new EvaluatedEnumerable<T>(await compute());
 

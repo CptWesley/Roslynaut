@@ -222,7 +222,12 @@ public sealed class WorkspaceService
         private static bool IsUnder(string path, string directory) =>
             path.StartsWith(directory + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
 
-        private static SourceText Read(string file) => SourceText.From(File.ReadAllText(file));
+        // From a stream, so the text gets an encoding: compilations cannot emit debug information without one.
+        private static SourceText Read(string file)
+        {
+            using var stream = File.OpenRead(file);
+            return SourceText.From(stream);
+        }
     }
 
 
