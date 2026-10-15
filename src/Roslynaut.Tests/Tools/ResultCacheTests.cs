@@ -46,15 +46,15 @@ public class ResultCacheTests
     {
         var result = await GetPageAsync(page, pageSize);
 
-        Assert.That(result.Items, Is.EqualTo(Enumerable.Range(first, count)));
-        Assert.That(result.HasMore, Is.EqualTo(hasMore));
+        result.Items.Should().Equal(Enumerable.Range(first, count));
+        result.HasMore.Should().Be(hasMore);
     }
 
     [TestCase(-1, 10)]
     [TestCase(0, 0)]
     public async Task GetPage_InvalidArgument_Throws(int page, int pageSize)
     {
-        await Assert.ThrowsAsync<McpException>(() => GetPageAsync(page, pageSize));
+        await this.Awaiting(test => test.GetPageAsync(page, pageSize)).Should().ThrowAsync<McpException>();
     }
 
     [Test]
@@ -62,7 +62,7 @@ public class ResultCacheTests
     {
         await GetPageAsync(0, 10);
 
-        Assert.That(evaluated, Is.EqualTo(11));
+        evaluated.Should().Be(11);
     }
 
     [Test]
@@ -71,9 +71,9 @@ public class ResultCacheTests
         await GetPageAsync(2, 10);
         var result = await GetPageAsync(1, 10);
 
-        Assert.That(result.Items, Is.EqualTo(Enumerable.Range(10, 10)));
-        Assert.That(computed, Is.EqualTo(1));
-        Assert.That(evaluated, Is.EqualTo(25));
+        result.Items.Should().Equal(Enumerable.Range(10, 10));
+        computed.Should().Be(1);
+        evaluated.Should().Be(25);
     }
 
     [Test]
@@ -88,11 +88,11 @@ public class ResultCacheTests
             yield return 2;
         }
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() => cache.GetPageAsync(solution, "flaky", 0, 10, () => Task.FromResult(Flaky())));
+        await cache.Awaiting(c => c.GetPageAsync(solution, "flaky", 0, 10, () => Task.FromResult(Flaky()))).Should().ThrowAsync<InvalidOperationException>();
         fail = false;
         var result = await cache.GetPageAsync(solution, "flaky", 0, 10, () => Task.FromResult(Flaky()));
 
-        Assert.That(result.Items, Is.EqualTo(new[] { 1, 2 }));
+        result.Items.Should().Equal(1, 2);
     }
 
     [Test]
@@ -101,8 +101,8 @@ public class ResultCacheTests
         var first = await GetPageAsync(0, 10);
         var last = await GetPageAsync(2, 10);
 
-        Assert.That(first.TotalCount, Is.Null);
-        Assert.That(last.TotalCount, Is.EqualTo(25));
+        first.TotalCount.Should().BeNull();
+        last.TotalCount.Should().Be(25);
     }
 
     private static IEnumerable<TestCaseData> CountedSources()
@@ -117,6 +117,6 @@ public class ResultCacheTests
     {
         var result = await cache.GetPageAsync(solution, "counted", 0, 10, () => Task.FromResult(source));
 
-        Assert.That(result.TotalCount, Is.EqualTo(totalCount));
+        result.TotalCount.Should().Be(totalCount);
     }
 }

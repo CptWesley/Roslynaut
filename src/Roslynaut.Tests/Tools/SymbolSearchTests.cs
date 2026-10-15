@@ -20,7 +20,7 @@ public class SymbolSearchTests
     {
         var entries = await WorkspaceSymbolsTool.SearchAsync(TestSolution.Nested, query, CancellationToken.None);
 
-        Assert.That(entries.Select(TestSolution.PathOf), Is.EquivalentTo(expected));
+        entries.Select(TestSolution.PathOf).Should().BeEquivalentTo(expected);
     }
 
     // Used by list_symbols, and by find_symbols for its scope.
@@ -31,7 +31,7 @@ public class SymbolSearchTests
     {
         var symbols = await SymbolTree.ResolveAsync(TestSolution.Nested, path, CancellationToken.None);
 
-        Assert.That(symbols.Select(symbol => TestSolution.PathOf(SymbolEntry.From(symbol))), Is.EqualTo(new[] { expected }));
+        symbols.Select(symbol => TestSolution.PathOf(SymbolEntry.From(symbol))).Should().ContainSingle().Which.Should().Be(expected);
     }
 
     [TestCase("Some.Foo.Package.Foo.Bar", new[] { Bar, Barrier })]
@@ -44,19 +44,19 @@ public class SymbolSearchTests
     [TestCase("^Ba.*z$", new[] { Baz }, TestName = "FindSymbols_WildcardWithoutQualifier_MatchesNameOnly")]
     public async Task FindSymbols_FindsQualifiedNames(string query, string[] expected)
     {
-        Assert.That(await FindSymbolsAsync(query), Is.EquivalentTo(expected));
+        (await FindSymbolsAsync(query)).Should().BeEquivalentTo(expected);
     }
 
     [Test]
     public async Task FindSymbols_FindsQualifiedNamespace()
     {
-        Assert.That(await FindSymbolsAsync("Some.Foo.Package$", kind: SymbolCategory.Namespace), Is.EqualTo(new[] { "Some.Foo.Package" }));
+        (await FindSymbolsAsync("Some.Foo.Package$", kind: SymbolCategory.Namespace)).Should().ContainSingle().Which.Should().Be("Some.Foo.Package");
     }
 
     [Test]
     public async Task FindSymbols_FindsQualifiedNameWithinScope()
     {
-        Assert.That(await FindSymbolsAsync("Bar.Baz", scope: "Some.Foo.Package.Foo"), Is.EqualTo(new[] { Baz }));
+        (await FindSymbolsAsync("Bar.Baz", scope: "Some.Foo.Package.Foo")).Should().ContainSingle().Which.Should().Be(Baz);
     }
 
     private static async Task<IEnumerable<string>> FindSymbolsAsync(string query, string? scope = null, SymbolCategory kind = SymbolCategory.Any)

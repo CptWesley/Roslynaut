@@ -24,7 +24,7 @@ public class EvaluatedEnumerableTests
     {
         var sequence = new EvaluatedEnumerable<int>(Source());
 
-        Assert.That(sequence.Slice(2, 3), Is.EqualTo(new[] { 2, 3, 4 }));
+        sequence.Slice(2, 3).Should().Equal(2, 3, 4);
     }
 
     [Test]
@@ -34,7 +34,7 @@ public class EvaluatedEnumerableTests
 
         sequence.Slice(2, 3);
 
-        Assert.That(evaluated, Is.EqualTo(5));
+        evaluated.Should().Be(5);
     }
 
     [Test]
@@ -45,8 +45,8 @@ public class EvaluatedEnumerableTests
 
         var slice = sequence.Slice(0, 2);
 
-        Assert.That(slice, Is.EqualTo(new[] { 0, 1 }));
-        Assert.That(evaluated, Is.EqualTo(5));
+        slice.Should().Equal(0, 1);
+        evaluated.Should().Be(5);
     }
 
     [TestCase(8, 100, new[] { 8, 9 })]
@@ -55,7 +55,7 @@ public class EvaluatedEnumerableTests
     {
         var sequence = new EvaluatedEnumerable<int>(Source());
 
-        Assert.That(sequence.Slice(start, length), Is.EqualTo(expected));
+        sequence.Slice(start, length).Should().Equal(expected);
     }
 
     [Test]
@@ -63,7 +63,7 @@ public class EvaluatedEnumerableTests
     {
         var sequence = new EvaluatedEnumerable<int>(Source());
 
-        Assert.That(sequence.Slice(1, int.MaxValue), Has.Count.EqualTo(9));
+        sequence.Slice(1, int.MaxValue).Should().HaveCount(9);
     }
 
     [TestCase(-1, 1)]
@@ -72,7 +72,7 @@ public class EvaluatedEnumerableTests
     {
         var sequence = new EvaluatedEnumerable<int>(Source());
 
-        Assert.That(() => sequence.Slice(start, length), Throws.TypeOf<ArgumentOutOfRangeException>());
+        sequence.Invoking(s => s.Slice(start, length)).Should().Throw<ArgumentOutOfRangeException>();
     }
 
     [Test]
@@ -81,9 +81,9 @@ public class EvaluatedEnumerableTests
         var sequence = new EvaluatedEnumerable<int>(Source());
         sequence.Slice(0, 5);
 
-        Assert.That(sequence, Is.EqualTo(Enumerable.Range(0, 10)));
-        Assert.That(sequence, Is.EqualTo(Enumerable.Range(0, 10)));
-        Assert.That(evaluated, Is.EqualTo(10));
+        sequence.Should().Equal(Enumerable.Range(0, 10));
+        sequence.Should().Equal(Enumerable.Range(0, 10));
+        evaluated.Should().Be(10);
     }
 
     [Test]
@@ -91,10 +91,10 @@ public class EvaluatedEnumerableTests
     {
         var sequence = new EvaluatedEnumerable<int>(Source());
 
-        Assert.That(sequence.Take(3), Is.EqualTo(new[] { 0, 1, 2 }));
-        Assert.That(evaluated, Is.EqualTo(3));
-        Assert.That(sequence.Count(), Is.EqualTo(10));
-        Assert.That(evaluated, Is.EqualTo(10));
+        sequence.Take(3).Should().Equal(0, 1, 2);
+        evaluated.Should().Be(3);
+        sequence.Count().Should().Be(10);
+        evaluated.Should().Be(10);
     }
 
     [Test]
@@ -108,9 +108,9 @@ public class EvaluatedEnumerableTests
         first.MoveNext();
         second.MoveNext();
 
-        Assert.That(first.Current, Is.EqualTo(1));
-        Assert.That(second.Current, Is.EqualTo(0));
-        Assert.That(evaluated, Is.EqualTo(2));
+        first.Current.Should().Be(1);
+        second.Current.Should().Be(0);
+        evaluated.Should().Be(2);
     }
 
     [Test]
@@ -118,7 +118,7 @@ public class EvaluatedEnumerableTests
     {
         var sequence = new EvaluatedEnumerable<int>(null);
 
-        Assert.That(sequence, Is.Empty);
-        Assert.That(sequence.Slice(0, 10), Is.Empty);
+        sequence.Should().BeEmpty();
+        sequence.Slice(0, 10).Should().BeEmpty();
     }
 }
