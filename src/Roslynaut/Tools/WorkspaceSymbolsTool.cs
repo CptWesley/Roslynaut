@@ -13,7 +13,8 @@ public sealed class WorkspaceSymbolsTool(WorkspaceService workspace, ResultCache
     [Description("Searches type and member declarations by name, matching substrings and camel-case humps like an IDE's 'Go to symbol'. Paged.")]
     private async Task<PagedResult<SymbolEntry>> FindSymbolsAsync(
         [Description(ToolDefaults.ProjectPath)] string projectPath,
-        [Description("Name or pattern to search for, e.g. 'Workspace' or 'GDA' for 'GetDocumentAsync'.")] string query,
+        [Description("Name or pattern to search for, e.g. 'Workspace' or 'GDA' for 'GetDocumentAsync'. "
+            + "May be qualified with namespaces and containing types, e.g. 'Tools.WorkspaceService.GetDocumentAsync'.")] string query,
         [Description(ToolDefaults.Page)] int page = 0,
         [Description(ToolDefaults.PageSize)] int pageSize = ToolDefaults.DefaultPageSize,
         CancellationToken cancellationToken = default)

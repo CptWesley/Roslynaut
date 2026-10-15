@@ -31,6 +31,7 @@ public sealed class FindSymbolsTool(WorkspaceService workspace, ResultCache cach
     private async Task<PagedResult<SymbolEntry>> FindSymbolsAsync(
         [Description(ToolDefaults.ProjectPath)] string projectPath,
         [Description("Case-insensitive .NET regular expression matched against symbol names, e.g. 'cache', '^Get.*Async$' or 'path|file'. "
+            + "A query with a dot also matches full names that end in the symbol's name, e.g. 'Tools.ResultCache' or 'MyNamespace.Outer.Nested'. "
             + "Omit to return everything in scope.")] string? query = null,
         [Description("Optional path of a C# file, or a symbol path to search within. " + ToolDefaults.SymbolPath)] string? scope = null,
         [Description("Kind of symbols to return. Variable means locals and parameters.")] SymbolCategory kind = SymbolCategory.Any,
@@ -38,13 +39,14 @@ public sealed class FindSymbolsTool(WorkspaceService workspace, ResultCache cach
         [Description(ToolDefaults.PageSize)] int pageSize = ToolDefaults.DefaultPageSize,
         CancellationToken cancellationToken = default)
     {
-        var regex = ParseQuery(query);
+        var matches = ParseQuery(query);
         var solution = (await workspace.GetAsync(projectPath)).Solution;
         return await cache.GetPageAsync(solution, $"find_symbols|{query}|{scope}|{kind}", page, pageSize,
-            () => SearchAsync(solution, regex, scope, kind, cancellationToken));
+            () => SearchAsync(solution, matches, scope, kind, cancellationToken));
     }
 
-    private static async Task<IEnumerable<SymbolEntry>> SearchAsync(Solution solution, Regex? regex, string? scope, SymbolCategory kind, CancellationToken cancellationToken)
+    private static async Task<IEnumerable<SymbolEntry>> SearchAsync(
+        Solution solution, Func<ISymbol, bool> matches, string? scope, SymbolCategory kind, CancellationToken cancellationToken)
     {
         var includeLocals = kind is SymbolCategory.Any or SymbolCategory.Method or SymbolCategory.Variable;
 
@@ -65,23 +67,39 @@ public sealed class FindSymbolsTool(WorkspaceService workspace, ResultCache cach
         }
 
         return await symbols
-            .Where(symbol => IsKind(symbol, kind) && (regex?.IsMatch(symbol.Name) ?? true))
+            .Where(symbol => IsKind(symbol, kind) && matches(symbol))
             .Select(symbol => SymbolEntry.From(symbol))
             .Distinct()
             .ToListAsync(cancellationToken);
     }
 
-    private static Regex? ParseQuery(string? query)
+    private static Func<ISymbol, bool> ParseQuery(string? query)
     {
+        if (query is null)
+            return _ => true;
+
         try
         {
-            return query is null ? null : new Regex(query, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            const RegexOptions options = RegexOptions.IgnoreCase | RegexOptions.CultureInvariant;
+            var name = new Regex(query, options);
+            if (!query.Contains('.'))
+                return symbol => name.IsMatch(symbol.Name);
+
+            // The match must end in the symbol's own name, so 'Foo.Bar' finds Bar but not the members inside it.
+            var fullName = new Regex($"(?:{query})(?=[^.]*$)", options);
+            return symbol => name.IsMatch(symbol.Name) || fullName.IsMatch(FullName(symbol));
         }
         catch (ArgumentException e)
         {
             throw new McpException($"Invalid query: {e.Message}");
         }
     }
+
+    /// <summary>The names of the symbol's namespaces, containing types and member, then its own, e.g. "Some.Package.Outer.Nested".</summary>
+    private static string FullName(ISymbol symbol) =>
+        symbol.ContainingSymbol is { } container and not INamespaceSymbol { IsGlobalNamespace: true }
+            ? $"{FullName(container)}.{symbol.Name}"
+            : symbol.Name;
 
     private static bool IsKind(ISymbol symbol, SymbolCategory kind) => kind switch
     {
