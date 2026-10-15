@@ -7,7 +7,7 @@ namespace Roslynaut.Util;
 /// so the source is enumerated at most once, no matter how often the result is sliced or enumerated.
 /// </summary>
 /// <remarks>Not thread-safe.</remarks>
-public class EvaluatedEnumerable<T> : IEnumerable<T>
+public class EvaluatedEnumerable<T> : IEnumerable<T>, IDisposable
 {
     private readonly List<T> cached = new();
     private IEnumerator<T>? source;
@@ -64,5 +64,17 @@ public class EvaluatedEnumerable<T> : IEnumerable<T>
         source.Dispose();
         source = null;
         return false;
+    }
+
+    public void Dispose()
+    {
+        try
+        {
+            source?.Dispose();
+        }
+        catch
+        {
+            // Do nothing.
+        }
     }
 }
