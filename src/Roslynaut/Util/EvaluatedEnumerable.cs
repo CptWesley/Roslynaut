@@ -21,9 +21,10 @@ public class EvaluatedEnumerable<T> : IEnumerable<T>, IDisposable
         {
             count = tc.Count;
         }
-        else if (source is ICollection c)
+        else if (source is not null && source.TryGetNonEnumeratedCount(out var c))
         {
-            count = c.Count;
+            // Also covers LINQ operators that preserve a cheap count, such as Select over a list.
+            count = c;
         }
     }
 
