@@ -4,6 +4,8 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <!-- Without quick JIT, methods are optimized as soon as they are compiled, so the JIT disassembly tools show optimized code. -->
+    <TieredCompilationQuickJit>false</TieredCompilationQuickJit>
     <IsPackable>false</IsPackable>
   </PropertyGroup>
 

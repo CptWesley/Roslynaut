@@ -137,7 +137,7 @@ public class IlTests
     [TestCase("M:Roslynaut.Tests.TestSolution.Create(System.String)")]
     public void AssemblyIl_FindsMethodByNameOrDocumentationId(string name)
     {
-        var module = assemblies.Read(typeof(IlTests).Assembly.Location);
+        var module = assemblies.Read(typeof(IlTests).Assembly.Location).Module;
 
         IlDisassembler.Disassemble(module, [name]).Should().ContainSingle().Which.IL.Should().MatchRegex(@"// TestSolution\.cs:\d+");
     }
@@ -145,7 +145,7 @@ public class IlTests
     [Test]
     public void AssemblyIl_UnknownName_Throws()
     {
-        var module = assemblies.Read(typeof(IlTests).Assembly.Location);
+        var module = assemblies.Read(typeof(IlTests).Assembly.Location).Module;
 
         FluentActions.Invoking(() => IlDisassembler.Disassemble(module, ["NoSuchType"])).Should().Throw<McpException>();
     }

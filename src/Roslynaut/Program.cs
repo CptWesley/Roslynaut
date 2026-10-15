@@ -27,6 +27,8 @@ public static class Program
             .AddSingleton<IMcpTool, DiagnosticsTool>()
             .AddSingleton<IMcpTool, AssemblyIlTool>()
             .AddSingleton<IMcpTool, SymbolIlTool>()
+            .AddSingleton<IMcpTool, AssemblyAsmTool>()
+            .AddSingleton<IMcpTool, SymbolAsmTool>()
             .AddSingleton<McpServerService>()
             .BuildServiceProvider();
 

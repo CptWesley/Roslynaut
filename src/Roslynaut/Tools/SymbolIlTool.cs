@@ -24,9 +24,17 @@ public sealed class SymbolIlTool(WorkspaceService workspace, AssemblyLoader asse
             () => DisassembleAsync(solution, assemblies, symbol, cancellationToken));
     }
 
-    internal static async Task<IEnumerable<MethodIL>> DisassembleAsync(Solution solution, AssemblyLoader assemblies, string path, CancellationToken cancellationToken)
+    internal static Task<IEnumerable<MethodIL>> DisassembleAsync(Solution solution, AssemblyLoader assemblies, string path, CancellationToken cancellationToken) =>
+        DisassembleAsync(solution, assemblies, path, (assembly, ids) => IlDisassembler.Disassemble(assembly.Module, ids), optimize: false, cancellationToken);
+
+    /// <summary>Resolves the symbol path, compiles the declaring projects, and disassembles the symbols with <paramref name="disassemble"/>.</summary>
+    /// <param name="optimize">Compiles as a release build, see <see cref="AssemblyLoader.CompileAsync"/>.</param>
+    internal static async Task<IEnumerable<T>> DisassembleAsync<T>(
+        Solution solution, AssemblyLoader assemblies, string path, Func<LoadedAssembly, IReadOnlyCollection<string>, List<T>> disassemble,
+        bool optimize,
+        CancellationToken cancellationToken)
     {
-        var methods = new List<MethodIL>();
+        var methods = new List<T>();
         var symbols = await SymbolTree.ResolveAsync(solution, path, cancellationToken);
         foreach (var group in symbols.GroupBy(symbol => symbol.ContainingAssembly, SymbolEqualityComparer.Default))
         {
@@ -35,8 +43,8 @@ public sealed class SymbolIlTool(WorkspaceService workspace, AssemblyLoader asse
             if (ids.Count == 0 || group.Key is not IAssemblySymbol assembly || solution.GetProject(assembly, cancellationToken) is not { } project)
                 continue;
 
-            var module = await assemblies.CompileAsync((await project.GetCompilationAsync(cancellationToken))!);
-            methods.AddRange(IlDisassembler.Disassemble(module, ids));
+            var compiled = await assemblies.CompileAsync((await project.GetCompilationAsync(cancellationToken))!, optimize);
+            methods.AddRange(disassemble(compiled, ids));
         }
 
         return methods.Count > 0 ? methods : throw new McpException($"'{path}' has no IL: pick a type, method, property or event declared in the project.");

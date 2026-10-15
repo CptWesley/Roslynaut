@@ -20,19 +20,25 @@ internal static class IlDisassembler
     // IL is verbose, so pages are smaller than for other tools.
     public const int DefaultPageSize = 10;
 
-    /// <summary>
-    /// Disassembles the methods named by <paramref name="names"/>: documentation IDs ("T:..." or "M:...") or type or method names,
-    /// optionally partially qualified. Parameter and type argument lists are ignored, so a name matches all overloads.
-    /// </summary>
+    public const string AssemblyPath = "Path to the .dll or .exe.";
+
+    public const string Name = "Type or method name, optionally partially qualified, e.g. 'System.String.Concat', 'Dictionary.TryGetValue' or 'Outer.Nested'; "
+        + "or a documentation ID such as 'M:Ns.Type.Method(System.Int32)'. A method name returns all its overloads.";
+
     public static List<MethodIL> Disassemble(ModuleDefinition module, IReadOnlyCollection<string> names)
     {
-        List<MethodIL> methods;
         lock (module)
-        {
-            var types = module.GetTypes().Where(type => !IsGenerated(type)).ToList();
-            methods = names.SelectMany(name => Find(types, name)).Distinct().Select(Format).ToList();
-        }
+            return [.. FindMethods(module, names).Select(Format)];
+    }
 
+    /// <summary>
+    /// The methods named by <paramref name="names"/>: documentation IDs ("T:..." or "M:...") or type or method names, optionally partially
+    /// qualified. Parameter and type argument lists are ignored, so a name matches all overloads. Lock the module while calling this.
+    /// </summary>
+    public static List<MethodDefinition> FindMethods(ModuleDefinition module, IReadOnlyCollection<string> names)
+    {
+        var types = module.GetTypes().Where(type => !IsGenerated(type)).ToList();
+        var methods = names.SelectMany(name => Find(types, name)).Distinct().ToList();
         return methods.Count > 0 ? methods : throw new McpException($"No type or method matches {string.Join(", ", names)} in {module.Name}.");
     }
 
