@@ -1,6 +1,4 @@
-using System.Reflection;
 using System.Runtime.CompilerServices;
-using System.Runtime.Loader;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.Emit;
 using ModelContextProtocol;
@@ -10,24 +8,29 @@ using Mono.Cecil.Cil;
 namespace Roslynaut;
 
 /// <summary>An assembly read with Mono.Cecil, plus what it takes to load it into a runtime.</summary>
-/// <param name="Image">The bytes of the assembly.</param>
-/// <param name="ResolveDependency">The bytes of a referenced assembly, or null to use the server's own, as for framework assemblies.</param>
-public sealed record LoadedAssembly(ModuleDefinition Module, byte[] Image, Func<AssemblyName, byte[]?> ResolveDependency);
+/// <param name="Path">The assembly on disk. Compilations are written to a temporary file when first asked for.</param>
+/// <param name="Dependencies">
+/// Paths of referenced assemblies, by name, that a runtime would not find next to the assembly. The framework is left out: runtimes have their own.
+/// </param>
+public sealed record LoadedAssembly(ModuleDefinition Module, Lazy<string> Path, Lazy<IReadOnlyDictionary<string, string>> Dependencies);
 
 /// <summary>
 /// Reads assemblies with Mono.Cecil: files, which are read again once they change, and compilations, which are emitted from current source.
 /// Files are read fully into memory, so builds can still overwrite them. Cecil modules are not thread-safe: lock a module while reading it.
 /// </summary>
 /// <param name="capacity">How many files to keep in memory. Reading another one evicts the least recently used.</param>
-public sealed class AssemblyLoader(int capacity = 32)
+public sealed class AssemblyLoader(int capacity = 32) : IDisposable
 {
+    private static readonly Lazy<IReadOnlyDictionary<string, string>> NoDependencies = new(new Dictionary<string, string>());
+
     private readonly Dictionary<string, CachedFile> _files = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConditionalWeakTable<Compilation, Task<LoadedAssembly>> _compilations = new(), _optimized = new();
+    private readonly string _temporary = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "Roslynaut", Environment.ProcessId.ToString());
     private long _clock;
 
     public LoadedAssembly Read(string assemblyPath)
     {
-        var path = Path.GetFullPath(assemblyPath);
+        var path = System.IO.Path.GetFullPath(assemblyPath);
         if (!File.Exists(path))
             throw new McpException($"Assembly not found: {path}");
 
@@ -55,29 +58,33 @@ public sealed class AssemblyLoader(int capacity = 32)
     public Task<LoadedAssembly> CompileAsync(Compilation compilation, bool optimize = false) =>
         (optimize ? _optimized : _compilations).GetValue(compilation, key => Task.Run(() => Emit(key, optimize)));
 
+    // ponytail: temporary files of compilations stay until the server stops; delete them per compilation if long sessions pile them up.
+    public void Dispose()
+    {
+        if (Directory.Exists(_temporary))
+            Directory.Delete(_temporary, recursive: true);
+    }
+
     private static LoadedAssembly ReadFile(string path)
     {
         // Read the PDB into memory too, instead of letting Cecil keep it open.
-        var image = File.ReadAllBytes(path);
-        var pdb = Path.ChangeExtension(path, ".pdb");
-        ModuleDefinition module;
+        var pdb = System.IO.Path.ChangeExtension(path, ".pdb");
         try
         {
-            module = ModuleDefinition.ReadModule(new MemoryStream(image), new ReaderParameters
+            var module = ModuleDefinition.ReadModule(new MemoryStream(File.ReadAllBytes(path)), new ReaderParameters
             {
                 ReadSymbols = true,
                 SymbolReaderProvider = new DefaultSymbolReaderProvider(throwIfNoSymbol: false),
                 SymbolStream = File.Exists(pdb) ? new MemoryStream(File.ReadAllBytes(pdb)) : null,
             });
+
+            // A file's own .deps.json or directory tells where its dependencies are.
+            return new(module, new(path), NoDependencies);
         }
         catch (BadImageFormatException)
         {
             throw new McpException($"Not a .NET assembly: {path}");
         }
-
-        // Dependencies come from the .deps.json next to the file, or else from its directory.
-        var resolver = new AssemblyDependencyResolver(path);
-        return new(module, image, name => resolver.ResolveAssemblyToPath(name) is { } dependency ? File.ReadAllBytes(dependency) : null);
     }
 
     private LoadedAssembly Emit(Compilation compilation, bool optimize)
@@ -94,28 +101,48 @@ public sealed class AssemblyLoader(int capacity = 32)
         var image = pe.ToArray();
         pdb.Position = 0;
         var module = ModuleDefinition.ReadModule(new MemoryStream(image), new ReaderParameters { ReadSymbols = true, SymbolStream = pdb });
-        return new(module, image, name => ResolveReference(compilation, name, optimize));
+        return new(module, new(() => Write(image)), new(() => ReferencePaths(compilation, optimize)));
     }
 
-    /// <summary>A referenced project, compiled from current source too, or a referenced package.</summary>
-    private byte[]? ResolveReference(Compilation compilation, AssemblyName name, bool optimize)
+    private string Write(byte[] image)
     {
-        var reference = compilation.References.FirstOrDefault(reference =>
-            compilation.GetAssemblyOrModuleSymbol(reference) is IAssemblySymbol assembly && assembly.Name == name.Name);
-        return reference switch
+        Directory.CreateDirectory(_temporary);
+        var path = System.IO.Path.Combine(_temporary, $"{Guid.NewGuid():N}.dll");
+        File.WriteAllBytes(path, image);
+        return path;
+    }
+
+    /// <summary>Referenced projects, compiled from current source too, with their own references; and referenced packages.</summary>
+    private IReadOnlyDictionary<string, string> ReferencePaths(Compilation compilation, bool optimize)
+    {
+        var paths = new Dictionary<string, string>();
+        foreach (var reference in compilation.References)
         {
-            CompilationReference project => CompileAsync(project.Compilation, optimize).GetAwaiter().GetResult().Image,
-            PortableExecutableReference { FilePath: { } path } when ImplementationOf(path) is { } file => File.ReadAllBytes(file),
-            _ => null,
-        };
+            if (compilation.GetAssemblyOrModuleSymbol(reference) is not IAssemblySymbol { Name: var name })
+                continue;
+
+            if (reference is CompilationReference project)
+            {
+                var compiled = CompileAsync(project.Compilation, optimize).GetAwaiter().GetResult();
+                paths.TryAdd(name, compiled.Path.Value);
+                foreach (var (dependency, path) in compiled.Dependencies.Value)
+                    paths.TryAdd(dependency, path);
+            }
+            else if (reference is PortableExecutableReference { FilePath: { } file } && ImplementationOf(file) is { } path)
+            {
+                paths.TryAdd(name, path);
+            }
+        }
+
+        return paths;
     }
 
     /// <summary>
-    /// Reference assemblies cannot run. NuGet packages pair ref\ with lib\; framework reference packs have no lib\, the server's runtime provides those.
+    /// Reference assemblies cannot run. NuGet packages pair ref\ with lib\; framework reference packs have no lib\, runtimes provide those.
     /// </summary>
     private static string? ImplementationOf(string path)
     {
-        var (refs, lib) = ($"{Path.DirectorySeparatorChar}ref{Path.DirectorySeparatorChar}", $"{Path.DirectorySeparatorChar}lib{Path.DirectorySeparatorChar}");
+        var (refs, lib) = ($"{System.IO.Path.DirectorySeparatorChar}ref{System.IO.Path.DirectorySeparatorChar}", $"{System.IO.Path.DirectorySeparatorChar}lib{System.IO.Path.DirectorySeparatorChar}");
         var index = path.LastIndexOf(refs, StringComparison.OrdinalIgnoreCase);
         if (index < 0)
             return path;

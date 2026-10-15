@@ -17,6 +17,7 @@ public class AsmTests
             public class Calculator
             {
                 public int Add(int a, int b) => a + b;
+                public double Add(double a, double b) => a + b;
 
                 public T Echo<T>(T value) => value;
 
@@ -26,61 +27,65 @@ public class AsmTests
                     return a + 1;
                 }
             }
+
+            public abstract class Shape { public abstract double Area(); }
         }
         """);
 
     private readonly AssemblyLoader assemblies = new();
 
-    [SetUp]
-    public void RequireX86OrX64() =>
-        Assume.That(RuntimeInformation.ProcessArchitecture is Architecture.X64 or Architecture.X86, "JitBuddy only disassembles x86 and x64 code.");
+    [OneTimeTearDown]
+    public void DeleteTemporaryFiles() => assemblies.Dispose();
 
     private async Task<List<MethodAsm>> SymbolAsmAsync(string path, Solution? solution = null) =>
         (await SymbolIlTool.DisassembleAsync(solution ?? Calculator, assemblies, path, JitDisassembler.Disassemble, optimize: true, CancellationToken.None)).ToList();
 
     [Test]
-    public async Task SymbolAsm_Method_ReturnsOptimizedNativeCode()
+    public async Task SymbolAsm_Method_ReturnsOptimizedListing()
     {
-        var method = (await SymbolAsmAsync("Calculator.Add")).Should().ContainSingle().Subject;
+        var method = (await SymbolAsmAsync("Calculator.Add(int, int)")).Should().ContainSingle().Subject;
 
         method.Method.Should().Be("System.Int32 Calc.Calculator::Add(System.Int32,System.Int32)");
-        method.Asm.Should().StartWith($"; {RuntimeInformation.FrameworkDescription}, {RuntimeInformation.ProcessArchitecture}\n").And.Contain("ret");
+        method.Asm.Should().StartWith($"; {RuntimeInformation.FrameworkDescription}\n; Assembly listing for method Calc.Calculator:Add(int,int):int:this (FullOpts)")
+            .And.Contain("ret");
+    }
 
-        // Unoptimized (tier 0) code sets up an rbp frame and spills the arguments to it.
-        method.Asm.Should().NotContain("rbp");
+    // Overloads share a name in listings, so they are told apart by the order they are compiled in.
+    [Test]
+    public async Task SymbolAsm_Overloads_GetTheirOwnListings()
+    {
+        var listings = (await SymbolAsmAsync("Calculator.Add")).ToDictionary(method => method.Method, method => method.Asm);
+
+        listings["System.Int32 Calc.Calculator::Add(System.Int32,System.Int32)"].Should().Contain("Add(int,int):int");
+        listings["System.Double Calc.Calculator::Add(System.Double,System.Double)"].Should().Contain("Add(double,double):double");
     }
 
     [Test]
-    public async Task SymbolAsm_MethodOfGenericType_IsInstantiatedOverInt32()
+    public async Task SymbolAsm_GenericMethod_ShowsSharedCode()
     {
-        var solution = TestSolution.Create("public class Box<T> { public T Id(T value) => value; }");
-
-        (await SymbolAsmAsync("Box.Id", solution)).Should().ContainSingle().Which.Asm.Should().Contain("type arguments System.Int32").And.Contain("ret");
+        (await SymbolAsmAsync("Calculator.Echo")).Should().ContainSingle().Which.Asm.Should().Contain("Calc.Calculator:Echo[System.__Canon]");
     }
 
-    // The limits of JitBuddy are reported, not returned as empty listings.
+    // The state machine of an optimized async method is a struct, whose interface methods are compiled behind an unboxing stub.
     [Test]
-    public async Task SymbolAsm_GenericMethod_IsReportedAsUnsupported()
+    public async Task SymbolAsm_AsyncMethod_IncludesStateMachine()
     {
-        (await SymbolAsmAsync("Calculator.Echo")).Should().ContainSingle().Which.Asm.Should().Contain("does not support generic methods");
+        (await SymbolAsmAsync("Calculator.AddLaterAsync")).Should().Contain(method => method.Method.EndsWith("::MoveNext()") && method.Asm.Contains(":MoveNext():this (FullOpts)"));
     }
 
     [Test]
-    public async Task SymbolAsm_AsyncMethod_DisassemblesStub_AndReportsStructStateMachine()
+    public async Task SymbolAsm_Constructor_IsListed()
     {
-        var methods = await SymbolAsmAsync("Calculator.AddLaterAsync");
-
-        methods.Should().Contain(method => method.Method.EndsWith("::AddLaterAsync(System.Int32)") && method.Asm.Contains("call"))
-            .And.Contain(method => method.Method.EndsWith("::MoveNext()") && method.Asm.Contains("virtual methods of value types"));
+        (await SymbolAsmAsync("Calc.Calculator")).Should().Contain(method => method.Method.EndsWith("::.ctor()") && method.Asm.Contains("Calc.Calculator:.ctor():this"));
     }
 
     [Test]
-    public async Task SymbolAsm_Constructor_IsReportedAsUnsupported()
+    public async Task SymbolAsm_AbstractMethod_IsReported()
     {
-        (await SymbolAsmAsync("Calc.Calculator")).Should().Contain(method => method.Method.EndsWith("::.ctor()") && method.Asm.Contains("not constructors"));
+        (await SymbolAsmAsync("Shape.Area")).Should().ContainSingle().Which.Asm.Should().Be("; Not compiled: The method is abstract.");
     }
 
-    // The JIT has to load the referenced project, which is compiled from source as well.
+    // The host has to load the referenced project, which is compiled from source as well.
     [Test]
     public async Task SymbolAsm_LoadsReferencedProjects()
     {
@@ -92,16 +97,26 @@ public class AsmTests
             .AddDocument("App.cs", SourceText.From("public class App { public int Call(int x) => L.Lib.Twice(x) + 1; }", Encoding.UTF8))
             .Project.Solution;
 
-        (await SymbolAsmAsync("App.Call", solution)).Should().ContainSingle().Which.Asm.Should().NotContain("Not disassembled").And.Contain("ret");
+        (await SymbolAsmAsync("App.Call", solution)).Should().ContainSingle().Which.Asm.Should().Contain("App:Call(int):int:this (FullOpts)");
     }
 
-    // The test assembly serves as a file on disk; its dependencies come from its .deps.json.
+    // The test assembly serves as a file on disk; its dependencies come from its .deps.json. It is a debug build.
     [Test]
     public void AssemblyAsm_DisassemblesFileWithDependencies()
     {
         var assembly = assemblies.Read(typeof(AsmTests).Assembly.Location);
 
         JitDisassembler.Disassemble(assembly, ["TestSolution.Create"]).Should().ContainSingle()
-            .Which.Asm.Should().Contain("unoptimized because the assembly is a debug build").And.Contain("call").And.NotContain("Not disassembled");
+            .Which.Asm.Should().Contain("Roslynaut.Tests.TestSolution:Create(System.String):Microsoft.CodeAnalysis.Solution (MinOpts)");
+    }
+
+    // Framework assemblies are precompiled, and System.Private.CoreLib cannot be loaded twice.
+    [Test]
+    public void AssemblyAsm_DisassemblesCoreLib()
+    {
+        var assembly = assemblies.Read(typeof(object).Assembly.Location);
+
+        JitDisassembler.Disassemble(assembly, ["System.Math.Max"]).Should().NotBeEmpty()
+            .And.OnlyContain(method => method.Asm.Contains("; Assembly listing for method System.Math:Max(") && method.Asm.Contains("(FullOpts)"));
     }
 }
