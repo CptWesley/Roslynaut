@@ -45,7 +45,7 @@ public sealed class FindSymbolsTool(WorkspaceService workspace, ResultCache cach
             () => SearchAsync(solution, matches, scope, kind, cancellationToken));
     }
 
-    private static async Task<IEnumerable<SymbolEntry>> SearchAsync(
+    internal static async Task<IEnumerable<SymbolEntry>> SearchAsync(
         Solution solution, Func<ISymbol, bool> matches, string? scope, SymbolCategory kind, CancellationToken cancellationToken)
     {
         var includeLocals = kind is SymbolCategory.Any or SymbolCategory.Method or SymbolCategory.Variable;
@@ -73,7 +73,7 @@ public sealed class FindSymbolsTool(WorkspaceService workspace, ResultCache cach
             .ToListAsync(cancellationToken);
     }
 
-    private static Func<ISymbol, bool> ParseQuery(string? query)
+    internal static Func<ISymbol, bool> ParseQuery(string? query)
     {
         if (query is null)
             return _ => true;

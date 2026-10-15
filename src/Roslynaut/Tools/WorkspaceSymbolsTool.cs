@@ -20,8 +20,11 @@ public sealed class WorkspaceSymbolsTool(WorkspaceService workspace, ResultCache
         CancellationToken cancellationToken = default)
     {
         var solution = (await workspace.GetAsync(projectPath)).Solution;
-        return await cache.GetPageAsync(solution, $"workspace_symbols|{query}", page, pageSize, async () =>
-            (await SymbolFinder.FindSourceDeclarationsWithPatternAsync(solution, query, SymbolFilter.TypeAndMember, cancellationToken))
-                .Select(symbol => SymbolEntry.From(symbol)));
+        return await cache.GetPageAsync(solution, $"workspace_symbols|{query}", page, pageSize,
+            () => SearchAsync(solution, query, cancellationToken));
     }
+
+    internal static async Task<IEnumerable<SymbolEntry>> SearchAsync(Solution solution, string query, CancellationToken cancellationToken) =>
+        (await SymbolFinder.FindSourceDeclarationsWithPatternAsync(solution, query, SymbolFilter.TypeAndMember, cancellationToken))
+            .Select(symbol => SymbolEntry.From(symbol));
 }
