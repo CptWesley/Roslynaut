@@ -7,6 +7,7 @@ namespace Roslynaut.Tests.Tools;
 [NonParallelizable]
 public class ProcessInspectionTests
 {
+    private readonly PdbService pdbs = new();
     private Process target = null!;
 
     [OneTimeSetUp]
@@ -36,7 +37,7 @@ public class ProcessInspectionTests
         for (var attempt = 0; ; attempt++)
         {
             // Right after it starts, the target has not loaded the runtime yet.
-            var threads = attempt == 40 ? ProcessInspection.Threads(target.Id, maxFrames: 50) : TryThreads();
+            var threads = attempt == 40 ? ProcessInspection.Threads(target.Id, maxFrames: 50, pdbs) : TryThreads();
             if (threads?.Any(thread => thread.Stack.Any(frame => frame.Contains("Thread.Sleep"))) == true || attempt == 40)
                 return threads!;
             await Task.Delay(250);
@@ -47,7 +48,7 @@ public class ProcessInspectionTests
     {
         try
         {
-            return ProcessInspection.Threads(target.Id, maxFrames: 50);
+            return ProcessInspection.Threads(target.Id, maxFrames: 50, pdbs);
         }
         catch (ModelContextProtocol.McpException)
         {
@@ -59,6 +60,14 @@ public class ProcessInspectionTests
     public async Task Threads_ShowCallStacks()
     {
         (await SleepingThreadsAsync()).Should().Contain(thread => thread.Stack.Any(frame => frame.Contains("System.Threading.Thread.Sleep")));
+    }
+
+    // The script host's PDB sits next to it, so its frames have source lines.
+    [Test]
+    public async Task Threads_FramesWithPdb_HaveSourceLines()
+    {
+        (await SleepingThreadsAsync()).SelectMany(thread => thread.Stack)
+            .Should().Contain(frame => frame.Contains("Roslynaut.ScriptHost") && frame.Contains($"{Path.DirectorySeparatorChar}Program.cs:line "));
     }
 
     [Test]

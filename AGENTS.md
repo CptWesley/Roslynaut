@@ -44,6 +44,10 @@ Tests use NUnit with AwesomeAssertions (`.Should()`). Both are global usings.
 - `CodeActionService` collects Roslyn code fixes and refactorings from the Features assemblies and the project's analyzer packages. It remembers them per snapshot so `apply_code_action` can apply them by id.
 - `DebugService` runs one netcoredbg session at a time over DAP (`DapClient`).
 - `NuGetService` reads a project's nuget.config files (sources, source mapping, global packages folder) the way restore does, downloads packages into the global packages folder, and reads restore results (project.assets.json) for the `package_*` and `nuget_config` tools.
+- `PdbService` finds an assembly's portable PDB: next to the assembly, embedded in it, or downloaded from the Microsoft or NuGet symbol server. nuget.org needs the `SymbolChecksum` header. It also fetches the source files that the PDB lists. It tries the source embedded in the PDB first (source generators' output is usually there), then the local file, then the SourceLink URL (https only, no credentials). Each file is checked against the PDB's checksum. Downloads are cached under `%TEMP%/Roslynaut` by PDB id or checksum.
+  - PDB source omits code the compiler synthesizes, IL weaving, and usually the files MSBuild writes to `obj/`. `decompile` stays the view that matches the IL.
+  - `symbol_source`, `definition`, `assembly_sources`, `decompile` (local variable names), `process_threads`, the debug frames and `package_assembly` use it.
+  - Tools without the network (`decompile`, `process_threads`) call `FindPdb`, which only finds PDBs on disk or downloaded earlier.
 
 **Transport.** In stdio mode, stdout carries the MCP protocol, so all logging goes to stderr. Never write to `Console.Out` in the server.
 

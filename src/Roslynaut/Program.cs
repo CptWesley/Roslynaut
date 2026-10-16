@@ -21,6 +21,7 @@ public static class Program
             .AddSingleton<CodeActionService>()
             .AddSingleton<DebugService>()
             .AddSingleton<NuGetService>()
+            .AddSingleton<PdbService>()
             .AddSingleton<IMcpTool, ProjectInfoTool>()
             .AddSingleton<IMcpTool, WorkspaceSymbolsTool>()
             .AddSingleton<IMcpTool, DocumentSymbolsTool>()
@@ -85,6 +86,7 @@ public static class Program
             .AddSingleton<IMcpTool, AssemblyAsmTool>()
             .AddSingleton<IMcpTool, SymbolAsmTool>()
             .AddSingleton<IMcpTool, DecompileTool>()
+            .AddSingleton<IMcpTool, AssemblySourcesTool>()
             .AddSingleton<McpServerService>()
             .BuildServiceProvider();
 

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -21,7 +22,12 @@ public sealed record Breakpoint(string FilePath, int Line, string? Condition = n
 /// <param name="Verified">Whether the debugger could bind the breakpoint to code; Message says why not.</param>
 public sealed record BreakpointState(string FilePath, int Line, bool Verified, string? Message);
 
-public sealed record Frame(string Name, string? FilePath, int Line);
+/// <param name="FilePath">The source file, by the path the PDB records.</param>
+/// <param name="Source">
+/// For a frame in library code, whose FilePath is not on disk, such as "/_/src/Lib/Parser.cs": a local copy of its source, from the PDB or
+/// through SourceLink. Breakpoints still take FilePath.
+/// </param>
+public sealed record Frame(string Name, string? FilePath, int Line, SourceDocument? Source = null);
 
 /// <param name="Reference">Pass to debug_inspect to see what the value contains; 0 if nothing.</param>
 public sealed record Variable(string Name, string Value, string? Type, int Reference);
@@ -36,7 +42,7 @@ public sealed record DebugState(
 /// One debugging session at a time, with netcoredbg over the Debug Adapter Protocol: launches a program, reports where it stops,
 /// resumes and steps it, and inspects its variables.
 /// </summary>
-public sealed class DebugService(WorkspaceService workspace) : IAsyncDisposable
+public sealed class DebugService(WorkspaceService workspace, PdbService pdbs) : IAsyncDisposable
 {
     public const string AdapterVariable = "NETCOREDBG";
 
@@ -53,7 +59,7 @@ public sealed class DebugService(WorkspaceService workspace) : IAsyncDisposable
             await EndAsync();
             var program = await ProgramOfAsync(programPath, cancellationToken);
             var client = new DapClient(FindAdapter(), "--interpreter=vscode");
-            var session = _session = new Session(client);
+            var session = _session = new Session(client, pdbs);
 
             await client.RequestAsync("initialize", new { clientID = "roslynaut", adapterID = "coreclr", linesStartAt1 = true, columnsStartAt1 = true, pathFormat = "path" }, cancellationToken);
             var launch = client.RequestAsync("launch", new
@@ -200,11 +206,16 @@ public sealed class DebugService(WorkspaceService workspace) : IAsyncDisposable
         private readonly TaskCompletionSource _initialized = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly Channel<JsonElement> _stops = Channel.CreateUnbounded<JsonElement>();
         private readonly StringBuilder _output = new();
+
+        // The paths of loaded modules by id, which frames refer to.
+        private readonly ConcurrentDictionary<string, string> _modules = new();
+        private readonly PdbService _pdbs;
         private JsonElement? _exited;
 
-        public Session(DapClient client)
+        public Session(DapClient client, PdbService pdbs)
         {
             Client = client;
+            _pdbs = pdbs;
             _ = Task.Run(PumpAsync);
         }
 
@@ -246,7 +257,8 @@ public sealed class DebugService(WorkspaceService workspace) : IAsyncDisposable
             var description = stop.ValueKind == JsonValueKind.Object ? DapClient.Text(stop, "text") ?? DapClient.Text(stop, "description") : null;
             var stack = await StackAsync(cancellationToken);
             var locals = stack.Count == 0 ? [] : await LocalsAsync(await FrameIdAsync(0, cancellationToken), cancellationToken);
-            return new("Stopped", reason, description, [.. stack.Select(frame => frame.Frame)], locals, null, TakeOutput());
+            var frames = await Task.WhenAll(stack.Select(frame => WithSourceAsync(frame.Frame, frame.Module, cancellationToken)));
+            return new("Stopped", reason, description, frames, locals, null, TakeOutput());
         }
 
         public async Task<int> FrameIdAsync(int frame, CancellationToken cancellationToken)
@@ -269,7 +281,23 @@ public sealed class DebugService(WorkspaceService workspace) : IAsyncDisposable
                 new Variable(DapClient.Text(variable, "name") ?? "", DapClient.Text(variable, "value") ?? "", DapClient.Text(variable, "type"), Reference(variable)))];
         }
 
-        private async Task<List<(int Id, Frame Frame)>> StackAsync(CancellationToken cancellationToken)
+        /// <summary>A frame in a file not on disk, with a local copy of the source its module's PDB leads to.</summary>
+        private async Task<Frame> WithSourceAsync(Frame frame, string? module, CancellationToken cancellationToken)
+        {
+            if (frame.FilePath is not { } path || File.Exists(path) || module is null || !_modules.TryGetValue(module, out var assembly))
+                return frame;
+
+            try
+            {
+                return await _pdbs.FetchAsync(assembly, path, cancellationToken) is { } source ? frame with { Source = source } : frame;
+            }
+            catch (McpException)
+            {
+                return frame;
+            }
+        }
+
+        private async Task<List<(int Id, Frame Frame, string? Module)>> StackAsync(CancellationToken cancellationToken)
         {
             if (ThreadId is null)
                 return [];
@@ -277,7 +305,8 @@ public sealed class DebugService(WorkspaceService workspace) : IAsyncDisposable
             var stack = await Client.RequestAsync("stackTrace", new { threadId = ThreadId, startFrame = 0, levels = MaxFrames }, cancellationToken);
             return [.. stack.GetProperty("stackFrames").EnumerateArray().Select(frame => (
                 frame.GetProperty("id").GetInt32(),
-                new Frame(DapClient.Text(frame, "name") ?? "?", frame.TryGetProperty("source", out var source) ? DapClient.Text(source, "path") : null, frame.GetProperty("line").GetInt32())))];
+                new Frame(DapClient.Text(frame, "name") ?? "?", frame.TryGetProperty("source", out var source) ? DapClient.Text(source, "path") : null, frame.GetProperty("line").GetInt32()),
+                frame.TryGetProperty("moduleId", out var module) ? module.ToString() : null))];
         }
 
         private string TakeOutput()
@@ -308,6 +337,9 @@ public sealed class DebugService(WorkspaceService workspace) : IAsyncDisposable
                         ThreadId = body.TryGetProperty("threadId", out var thread) ? thread.GetInt32() : ThreadId;
                         IsStopped = true;
                         _stops.Writer.TryWrite(body);
+                        break;
+                    case "module" when body.TryGetProperty("module", out var module) && DapClient.Text(module, "path") is { } path:
+                        _modules[module.GetProperty("id").ToString()] = path;
                         break;
                     case "continued":
                         IsStopped = false;

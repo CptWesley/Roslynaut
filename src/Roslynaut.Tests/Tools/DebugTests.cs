@@ -35,7 +35,7 @@ public class DebugTests
     [Test]
     public async Task Session_BreaksInspectsStepsAndExits()
     {
-        await using var debugger = new DebugService(new WorkspaceService());
+        await using var debugger = new DebugService(new WorkspaceService(), new PdbService());
         var wait = TimeSpan.FromSeconds(60);
 
         var state = await debugger.StartAsync(project, [], [new(program, 4)], stopAtEntry: false, stopOnAllExceptions: false, wait, CancellationToken.None);

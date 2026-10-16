@@ -10,6 +10,11 @@ namespace Roslynaut.Tools;
 /// <param name="IL">Max stack, locals, exception handlers and instructions, with source lines as comments when a PDB is available.</param>
 public sealed record MethodIL(string Method, string IL);
 
+/// <param name="Type">The type of the member, or the type itself.</param>
+/// <param name="TypeMethods">The methods of the type.</param>
+/// <param name="Methods">The methods of the member: the same as TypeMethods for a type, none for a field.</param>
+internal sealed record MemberTokens(int Type, IReadOnlyList<int> TypeMethods, IReadOnlyList<int> Methods, bool IsType);
+
 /// <summary>Finds methods in a Cecil module and disassembles them.</summary>
 internal static class IlDisassembler
 {
@@ -57,16 +62,30 @@ internal static class IlDisassembler
     /// </summary>
     public static List<MethodDefinition> FindMethods(ModuleDefinition module, IReadOnlyCollection<string> names)
     {
-        var methods = FindMembers(module, names).SelectMany(member => member switch
-        {
-            TypeDefinition type => type.Methods.Concat(type.NestedTypes.Where(IsGenerated).SelectMany(nested => nested.Methods)),
-            MethodDefinition method => WithGenerated(method),
-            PropertyDefinition property => new[] { property.GetMethod, property.SetMethod }.OfType<MethodDefinition>().SelectMany(WithGenerated),
-            EventDefinition @event => new[] { @event.AddMethod, @event.RemoveMethod }.OfType<MethodDefinition>().SelectMany(WithGenerated),
-            _ => [],
-        }).Distinct().ToList();
+        var methods = FindMembers(module, names).SelectMany(MethodsOf).Distinct().ToList();
         return methods.Count > 0 ? methods : throw new McpException($"{string.Join(", ", names)} has no code in {module.Name}: fields have none.");
     }
+
+    /// <summary>
+    /// Metadata tokens of a member's methods and of its type's methods, each with their compiler-generated helpers: where a PDB places
+    /// the member's code. Lock the module while calling this.
+    /// </summary>
+    public static MemberTokens TokensOf(IMemberDefinition member)
+    {
+        var type = member as TypeDefinition ?? member.DeclaringType;
+        List<int> Tokens(IMemberDefinition of) => [.. MethodsOf(of).Distinct().Select(method => method.MetadataToken.ToInt32())];
+        var typeMethods = Tokens(type);
+        return new(type.MetadataToken.ToInt32(), typeMethods, member is TypeDefinition ? typeMethods : Tokens(member), member is TypeDefinition);
+    }
+
+    private static IEnumerable<MethodDefinition> MethodsOf(IMemberDefinition member) => member switch
+    {
+        TypeDefinition type => type.Methods.Concat(type.NestedTypes.Where(IsGenerated).SelectMany(nested => nested.Methods)),
+        MethodDefinition method => WithGenerated(method),
+        PropertyDefinition property => new[] { property.GetMethod, property.SetMethod }.OfType<MethodDefinition>().SelectMany(WithGenerated),
+        EventDefinition @event => new[] { @event.AddMethod, @event.RemoveMethod }.OfType<MethodDefinition>().SelectMany(WithGenerated),
+        _ => [],
+    };
 
     private static IEnumerable<IMemberDefinition> Find(List<TypeDefinition> types, string name)
     {

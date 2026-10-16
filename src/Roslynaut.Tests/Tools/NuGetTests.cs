@@ -136,7 +136,7 @@ public class NuGetTests
     [Test]
     public async Task Assembly_DownloadsThePackage_AndPicksAssembliesPerFramework()
     {
-        var package = await PackageAssemblyTool.GetAsync(nuget, app, Id, "1.0.0", [Net10, NuGetFramework.Parse("net48")], CancellationToken.None);
+        var package = await PackageAssemblyTool.GetAsync(nuget, new PdbService(), app, Id, "1.0.0", [Net10, NuGetFramework.Parse("net48")], CancellationToken.None);
 
         package.Readme.Should().Match(path => path.EndsWith("README.md") && File.Exists(path));
         package.Frameworks.Should().Equal("net10.0");
@@ -144,6 +144,10 @@ public class NuGetTests
         package.Assemblies[0].Should().Match<FrameworkAssemblies>(assemblies => assemblies.TargetFramework == "net10.0" && assemblies.PackageFramework == "net10.0");
         package.Assemblies[0].Paths.Should().ContainSingle().Which.Should().Match(path => File.Exists(path) && File.Exists(Path.ChangeExtension(path, ".xml")));
         package.Assemblies[1].Should().Be(new FrameworkAssemblies("net48", null, []));
+
+        // Packing leaves the PDB out, and no symbol server has it.
+        package.Symbols.Should().ContainSingle().Which.Should().Match<AssemblySymbols>(symbols =>
+            symbols.Path == package.Assemblies[0].Paths[0] && symbols.Deterministic && symbols.Pdb == null && symbols.SourceLink == null);
     }
 
     [Test]
