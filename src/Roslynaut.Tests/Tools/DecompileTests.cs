@@ -26,6 +26,22 @@ public class DecompileTests
             .Which.Code.Should().Contain("public static string PathOf(SymbolEntry entry)").And.NotContain("Create(");
     }
 
+    [Test]
+    public void Decompile_LeavesReferencedAssembliesUnlocked()
+    {
+        // Copies, so the reference resolves next to the assembly; PathOf takes a SymbolEntry of Roslynaut.dll.
+        var directory = Directory.CreateTempSubdirectory("roslynaut-decompile-");
+        foreach (var assembly in new[] { typeof(DecompileTests).Assembly, typeof(SymbolEntry).Assembly })
+            File.Copy(assembly.Location, Path.Combine(directory.FullName, Path.GetFileName(assembly.Location)));
+
+        DecompileTool.Decompile(assemblies.Read(Path.Combine(directory.FullName, "Roslynaut.Tests.dll")), ["TestSolution.PathOf"]).Should().ContainSingle()
+            .Which.Code.Should().Contain("SymbolEntry entry");
+
+        // A build that writes the referenced project's output again must be able to.
+        File.WriteAllBytes(Path.Combine(directory.FullName, "Roslynaut.dll"), []);
+        directory.Delete(recursive: true);
+    }
+
     // The IL and native code tools take properties too, by their accessors.
     [Test]
     public void FindMethods_OfProperty_AreItsAccessors()

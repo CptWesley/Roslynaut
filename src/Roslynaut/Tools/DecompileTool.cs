@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
+using System.Reflection.PortableExecutable;
 using ICSharpCode.Decompiler;
 using ICSharpCode.Decompiler.CSharp;
 using ICSharpCode.Decompiler.DebugInfo;
@@ -41,10 +42,12 @@ public sealed class DecompileTool(AssemblyLoader assemblies, PdbService pdbs, Re
         lock (assembly.Module)
             members = [.. IlDisassembler.FindMembers(assembly.Module, names).Select(member => (member.FullName, member.MetadataToken.ToInt32()))];
 
-        // From bytes, so the file stays unlocked. References resolve next to it, from the NuGet cache, or from installed frameworks.
+        // From bytes, so the file stays unlocked. References resolve next to it, from the NuGet cache, or from installed frameworks, read whole
+        // into memory too: by default the resolver keeps them open, and a build cannot write a referenced project's output.
         var path = assembly.Path.Value;
         using var file = new ICSharpCode.Decompiler.Metadata.PEFile(path, new MemoryStream(File.ReadAllBytes(path)));
-        var decompiler = new CSharpDecompiler(file, new UniversalAssemblyResolver(path, throwOnError: false, file.DetectTargetFrameworkId()), new DecompilerSettings())
+        var resolver = new UniversalAssemblyResolver(path, throwOnError: false, file.DetectTargetFrameworkId(), streamOptions: PEStreamOptions.PrefetchEntireImage);
+        var decompiler = new CSharpDecompiler(file, resolver, new DecompilerSettings())
         {
             DebugInfoProvider = pdb is null ? null : new DebugInfo(pdb),
         };
