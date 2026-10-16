@@ -68,6 +68,7 @@ public static class Program
             .AddSingleton<IMcpTool, PreviewEditTool>()
             .AddSingleton<IMcpTool, BuildTool>()
             .AddSingleton<IMcpTool, FindTestsTool>()
+            .AddSingleton<IMcpTool, AffectedTestsTool>()
             .AddSingleton<IMcpTool, RunTestsTool>()
             .AddSingleton<IMcpTool, MsBuildEvaluateTool>()
             .AddSingleton<IMcpTool, ProjectGraphTool>()

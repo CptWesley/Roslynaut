@@ -46,7 +46,10 @@ public sealed class CodeActionService
         var actions = _actions.GetOrCreateValue(document.Project.Solution);
         return
         [
-            .. found.SelectMany(entry => Flatten(entry.Action, "").Select(action => (action.Action, action.Title, entry.DiagnosticId))).Select(entry =>
+            // Actions with options, such as "Change signature..." or "Extract interface...", ask an IDE dialog for them; this workspace has none.
+            .. found.SelectMany(entry => Flatten(entry.Action, "").Select(action => (action.Action, action.Title, entry.DiagnosticId)))
+                .Where(entry => entry.Action is not CodeActionWithOptions)
+                .Select(entry =>
             {
                 var id = Interlocked.Increment(ref _lastId).ToString();
                 actions[id] = entry.Action;

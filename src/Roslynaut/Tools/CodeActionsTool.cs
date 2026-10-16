@@ -10,22 +10,38 @@ public sealed class CodeActionsTool(WorkspaceService workspace, CodeActionServic
     public Delegate Handler => FindCodeActionsAsync;
 
     [McpServerTool(Name = "code_actions", ReadOnly = true)]
-    [Description("Lists the code fixes for the diagnostics at a position or line and the refactorings available there, like an IDE's light bulb: "
-        + "add a using, implement an interface, generate a method, fix a warning, and so on. Apply one with apply_code_action. Paged.")]
+    [Description("Lists the code fixes for the diagnostics at a position, line or selection and the refactorings available there, like an IDE's "
+        + "light bulb: add a using, implement an interface, generate a method, extract a method from the selected statements, introduce a local for "
+        + "the selected expression, fix a warning, and so on. Apply one with apply_code_action. Refactorings that need an IDE dialog, such as "
+        + "change signature or extract interface, are left out. Paged.")]
     private async Task<PagedResult<CodeActionEntry>> FindCodeActionsAsync(
         [Description(ToolDefaults.ProjectPath)] string projectPath,
         [Description(ToolDefaults.FilePath)] string filePath,
         [Description(ToolDefaults.Line)] int line,
         [Description("Optional 1-based column; without it, the whole line counts.")] int? column = null,
+        [Description("Optional 1-based last line of a selection, such as the statements to extract into a method.")] int? endLine = null,
+        [Description("Optional 1-based column where the selection ends, exclusive; without it, the selection runs to the end of endLine.")] int? endColumn = null,
         [Description(ToolDefaults.Page)] int page = 0,
         [Description(ToolDefaults.PageSize)] int pageSize = ToolDefaults.DefaultPageSize,
         CancellationToken cancellationToken = default)
     {
         var document = await workspace.GetDocumentAsync(projectPath, filePath);
         var text = await document.GetTextAsync(cancellationToken);
-        var span = column is null ? WorkspaceService.LinesOf(text, line, line, filePath) : new TextSpan(WorkspaceService.PositionOf(text, line, column.Value, filePath), 0);
-        return await cache.GetPageAsync<CodeActionEntry>(document.Project.Solution, $"code_actions|{filePath}|{line}|{column}", page, pageSize,
+        var span = SpanOf(text, filePath, line, column, endLine ?? (endColumn is null ? null : line), endColumn);
+        return await cache.GetPageAsync<CodeActionEntry>(document.Project.Solution, $"code_actions|{filePath}|{span}", page, pageSize,
             async () => await codeActions.FindAsync(document, span, cancellationToken));
+    }
+
+    /// <summary>A selection from line:column to endLine:endColumn; a whole line without a column; a point without an end.</summary>
+    internal static TextSpan SpanOf(SourceText text, string filePath, int line, int? column, int? endLine, int? endColumn)
+    {
+        if (endLine is null)
+            return column is null ? WorkspaceService.LinesOf(text, line, line, filePath) : new TextSpan(WorkspaceService.PositionOf(text, line, column.Value, filePath), 0);
+
+        var lines = WorkspaceService.LinesOf(text, line, endLine.Value, filePath);
+        var start = column is null ? lines.Start : WorkspaceService.PositionOf(text, line, column.Value, filePath);
+        var end = endColumn is null ? lines.End : WorkspaceService.PositionOf(text, endLine.Value, endColumn.Value, filePath);
+        return end >= start ? TextSpan.FromBounds(start, end) : throw new McpException("The selection ends before it starts.");
     }
 }
 

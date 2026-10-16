@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Microsoft.Diagnostics.NETCore.Client;
 using Roslynaut.Tools;
 
 namespace Roslynaut.Tests.Tools;
@@ -37,7 +38,7 @@ public class ProcessInspectionTests
         for (var attempt = 0; ; attempt++)
         {
             // Right after it starts, the target has not loaded the runtime yet.
-            var threads = attempt == 40 ? ProcessInspection.Threads(target.Id, maxFrames: 50, pdbs) : TryThreads();
+            var threads = attempt == 40 ? ProcessInspection.Threads(target.Id, null, maxFrames: 50, pdbs) : TryThreads();
             if (threads?.Any(thread => thread.Stack.Any(frame => frame.Contains("Thread.Sleep"))) == true || attempt == 40)
                 return threads!;
             await Task.Delay(250);
@@ -48,7 +49,7 @@ public class ProcessInspectionTests
     {
         try
         {
-            return ProcessInspection.Threads(target.Id, maxFrames: 50, pdbs);
+            return ProcessInspection.Threads(target.Id, null, maxFrames: 50, pdbs);
         }
         catch (ModelContextProtocol.McpException)
         {
@@ -75,10 +76,29 @@ public class ProcessInspectionTests
     {
         await SleepingThreadsAsync();
 
-        var heap = ProcessInspection.Heap(target.Id, null, top: 1000);
+        var heap = ProcessInspection.Heap(target.Id, null, null, top: 1000);
         heap.Objects.Should().BePositive();
         heap.Types.Should().Contain(type => type.Type == "System.String" && type.Count > 0);
-        ProcessInspection.Heap(target.Id, new("^System\\.String$"), top: 10).Types.Should().ContainSingle();
+        ProcessInspection.Heap(target.Id, null, new("^System\\.String$"), top: 10).Types.Should().ContainSingle();
+    }
+
+    [Test]
+    public async Task Dump_HasThreadsAndHeap()
+    {
+        await SleepingThreadsAsync();
+        var dump = Path.Combine(Path.GetTempPath(), $"roslynaut-{Guid.NewGuid():N}.dmp");
+        try
+        {
+            new DiagnosticsClient(target.Id).WriteDump(DumpType.WithHeap, dump);
+
+            ProcessInspection.Threads(null, dump, maxFrames: 50, pdbs)
+                .Should().Contain(thread => thread.Stack.Any(frame => frame.Contains("System.Threading.Thread.Sleep")));
+            ProcessInspection.Heap(null, dump, new("^System\\.String$"), top: 10).Types.Should().ContainSingle(type => type.Count > 0);
+        }
+        finally
+        {
+            File.Delete(dump);
+        }
     }
 
     [Test]

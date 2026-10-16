@@ -47,3 +47,37 @@ public class WorkspaceServiceTests
         }
     }
 }
+
+[NonParallelizable]
+public class WorkspaceLoadErrorTests
+{
+    // A project whose design-time build fails before the compiler loads with no sources; its errors say why.
+    [Test]
+    public async Task Load_FailingProject_ReportsItsErrors()
+    {
+        var directory = Directory.CreateTempSubdirectory("roslynaut-broken-");
+        try
+        {
+            var project = Path.Combine(directory.FullName, "Broken.csproj");
+            File.WriteAllText(project, """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>
+                  <Target Name="Break" BeforeTargets="CoreCompile"><Error Code="BRK001" Text="Broken on purpose." /></Target>
+                </Project>
+                """);
+            var file = Path.Combine(directory.FullName, "Code.cs");
+            File.WriteAllText(file, "class Code { }");
+
+            var service = new WorkspaceService();
+            var loaded = await service.GetAsync(project);
+
+            Roslynaut.Tools.ProjectInfoTool.Summarize(loaded).Should().ContainSingle().Which.LoadErrors.Should().Equal("BRK001: Broken on purpose.");
+            await service.Awaiting(service => service.GetDocumentAsync(project, file))
+                .Should().ThrowAsync<ModelContextProtocol.McpException>().WithMessage("*did not load*Broken on purpose*");
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
+    }
+}

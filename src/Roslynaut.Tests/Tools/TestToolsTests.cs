@@ -34,6 +34,83 @@ public class TestToolsTests
             "FullyQualifiedName~App.Tests.CalcTests+Nested.Inner");
     }
 
+    // Line 3 holds both Calc members, line 10 Helper, and lines 7 and 13 the braces of the test class, which change no member.
+    [TestCase(new[] { 10 }, new[] { "Helper" }, "FullyQualifiedName~App.Tests.CalcTests.AddsThroughHelper")]
+    [TestCase(new[] { 3 }, new[] { "Add", "Twice" }, "FullyQualifiedName~App.Tests.CalcTests.AddsDirectly|FullyQualifiedName~App.Tests.CalcTests.AddsThroughHelper")]
+    [TestCase(new[] { 7, 13 }, new string[0], null)]
+    public async Task AffectedTests_MapChangedLinesToMembersAndTests(int[] lines, string[] members, string? filter)
+    {
+        var path = Path.GetFullPath("Test.cs");
+        var solution = Tests.WithDocumentFilePath(Tests.Projects.Single().DocumentIds.Single(), path);
+
+        var affected = await AffectedTestsTool.FindAsync(solution, new Dictionary<string, IReadOnlyCollection<int>?> { [path] = lines }, CancellationToken.None);
+
+        affected.ChangedMembers.Select(member => member.Name).Should().BeEquivalentTo(members);
+        affected.Filter?.Split('|').Should().BeEquivalentTo(filter?.Split('|'));
+        (affected.Filter is null).Should().Be(filter is null);
+    }
+
+    [Test]
+    public async Task ChangedLines_FromGit_IncludeUntrackedFiles()
+    {
+        var directory = Directory.CreateTempSubdirectory("roslynaut-git-");
+        try
+        {
+            async Task Git(params string[] arguments) =>
+                (await DotnetCli.RunAsync("git", ["-C", directory.FullName, .. arguments], TimeSpan.FromMinutes(1), CancellationToken.None)).ExitCode.Should().Be(0);
+
+            var (changed, added) = (Path.Combine(directory.FullName, "Changed.cs"), Path.Combine(directory.FullName, "Added.cs"));
+            File.WriteAllText(changed, "class A\n{\n    int X;\n}\n");
+            await Git("init", "-q");
+            await Git("add", ".");
+            await Git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "-m", "Initial");
+            File.WriteAllText(changed, "class A\n{\n    int Y;\n}\n");
+            File.WriteAllText(added, "class B { }\n");
+
+            var changes = await AffectedTestsTool.ChangedLinesAsync(directory.FullName, "HEAD", CancellationToken.None);
+
+            changes.Should().HaveCount(2);
+            changes[changed].Should().Equal(3);
+            changes[added].Should().BeNull();
+        }
+        finally
+        {
+            // git marks its object files read-only.
+            foreach (var file in directory.EnumerateFiles("*", SearchOption.AllDirectories))
+                file.Attributes = FileAttributes.Normal;
+            directory.Delete(recursive: true);
+        }
+    }
+
+    [Test]
+    public void ParseDiff_TakesTheNewLines_AndSkipsDeletedFiles()
+    {
+        var root = Path.GetTempPath();
+        var changes = AffectedTestsTool.ParseDiff(root, """
+            diff --git a/src/A.cs b/src/A.cs
+            --- a/src/A.cs
+            +++ b/src/A.cs
+            @@ -3,0 +4,2 @@ class A
+            +x
+            +y
+            @@ -10 +12 @@
+            -a
+            +b
+            @@ -20,2 +21,0 @@
+            -c
+            -d
+            diff --git a/Old.cs b/Old.cs
+            deleted file mode 100644
+            --- a/Old.cs
+            +++ /dev/null
+            @@ -1 +0,0 @@
+            -gone
+            """);
+
+        changes.Should().ContainSingle().Which.Should().Match<KeyValuePair<string, IReadOnlyCollection<int>?>>(change =>
+            change.Key == Path.GetFullPath(Path.Combine(root, "src", "A.cs")) && change.Value!.Order().SequenceEqual(new[] { 4, 5, 12, 21, 22 }));
+    }
+
     [Test]
     public async Task FindTests_UsingSymbol_FollowsCallers()
     {
@@ -123,6 +200,14 @@ public class BuildAndRunTestsTests
         var run = await RunTestsTool.RunTestsAsync(project, "FullyQualifiedName~Sample.SampleTests.Passes");
 
         (run.Succeeded, run.Total, run.Passed).Should().Be((true, 1, 1));
+    }
+
+    [Test]
+    public async Task RunTests_WithCoverage_ReportsLinesNotRun()
+    {
+        var run = await RunTestsTool.RunTestsAsync(project, coverage: true);
+
+        run.Coverage.Should().ContainSingle(file => file.File.EndsWith("SampleTests.cs")).Which.NotCovered.Should().Be("9");
     }
 
     [Test]

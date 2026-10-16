@@ -42,6 +42,38 @@ public class CodeActionTests
         (await changed.Projects.Single().Documents.Single().GetTextAsync()).ToString().Should().Contain("if (!b)");
     }
 
+    [Test]
+    public async Task Selection_OffersExtractMethod()
+    {
+        const string code = """
+            class C
+            {
+                int M(int a)
+                {
+                    var b = a + 1;
+                    var c = b * 2;
+                    return c;
+                }
+            }
+            """;
+        var solution = TestSolution.Create(code);
+        var document = solution.Projects.Single().Documents.Single();
+        var span = CodeActionsTool.SpanOf(await document.GetTextAsync(), "Test.cs", line: 5, column: null, endLine: 6, endColumn: null);
+
+        var extract = (await codeActions.FindAsync(document, span, CancellationToken.None)).Should().Contain(action => action.Title == "Extract method").Subject;
+        var (_, changed) = await codeActions.ApplyAsync(solution, extract.Id, CancellationToken.None);
+        (await changed.Projects.Single().Documents.Single().GetTextAsync()).ToString().Should().Contain("NewMethod(a)");
+    }
+
+    // They need an IDE dialog for their options, so applying them would fail.
+    [Test]
+    public async Task ActionsWithOptions_AreLeftOut()
+    {
+        var (_, actions) = await FindAsync("class C { public void M(int a, int b) { } void N() { M(1, 2); } }", "M(int");
+
+        actions.Should().NotBeEmpty().And.NotContain(action => action.Title.StartsWith("Change signature"));
+    }
+
     // Ids belong to the snapshot they were found for; once the code changes, they are gone.
     [Test]
     public async Task Apply_OnOtherSnapshot_Throws()

@@ -4,6 +4,7 @@ using System.Text;
 using Buildalyzer;
 using Buildalyzer.Environment;
 using Buildalyzer.IO;
+using Microsoft.Build.Framework;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Diagnostics;
@@ -19,7 +20,16 @@ using Roslynaut.Tools;
 namespace Roslynaut;
 
 /// <summary>A Roslyn solution plus the MSBuild design-time build results it was created from.</summary>
-public sealed record LoadedWorkspace(Solution Solution, IReadOnlyList<IAnalyzerResult> Results);
+/// <param name="LoadErrors">
+/// The MSBuild errors of the projects whose design-time build gave no compiler command line, by project path. Such a project has no sources,
+/// so without these errors it just looks empty.
+/// </param>
+public sealed record LoadedWorkspace(Solution Solution, IReadOnlyList<IAnalyzerResult> Results, IReadOnlyDictionary<string, IReadOnlyList<string>> LoadErrors)
+{
+    /// <summary>A sentence on the projects that did not load, to add to errors they may explain; empty if all loaded.</summary>
+    public string LoadErrorNote => LoadErrors.Count == 0 ? "" :
+        $" These projects did not load: {string.Join("; ", LoadErrors.Select(project => $"{project.Key}: {string.Join(" ", project.Value)}"))}";
+}
 
 /// <summary>
 /// Loads projects and solutions through Buildalyzer and keeps the resulting Roslyn workspaces in sync with the file system:
@@ -39,8 +49,18 @@ public sealed class WorkspaceService
         return Task.Run(workspace.Sync);
     }
 
-    public async Task<Document> GetDocumentAsync(string projectPath, string filePath) =>
-        GetDocument((await GetAsync(projectPath)).Solution, filePath);
+    public async Task<Document> GetDocumentAsync(string projectPath, string filePath)
+    {
+        var loaded = await GetAsync(projectPath);
+        try
+        {
+            return GetDocument(loaded.Solution, filePath);
+        }
+        catch (McpException e) when (loaded.LoadErrors.Count > 0)
+        {
+            throw new McpException(e.Message + loaded.LoadErrorNote);
+        }
+    }
 
     public static Document GetDocument(Solution solution, string filePath)
     {
@@ -362,15 +382,19 @@ public sealed class WorkspaceService
         // Like Buildalyzer's own GetWorkspace: builds run in parallel and take the first target framework of each project.
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var results = new List<IAnalyzerResult>();
+        var errors = new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase);
         var pending = (isSolution ? manager.Projects.Keys : [path]).Where(seen.Add).ToList();
         while (pending.Count > 0)
         {
             var built = pending.AsParallel()
-                .Select(project => manager.GetProject(IOPath.Parse(project)) is { } analyzer ? Build(analyzer, options) : null)
-                .OfType<IAnalyzerResult>()
+                .Select(project => (Path: project, Build: Build(manager.GetProject(IOPath.Parse(project)), options)))
                 .ToList();
-            results.AddRange(built);
-            pending = built.SelectMany(result => result.ProjectReferences).Select(Path.GetFullPath).Where(seen.Add).ToList();
+            foreach (var (project, (_, projectErrors)) in built.Where(project => project.Build.Result is not { CompilerArguments.Length: > 0 } && LanguageOf(project.Path) is not null))
+                errors[project] = projectErrors.Count > 0 ? projectErrors : ["The design-time build gave no compiler command line."];
+
+            var analyzed = built.Select(project => project.Build.Result).OfType<IAnalyzerResult>().ToList();
+            results.AddRange(analyzed);
+            pending = analyzed.SelectMany(result => result.ProjectReferences).Select(Path.GetFullPath).Where(seen.Add).ToList();
         }
 
         var projects = results.Where(result => LanguageOf(result.ProjectFilePath) is not null)
@@ -388,7 +412,7 @@ public sealed class WorkspaceService
         var workspace = new SettableWorkspace();
         var loader = workspace.Services.GetRequiredService<IAnalyzerService>().GetLoader();
         workspace.Set(projects.Aggregate(workspace.CurrentSolution, (solution, project) => solution.AddProject(ProjectOf(project.Result, project.Id, outputs, loader))));
-        return new(workspace.CurrentSolution, results);
+        return new(workspace.CurrentSolution, results, errors);
     }
 
     private static string? LanguageOf(string projectPath) => Path.GetExtension(projectPath).ToLowerInvariant() switch
@@ -442,13 +466,22 @@ public sealed class WorkspaceService
     /// builds as the outer build, which only dispatches to a build per framework and has no Compile target. The frameworks can come from an
     /// import, which Buildalyzer's project file reader misses, so take them from that first build.
     /// </summary>
-    private static IAnalyzerResult? Build(IProjectAnalyzer analyzer, EnvironmentOptions options)
+    /// <returns>The result, and the build's errors if it gave no compiler command line, such as when restore did not run.</returns>
+    /// <param name="analyzer">Null for a project of a solution that is missing on disk.</param>
+    private static (IAnalyzerResult? Result, IReadOnlyList<string> Errors) Build(IProjectAnalyzer? analyzer, EnvironmentOptions options)
     {
-        var result = analyzer.Build(options).FirstOrDefault();
-        return result is { CompilerArguments.Length: 0 }
-            && result.GetProperty("TargetFrameworks")?.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries) is [var framework, ..]
-            ? analyzer.Build(framework, options).FirstOrDefault()
-            : result;
+        if (analyzer is null)
+            return (null, ["The project file does not exist."]);
+
+        var results = analyzer.Build(options);
+        if (results.FirstOrDefault() is { CompilerArguments.Length: 0 } outer
+            && outer.GetProperty("TargetFrameworks")?.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries) is [var framework, ..])
+            results = analyzer.Build(framework, options);
+
+        var result = results.FirstOrDefault();
+        return (result, result is { CompilerArguments.Length: > 0 }
+            ? []
+            : [.. results.BuildEventArguments.OfType<BuildErrorEventArgs>().Select(error => error.Code is { Length: > 0 } ? $"{error.Code}: {error.Message}" : $"{error.Message}").Distinct()]);
     }
 }
 

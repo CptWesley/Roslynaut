@@ -11,9 +11,14 @@ internal static class DotnetCli
 
     /// <summary>Returns the exit code and the combined standard output and error.</summary>
     /// <param name="input">What to write to standard input, if anything.</param>
-    public static async Task<(int ExitCode, string Output)> RunAsync(IReadOnlyList<string> arguments, TimeSpan timeout, CancellationToken cancellationToken, string? input = null)
+    public static Task<(int ExitCode, string Output)> RunAsync(IReadOnlyList<string> arguments, TimeSpan timeout, CancellationToken cancellationToken, string? input = null) =>
+        RunAsync(Executable, arguments, timeout, cancellationToken, input);
+
+    /// <summary>Runs another executable, such as git, the same way.</summary>
+    public static async Task<(int ExitCode, string Output)> RunAsync(
+        string executable, IReadOnlyList<string> arguments, TimeSpan timeout, CancellationToken cancellationToken, string? input = null)
     {
-        var start = new ProcessStartInfo(Executable)
+        var start = new ProcessStartInfo(executable)
         {
             RedirectStandardInput = input is not null,
             RedirectStandardOutput = true,
@@ -25,7 +30,7 @@ internal static class DotnetCli
         foreach (var argument in arguments)
             start.ArgumentList.Add(argument);
 
-        using var process = Process.Start(start)!;
+        using var process = Start(start);
         if (input is not null)
         {
             await process.StandardInput.WriteAsync(input);
@@ -42,12 +47,25 @@ internal static class DotnetCli
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            throw new McpException($"dotnet {arguments[0]} did not finish within {timeout}.");
+            throw new McpException($"{Path.GetFileNameWithoutExtension(executable)} {arguments[0]} did not finish within {timeout}.");
         }
         finally
         {
             if (!process.HasExited)
                 process.Kill(entireProcessTree: true);
+        }
+
+        // An executable that is not on the PATH.
+        static Process Start(ProcessStartInfo start)
+        {
+            try
+            {
+                return Process.Start(start)!;
+            }
+            catch (System.ComponentModel.Win32Exception e)
+            {
+                throw new McpException($"Cannot run {start.FileName}: {e.Message}");
+            }
         }
     }
 }
