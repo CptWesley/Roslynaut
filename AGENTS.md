@@ -32,7 +32,8 @@ Tests use NUnit with AwesomeAssertions (`.Should()`). Both are global usings.
 
 **WorkspaceService.** It loads a `.csproj`/`.sln`/`.slnx` through Buildalyzer design-time builds and caches one tracked workspace per path.
 - It builds the `Compile` target, not Buildalyzer's default `Clean;Build`, which would delete build output. It follows project references level by level.
-- Buildalyzer drops some compiler settings: NoWarn, WarningsAsErrors, .editorconfig/.globalconfig, the default namespace and document folders. `Load` re-applies them from the real compiler command line.
+- A project with `TargetFrameworks` (even one, even from an import) builds as the outer build, which has no `Compile` target. `Build` then builds it again for the first framework.
+- Buildalyzer keeps few compiler settings (not even AllowUnsafeBlocks, NoWarn or the parser's features), no .editorconfig/.globalconfig, no default namespace and no document folders. `Load` takes the compilation and parse options and analyzer configuration from the real compiler command line, and drops project references whose output the compiler does not get (`ReferenceOutputAssembly="false"`, such as source generators).
 - `FileSystemWatcher`s queue `.cs` changes, and `GetAsync` applies them on the next call. Any change to a build file (`.csproj`, `.props`, `.targets`, `.sln(x)`, `.editorconfig`, `.globalconfig`) reloads everything.
 - Editing tools never mutate the workspace directly. They compute a new `Solution` and call `WorkspaceService.WriteChangesAsync(before, after)`, which writes files to disk and keeps each file's BOM encoding. The watchers then bring the changes back in.
 

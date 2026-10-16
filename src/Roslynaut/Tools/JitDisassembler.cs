@@ -14,7 +14,8 @@ public sealed record MethodAsm(string Method, string Asm);
 /// </summary>
 internal static class JitDisassembler
 {
-    public const string ResultDescription = "The code comes from the JIT of the server's .NET runtime, fully optimized, for this machine's CPU. "
+    public const string ResultDescription = "The code comes from the JIT of the server's .NET runtime (the newest installed one for assemblies built "
+        + "for a later .NET), fully optimized, for this machine's CPU. "
         + "Assemblies built for debugging compile unoptimized (MinOpts). Generic code is shown for reference-type arguments, as the code they all share "
         + "(System.__Canon). " + IlDisassembler.ResultDescription;
 
@@ -26,6 +27,7 @@ internal static class JitDisassembler
     public static List<MethodAsm> Disassemble(LoadedAssembly assembly, IReadOnlyCollection<string> names)
     {
         List<Method> methods;
+        int? runtimeVersion;
         lock (assembly.Module)
         {
             methods = [.. IlDisassembler.FindMethods(assembly.Module, names).Select(method => new Method(
@@ -34,12 +36,19 @@ internal static class JitDisassembler
                 // As the JIT names methods in its listings, without generic arguments.
                 $"{method.DeclaringType.FullName.Replace('/', '+')}:{method.Name}",
                 $"*{method.DeclaringType.Name}*:{method.Name}"))];
+
+            // The .NET an assembly is built for: the version of the System.Runtime it references. Framework assemblies reference
+            // System.Private.CoreLib instead, or are it.
+            var module = assembly.Module;
+            runtimeVersion = (module.Assembly.Name.Name == "System.Private.CoreLib"
+                ? module.Assembly.Name
+                : module.AssemblyReferences.FirstOrDefault(reference => reference.Name is "System.Runtime" or "System.Private.CoreLib"))?.Version.Major;
         }
 
         var listingFile = Path.GetTempFileName();
         try
         {
-            var (runtime, errors) = RunHost(assembly, methods, listingFile);
+            var (runtime, errors) = RunHost(assembly, methods, listingFile, runtimeVersion > Environment.Version.Major);
 
             // Every method is compiled once, in the order given, so overloads get their listings in that order too.
             var listings = File.ReadAllText(listingFile).Split(ListingStart).Skip(1)
@@ -58,7 +67,8 @@ internal static class JitDisassembler
         }
     }
 
-    private static (string Runtime, Dictionary<int, string> Errors) RunHost(LoadedAssembly assembly, List<Method> methods, string listingFile)
+    /// <param name="newerRuntime">Whether the assembly is built for a newer .NET than the server's, which cannot load it.</param>
+    private static (string Runtime, Dictionary<int, string> Errors) RunHost(LoadedAssembly assembly, List<Method> methods, string listingFile, bool newerRuntime)
     {
         if (!File.Exists(HostPath))
             throw new McpException($"The JIT host is missing: {HostPath}");
@@ -82,6 +92,14 @@ internal static class JitDisassembler
         // The host runs on the same framework, so it uses its own copy of framework assemblies, which are precompiled.
         if (path.StartsWith(FrameworkDirectory, StringComparison.OrdinalIgnoreCase))
             start.Environment["DOTNET_ReadyToRun"] = "0";
+
+        // ponytail: the newest installed runtime, previews included, not the one the assembly is built for; pick that with a generated
+        // runtimeconfig.json if listings of a later .NET mislead. (--fx-version does not work: the host also needs ASP.NET Core of its own version.)
+        if (newerRuntime)
+        {
+            start.Environment["DOTNET_ROLL_FORWARD"] = "LatestMajor";
+            start.Environment["DOTNET_ROLL_FORWARD_TO_PRERELEASE"] = "1";
+        }
 
         using var host = Process.Start(start)!;
         host.StandardInput.Write(string.Concat(assembly.Dependencies.Value.Select(dependency => $"{dependency.Key}\t{dependency.Value}\n")));

@@ -366,39 +366,63 @@ public sealed class WorkspaceService
         while (pending.Count > 0)
         {
             var built = pending.AsParallel()
-                .Select(project => manager.GetProject(IOPath.Parse(project))?.Build(options).FirstOrDefault())
+                .Select(project => manager.GetProject(IOPath.Parse(project)) is { } analyzer ? Build(analyzer, options) : null)
                 .OfType<IAnalyzerResult>()
                 .ToList();
             results.AddRange(built);
             pending = built.SelectMany(result => result.ProjectReferences).Select(Path.GetFullPath).Where(seen.Add).ToList();
         }
 
+        // Add all projects first: adding a project also adds the references of projects added before to it.
         var workspace = new SettableWorkspace();
-        foreach (var result in results)
+        var added = results.Select(result => (Result: result, result.AddToWorkspace(workspace)?.Id)).ToList();
+        var solution = workspace.CurrentSolution;
+        foreach (var (result, id) in added)
         {
-            var project = result.AddToWorkspace(workspace);
-            if (project?.Language != LanguageNames.CSharp || result.CompilerArguments.Length == 0)
+            if (solution.GetProject(id) is not { Language: LanguageNames.CSharp } project || result.CompilerArguments.Length == 0)
                 continue;
 
-            // Buildalyzer ignores NoWarn, WarningsAsErrors and analyzer configuration (.editorconfig, .globalconfig);
-            // take those from the real compiler command line.
+            // Buildalyzer keeps few compiler options (not even AllowUnsafeBlocks, NoWarn, or the parser's documentation mode and features),
+            // and no analyzer configuration (.editorconfig, .globalconfig): take those from the real compiler command line.
             var arguments = CSharpCommandLineParser.Default.Parse(result.CompilerArguments, Path.GetDirectoryName(result.ProjectFilePath), sdkDirectory: null);
-            var compilationOptions = project.CompilationOptions!
-                .WithSpecificDiagnosticOptions(arguments.CompilationOptions.SpecificDiagnosticOptions)
-                .WithGeneralDiagnosticOption(arguments.CompilationOptions.GeneralDiagnosticOption);
-            var solution = workspace.CurrentSolution.WithProjectCompilationOptions(project.Id, compilationOptions)
+            solution = solution
+                .WithProjectCompilationOptions(project.Id, arguments.CompilationOptions.WithStrongNameProvider(new DesktopStrongNameProvider(arguments.KeyFileSearchPaths)))
+                .WithProjectParseOptions(project.Id, arguments.ParseOptions)
                 .WithProjectMetadataReferences(project.Id, project.MetadataReferences.Select(WithDocumentation));
             foreach (var config in arguments.AnalyzerConfigPaths.Where(File.Exists))
                 solution = solution.AddAnalyzerConfigDocument(DocumentId.CreateNewId(project.Id), Path.GetFileName(config), SourceText.From(File.ReadAllText(config)), filePath: config);
+
+            // Buildalyzer references every referenced project, also those the compiler does not get, such as source generators
+            // (ReferenceOutputAssembly="false"): keep those whose output the compiler references.
+            var references = result.References.Select(Path.GetFileName).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var reference in project.ProjectReferences)
+            {
+                if (solution.GetProject(reference.ProjectId)?.OutputFilePath is { } output && !references.Contains(Path.GetFileName(output)))
+                    solution = solution.RemoveProjectReference(project.Id, reference);
+            }
 
             // Buildalyzer leaves out folders and the default namespace, which refactorings such as "change namespace to match folder" need.
             solution = solution.WithProjectDefaultNamespace(project.Id, result.GetProperty("RootNamespace"));
             foreach (var document in solution.GetProject(project.Id)!.Documents)
                 solution = solution.WithDocumentFolders(document.Id, FoldersOf(result.ProjectFilePath, document.FilePath));
-            workspace.Set(solution);
         }
 
+        workspace.Set(solution);
         return new(workspace.CurrentSolution, results);
+    }
+
+    /// <summary>
+    /// Builds a project for its first target framework. Buildalyzer builds without one, and then a project with TargetFrameworks (even just one)
+    /// builds as the outer build, which only dispatches to a build per framework and has no Compile target. The frameworks can come from an
+    /// import, which Buildalyzer's project file reader misses, so take them from that first build.
+    /// </summary>
+    private static IAnalyzerResult? Build(IProjectAnalyzer analyzer, EnvironmentOptions options)
+    {
+        var result = analyzer.Build(options).FirstOrDefault();
+        return result is { CompilerArguments.Length: 0 }
+            && result.GetProperty("TargetFrameworks")?.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries) is [var framework, ..]
+            ? analyzer.Build(framework, options).FirstOrDefault()
+            : result;
     }
 }
 

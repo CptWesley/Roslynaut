@@ -1,3 +1,4 @@
+using ModelContextProtocol;
 using Roslynaut.Tools;
 
 namespace Roslynaut.Tests.Tools;
@@ -32,6 +33,28 @@ public class DecompileTests
         var module = assemblies.Read(typeof(SymbolEntry).Assembly.Location).Module;
 
         IlDisassembler.FindMethods(module, ["Roslynaut.Tools.SymbolEntry.Name"]).Select(method => method.Name).Should().Equal("get_Name", "set_Name");
+    }
+
+    // Names as reflection, stack traces and Cecil write them, with generic arity and nested type separators.
+    [Test]
+    public void FindMembers_GenericAndNestedNames_IgnoreAritiesAndSeparators()
+    {
+        var module = assemblies.Read(typeof(object).Assembly.Location).Module;
+
+        IlDisassembler.FindMembers(module, ["System.Runtime.CompilerServices.ConditionalWeakTable`2+Enumerator.MoveNext", "List`1.Add", "Dictionary`2/Entry"])
+            .Select(member => member.FullName).Should().BeEquivalentTo(
+                "System.Boolean System.Runtime.CompilerServices.ConditionalWeakTable`2/Enumerator::MoveNext()",
+                "System.Void System.Collections.Generic.List`1::Add(T)",
+                "System.Collections.Generic.Dictionary`2/Entry");
+    }
+
+    [Test]
+    public void FindMembers_OfForwardedType_NamesTheAssemblyThatDefinesIt()
+    {
+        var facade = assemblies.Read(Path.Combine(Path.GetDirectoryName(typeof(object).Assembly.Location)!, "System.Collections.dll")).Module;
+
+        FluentActions.Invoking(() => IlDisassembler.FindMembers(facade, ["System.Collections.Generic.CollectionExtensions.Remove"]))
+            .Should().Throw<McpException>().WithMessage("*CollectionExtensions is forwarded to System.Private.CoreLib*");
     }
 
     [Test]

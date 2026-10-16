@@ -40,7 +40,16 @@ internal static class IlDisassembler
     {
         var types = module.GetTypes().Where(type => !IsGenerated(type)).ToList();
         var members = names.SelectMany(name => Find(types, name)).Distinct().ToList();
-        return members.Count > 0 ? members : throw new McpException($"No type or member matches {string.Join(", ", names)} in {module.Name}.");
+        if (members.Count > 0)
+            return members;
+
+        // Facades, such as System.Collections.dll of a runtime, forward types to the assembly that defines them. A name is of the type or a member.
+        var queries = names.Select(name => Simplify(name.Length > 2 && name[1] == ':' ? name[2..] : name))
+            .SelectMany(query => query.LastIndexOf('.') is > 0 and var dot ? [query, query[..dot]] : new[] { query })
+            .ToList();
+        var forwarded = module.ExportedTypes.FirstOrDefault(type => type.IsForwarder && queries.Any(query => IsNamed(CSharpName(type.FullName), query)));
+        throw new McpException($"No type or member matches {string.Join(", ", names)} in {module.Name}."
+            + (forwarded is null ? "" : $" {forwarded.FullName} is forwarded to {forwarded.Scope.Name}: pass {forwarded.Scope.Name}.dll instead."));
     }
 
     /// <summary>
@@ -64,13 +73,11 @@ internal static class IlDisassembler
     {
         var isDocId = name.Length > 2 && name[1] == ':';
         var query = isDocId ? name : Simplify(name);
-        bool Matches(IMemberDefinition member, string fullName) => isDocId
-            ? DocCommentId.GetDocCommentId(member) == query
-            : fullName.Equals(query, StringComparison.OrdinalIgnoreCase) || fullName.EndsWith("." + query, StringComparison.OrdinalIgnoreCase);
+        bool Matches(IMemberDefinition member, string fullName) => isDocId ? DocCommentId.GetDocCommentId(member) == query : IsNamed(fullName, query);
 
         foreach (var type in types)
         {
-            var typeName = FullName(type);
+            var typeName = CSharpName(type.FullName);
             if (Matches(type, typeName))
             {
                 yield return type;
@@ -126,22 +133,29 @@ internal static class IlDisassembler
 
     private static string Label(Instruction? instruction) => instruction is null ? "end" : $"IL_{instruction.Offset:x4}";
 
-    /// <summary>The C#-style name of a type: nested types joined with dots, without generic arity, e.g. "Ns.Outer.Nested".</summary>
-    private static string FullName(TypeDefinition type) => Regex.Replace(type.FullName.Replace('/', '.'), @"`\d+", "");
+    /// <summary>Whether a full name is the query, or ends with it after a dot.</summary>
+    private static bool IsNamed(string fullName, string query) =>
+        fullName.Equals(query, StringComparison.OrdinalIgnoreCase) || fullName.EndsWith("." + query, StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>Drops whitespace and parameter and type argument lists, and accepts Cecil's "Type::Method".</summary>
+    /// <summary>The C#-style name of a type from Cecil's: nested types joined with dots, without generic arity, e.g. "Ns.Outer.Nested".</summary>
+    private static string CSharpName(string fullName) => Regex.Replace(fullName.Replace('/', '.'), @"`+\d+", "");
+
+    /// <summary>
+    /// Drops whitespace, generic arity, and parameter and type argument lists; and accepts Cecil's "Type::Method" and "Outer/Nested",
+    /// and reflection's "Outer`1+Nested" and "Type`1[System.Int32]".
+    /// </summary>
     private static string Simplify(string name)
     {
         var simple = new StringBuilder();
         var depth = 0;
         foreach (var c in name.Replace("::", "."))
         {
-            depth += c switch { '(' or '<' => 1, ')' or '>' => -1, _ => 0 };
-            if (depth == 0 && c is not (')' or '>') && !char.IsWhiteSpace(c))
-                simple.Append(c);
+            depth += c switch { '(' or '<' or '[' => 1, ')' or '>' or ']' => -1, _ => 0 };
+            if (depth == 0 && c is not (')' or '>' or ']') && !char.IsWhiteSpace(c))
+                simple.Append(c is '+' or '/' ? '.' : c);
         }
 
-        return simple.ToString();
+        return CSharpName(simple.ToString());
     }
 
     private static bool IsGenerated(IMemberDefinition member) => member.Name.StartsWith('<');
