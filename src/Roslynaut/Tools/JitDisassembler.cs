@@ -22,7 +22,6 @@ internal static class JitDisassembler
 
     private static readonly string HostPath = Path.Combine(AppContext.BaseDirectory, "Roslynaut.JitHost.dll");
     private static readonly string FrameworkDirectory = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(typeof(object).Assembly.Location)!, "..", ".."));
-    private static readonly string Dotnet = Path.Combine(FrameworkDirectory, "..", OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet");
 
     public static List<MethodAsm> Disassemble(LoadedAssembly assembly, IReadOnlyCollection<string> names)
     {
@@ -65,7 +64,7 @@ internal static class JitDisassembler
             throw new McpException($"The JIT host is missing: {HostPath}");
 
         var path = assembly.Path.Value;
-        var start = new ProcessStartInfo(Dotnet)
+        var start = new ProcessStartInfo(DotnetCli.Executable)
         {
             RedirectStandardInput = true,
             RedirectStandardOutput = true,

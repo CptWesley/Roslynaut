@@ -1,30 +1,41 @@
 using System.ComponentModel;
+using Microsoft.CodeAnalysis;
 using ModelContextProtocol.Server;
 
 namespace Roslynaut.Tools;
 
 public sealed class DefinitionTool(WorkspaceService workspace) : IMcpTool
 {
-    public Delegate Handler => GetDefinitionAsync;
+    public Delegate Handler => GetDefinitionsAsync;
 
     [McpServerTool(Name = "definition", ReadOnly = true)]
-    [Description("Resolves the symbol at a position: its signature, documentation and declaration locations (go to definition + hover).")]
-    private async Task<Definition> GetDefinitionAsync(
+    [Description("Resolves a symbol: its signature, documentation and declaration locations (go to definition + hover). "
+        + "For a symbol from a referenced assembly, AssemblyPath is the file to pass to assembly_il, assembly_asm or decompile.")]
+    private async Task<IEnumerable<Definition>> GetDefinitionsAsync(
         [Description(ToolDefaults.ProjectPath)] string projectPath,
-        [Description(ToolDefaults.FilePath)] string filePath,
-        [Description(ToolDefaults.Line)] int line,
-        [Description(ToolDefaults.Column)] int column,
-        CancellationToken cancellationToken)
+        [Description(ToolDefaults.Target)] string? symbol = null,
+        [Description(ToolDefaults.TargetFilePath)] string? filePath = null,
+        [Description(ToolDefaults.Line)] int? line = null,
+        [Description(ToolDefaults.Column)] int? column = null,
+        CancellationToken cancellationToken = default)
     {
-        var document = await workspace.GetDocumentAsync(projectPath, filePath);
-        var symbol = await WorkspaceService.GetSymbolAtAsync(document, line, column, cancellationToken);
-        return new(
-            SymbolEntry.KindOf(symbol),
-            symbol.ToDisplayString(),
-            symbol.ContainingAssembly?.Name,
-            symbol.GetDocumentationCommentXml(cancellationToken: cancellationToken),
-            symbol.Locations.Where(location => location.IsInSource).Select(SourceLocation.From));
+        var (solution, symbols) = await workspace.ResolveAsync(projectPath, symbol, filePath, line, column, cancellationToken);
+        var definitions = new List<Definition>();
+        foreach (var target in symbols)
+        {
+            var locations = target.Locations.Where(location => location.IsInSource).Select(SourceLocation.From).ToList();
+            definitions.Add(new(
+                SymbolEntry.KindOf(target),
+                target.ToDisplayString(),
+                target.ContainingAssembly?.Name,
+                locations.Count == 0 && target.ContainingAssembly is { } assembly ? await AssemblyLoader.FindFileAsync(solution, assembly, cancellationToken) : null,
+                target.GetDocumentationCommentXml(cancellationToken: cancellationToken),
+                locations));
+        }
+
+        return definitions;
     }
 
-    public sealed record Definition(string Kind, string Signature, string? Assembly, string? Documentation, IEnumerable<SourceLocation> Locations);
+    public sealed record Definition(
+        string Kind, string Signature, string? Assembly, string? AssemblyPath, string? Documentation, IEnumerable<SourceLocation> Locations);
 }

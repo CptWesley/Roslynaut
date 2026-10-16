@@ -138,6 +138,25 @@ public sealed class AssemblyLoader(int capacity = 32) : IDisposable
     }
 
     /// <summary>
+    /// The file of a referenced assembly, with code: a referenced package's lib\ assembly, or the framework's own of the server's runtime.
+    /// Null for assemblies of the solution's own projects, which have no file until they are built.
+    /// </summary>
+    public static async Task<string?> FindFileAsync(Solution solution, IAssemblySymbol assembly, CancellationToken cancellationToken)
+    {
+        foreach (var project in solution.Projects)
+        {
+            var compilation = await project.GetCompilationAsync(cancellationToken);
+            if (compilation?.GetMetadataReference(assembly) is not PortableExecutableReference { FilePath: { } path })
+                continue;
+
+            var framework = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(typeof(object).Assembly.Location)!, $"{assembly.Name}.dll");
+            return ImplementationOf(path) ?? (File.Exists(framework) ? framework : null);
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// Reference assemblies cannot run. NuGet packages pair ref\ with lib\; framework reference packs have no lib\, runtimes provide those.
     /// </summary>
     private static string? ImplementationOf(string path)

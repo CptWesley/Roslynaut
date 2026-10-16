@@ -32,17 +32,35 @@ internal static class IlDisassembler
     }
 
     /// <summary>
-    /// The methods named by <paramref name="names"/>: documentation IDs ("T:..." or "M:...") or type or method names, optionally partially
-    /// qualified. Parameter and type argument lists are ignored, so a name matches all overloads. Lock the module while calling this.
+    /// The types and members named by <paramref name="names"/>: documentation IDs (such as "T:..." or "M:...") or names of types, methods,
+    /// properties, events or fields, optionally partially qualified. Parameter and type argument lists are ignored, so a name matches all
+    /// overloads. Compiler-generated members are left out. Lock the module while calling this.
+    /// </summary>
+    public static List<IMemberDefinition> FindMembers(ModuleDefinition module, IReadOnlyCollection<string> names)
+    {
+        var types = module.GetTypes().Where(type => !IsGenerated(type)).ToList();
+        var members = names.SelectMany(name => Find(types, name)).Distinct().ToList();
+        return members.Count > 0 ? members : throw new McpException($"No type or member matches {string.Join(", ", names)} in {module.Name}.");
+    }
+
+    /// <summary>
+    /// The methods of what <see cref="FindMembers"/> finds: all methods of a type, the accessors of a property or event, and a method itself;
+    /// each with its compiler-generated helpers. Lock the module while calling this.
     /// </summary>
     public static List<MethodDefinition> FindMethods(ModuleDefinition module, IReadOnlyCollection<string> names)
     {
-        var types = module.GetTypes().Where(type => !IsGenerated(type)).ToList();
-        var methods = names.SelectMany(name => Find(types, name)).Distinct().ToList();
-        return methods.Count > 0 ? methods : throw new McpException($"No type or method matches {string.Join(", ", names)} in {module.Name}.");
+        var methods = FindMembers(module, names).SelectMany(member => member switch
+        {
+            TypeDefinition type => type.Methods.Concat(type.NestedTypes.Where(IsGenerated).SelectMany(nested => nested.Methods)),
+            MethodDefinition method => WithGenerated(method),
+            PropertyDefinition property => new[] { property.GetMethod, property.SetMethod }.OfType<MethodDefinition>().SelectMany(WithGenerated),
+            EventDefinition @event => new[] { @event.AddMethod, @event.RemoveMethod }.OfType<MethodDefinition>().SelectMany(WithGenerated),
+            _ => [],
+        }).Distinct().ToList();
+        return methods.Count > 0 ? methods : throw new McpException($"{string.Join(", ", names)} has no code in {module.Name}: fields have none.");
     }
 
-    private static IEnumerable<MethodDefinition> Find(List<TypeDefinition> types, string name)
+    private static IEnumerable<IMemberDefinition> Find(List<TypeDefinition> types, string name)
     {
         var isDocId = name.Length > 2 && name[1] == ':';
         var query = isDocId ? name : Simplify(name);
@@ -55,14 +73,13 @@ internal static class IlDisassembler
             var typeName = FullName(type);
             if (Matches(type, typeName))
             {
-                foreach (var method in type.Methods.Concat(type.NestedTypes.Where(IsGenerated).SelectMany(nested => nested.Methods)))
-                    yield return method;
+                yield return type;
                 continue;
             }
 
-            foreach (var method in type.Methods.Where(method => !IsGenerated(method) && Matches(method, $"{typeName}.{method.Name}")))
-                foreach (var helper in WithGenerated(method))
-                    yield return helper;
+            IEnumerable<IMemberDefinition> members = [.. type.Methods, .. type.Properties, .. type.Events, .. type.Fields];
+            foreach (var member in members.Where(member => !IsGenerated(member) && Matches(member, $"{typeName}.{member.Name}")))
+                yield return member;
         }
     }
 

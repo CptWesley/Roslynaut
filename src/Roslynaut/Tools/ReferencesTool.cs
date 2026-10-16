@@ -1,25 +1,69 @@
 using System.ComponentModel;
+using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.FindSymbols;
+using Microsoft.CodeAnalysis.Operations;
 using ModelContextProtocol.Server;
 
 namespace Roslynaut.Tools;
 
-public sealed class ReferencesTool(WorkspaceService workspace) : IMcpTool
+public sealed class ReferencesTool(WorkspaceService workspace, ResultCache cache) : IMcpTool
 {
     public Delegate Handler => FindReferencesAsync;
 
     [McpServerTool(Name = "references", ReadOnly = true)]
-    [Description("Finds all references to the symbol at a position across the project or solution.")]
-    private async Task<IEnumerable<SourceLocation>> FindReferencesAsync(
+    [Description("Finds all references to a symbol across the project or solution, with the member that contains each reference "
+        + "and whether it reads, writes or calls the symbol. Paged.")]
+    private async Task<PagedResult<ReferenceEntry>> FindReferencesAsync(
         [Description(ToolDefaults.ProjectPath)] string projectPath,
-        [Description(ToolDefaults.FilePath)] string filePath,
-        [Description(ToolDefaults.Line)] int line,
-        [Description(ToolDefaults.Column)] int column,
-        CancellationToken cancellationToken)
+        [Description(ToolDefaults.Target)] string? symbol = null,
+        [Description(ToolDefaults.TargetFilePath)] string? filePath = null,
+        [Description(ToolDefaults.Line)] int? line = null,
+        [Description(ToolDefaults.Column)] int? column = null,
+        [Description(ToolDefaults.Page)] int page = 0,
+        [Description(ToolDefaults.PageSize)] int pageSize = ToolDefaults.DefaultPageSize,
+        CancellationToken cancellationToken = default)
     {
-        var document = await workspace.GetDocumentAsync(projectPath, filePath);
-        var symbol = await WorkspaceService.GetSymbolAtAsync(document, line, column, cancellationToken);
-        var references = await SymbolFinder.FindReferencesAsync(symbol, document.Project.Solution, cancellationToken);
-        return references.SelectMany(reference => reference.Locations).Select(reference => SourceLocation.From(reference.Location)).Distinct();
+        var (solution, symbols) = await workspace.ResolveAsync(projectPath, symbol, filePath, line, column, cancellationToken);
+        return await cache.GetPageAsync(solution, $"references|{symbol}|{filePath}|{line}|{column}", page, pageSize,
+            () => FindAsync(solution, symbols, cancellationToken));
     }
+
+    internal static async Task<IEnumerable<ReferenceEntry>> FindAsync(Solution solution, IReadOnlyList<ISymbol> symbols, CancellationToken cancellationToken)
+    {
+        var entries = new List<ReferenceEntry>();
+        foreach (var symbol in symbols)
+        {
+            foreach (var reference in await SymbolFinder.FindReferencesAsync(symbol, solution, cancellationToken))
+            {
+                foreach (var location in reference.Locations)
+                {
+                    var model = (await location.Document.GetSemanticModelAsync(cancellationToken))!;
+                    var container = model.GetEnclosingSymbol(location.Location.SourceSpan.Start, cancellationToken);
+                    var access = IsWrite(model, location.Location, cancellationToken) ? "Write" : reference.Definition is IMethodSymbol ? "Call" : "Read";
+                    entries.Add(new(SourceLocation.From(location.Location), container?.ToDisplayString(), access));
+                }
+            }
+        }
+
+        return entries.Distinct();
+    }
+
+    private static bool IsWrite(SemanticModel model, Location location, CancellationToken cancellationToken)
+    {
+        var node = model.SyntaxTree.GetRoot(cancellationToken).FindNode(location.SourceSpan, getInnermostNodeForTie: true);
+
+        // A name in a member access has no operation of its own; the member access has.
+        var operation = model.GetOperation(node, cancellationToken) ?? model.GetOperation(node.Parent!, cancellationToken);
+        return operation?.Parent switch
+        {
+            IAssignmentOperation assignment => assignment.Target == operation,
+            IIncrementOrDecrementOperation => true,
+            IArgumentOperation { Parameter.RefKind: RefKind.Out or RefKind.Ref } => true,
+            _ => false,
+        };
+    }
+
+    /// <param name="Container">The member or type the reference is in.</param>
+    /// <param name="Access">Read, Write or Call.</param>
+    public sealed record ReferenceEntry(SourceLocation Location, string? Container, string Access);
 }

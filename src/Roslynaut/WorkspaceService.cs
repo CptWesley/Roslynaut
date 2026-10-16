@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.IO.Enumeration;
+using System.Text;
 using Buildalyzer;
 using Buildalyzer.Environment;
 using Buildalyzer.IO;
@@ -9,6 +10,7 @@ using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.FindSymbols;
 using Microsoft.CodeAnalysis.Text;
 using ModelContextProtocol;
+using Roslynaut.Tools;
 
 namespace Roslynaut;
 
@@ -41,6 +43,85 @@ public sealed class WorkspaceService
         var id = solution.GetDocumentIdsWithFilePath(Path.GetFullPath(filePath)).FirstOrDefault()
             ?? throw new McpException($"'{filePath}' is not part of the loaded project or solution.");
         return solution.GetDocument(id)!;
+    }
+
+    /// <summary>
+    /// Writes the documents that differ between two snapshots to disk, from where the file watchers bring them into the workspace.
+    /// A renamed document moves its file. Returns the paths written or deleted.
+    /// </summary>
+    public static async Task<IReadOnlyList<string>> WriteChangesAsync(Solution before, Solution after, CancellationToken cancellationToken)
+    {
+        var written = new List<string>();
+        foreach (var project in after.GetChanges(before).GetProjectChanges())
+        {
+            foreach (var id in project.GetChangedDocuments().Concat(project.GetAddedDocuments()))
+            {
+                var (original, document) = (before.GetDocument(id), after.GetDocument(id)!);
+                var path = original?.FilePath is { } oldPath
+                    ? Path.Combine(Path.GetDirectoryName(oldPath)!, document.Name)
+                    : document.FilePath ?? (project.NewProject.FilePath is { } projectPath ? Path.Combine([Path.GetDirectoryName(projectPath)!, .. document.Folders, document.Name]) : null);
+                if (path is null)
+                    continue;
+
+                var text = await document.GetTextAsync(cancellationToken);
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                await File.WriteAllTextAsync(path, text.ToString(), EncodingOf(original?.FilePath ?? path), cancellationToken);
+                if (original?.FilePath is { } moved && !moved.Equals(path, StringComparison.OrdinalIgnoreCase))
+                    File.Delete(moved);
+                written.Add(path);
+            }
+
+            foreach (var id in project.GetRemovedDocuments())
+            {
+                if (before.GetDocument(id)?.FilePath is { } removed && File.Exists(removed))
+                {
+                    File.Delete(removed);
+                    written.Add(removed);
+                }
+            }
+        }
+
+        return written;
+    }
+
+    /// <summary>
+    /// The encoding of a file by its byte order mark, so rewriting it keeps that; UTF-8 without one otherwise.
+    /// Not the encoding of the document's text: Buildalyzer reads files as UTF-16.
+    /// </summary>
+    private static Encoding EncodingOf(string path)
+    {
+        var bom = new byte[3];
+        var length = 0;
+        if (File.Exists(path))
+        {
+            using var stream = File.OpenRead(path);
+            length = stream.Read(bom);
+        }
+
+        return bom.AsSpan(0, length) switch
+        {
+            [0xEF, 0xBB, 0xBF] => new UTF8Encoding(encoderShouldEmitUTF8Identifier: true),
+            [0xFF, 0xFE, ..] => Encoding.Unicode,
+            [0xFE, 0xFF, ..] => Encoding.BigEndianUnicode,
+            _ => new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+        };
+    }
+
+    /// <summary>The symbols a symbol path names, or else the symbol at a position, with the solution snapshot they come from.</summary>
+    public async Task<(Solution Solution, IReadOnlyList<ISymbol> Symbols)> ResolveAsync(
+        string projectPath, string? symbol, string? filePath, int? line, int? column, CancellationToken cancellationToken)
+    {
+        if (symbol is not null)
+        {
+            var solution = (await GetAsync(projectPath)).Solution;
+            return (solution, await SymbolTree.ResolveAsync(solution, symbol, cancellationToken));
+        }
+
+        if (filePath is null || line is null || column is null)
+            throw new McpException("Pass a symbol path, or a filePath with a line and column.");
+
+        var document = await GetDocumentAsync(projectPath, filePath);
+        return (document.Project.Solution, [await GetSymbolAtAsync(document, line.Value, column.Value, cancellationToken)]);
     }
 
     public static async Task<ISymbol> GetSymbolAtAsync(Document document, int line, int column, CancellationToken cancellationToken)
@@ -213,7 +294,9 @@ public sealed class WorkspaceService
 
         private static bool IsTracked(string file) => file.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) || IsBuildFile(file);
 
-        private static bool IsBuildFile(string file) => Path.GetExtension(file).ToLowerInvariant() is ".csproj" or ".props" or ".targets" or ".sln" or ".slnx";
+        // Analyzer configuration counts as well: it feeds the diagnostic severities of the compiler arguments.
+        private static bool IsBuildFile(string file) =>
+            Path.GetExtension(file).ToLowerInvariant() is ".csproj" or ".props" or ".targets" or ".sln" or ".slnx" or ".editorconfig" or ".globalconfig";
 
         private static Project? FindOwner(Solution solution, string file) => solution.Projects
             .Where(project => project.Language == LanguageNames.CSharp && project.FilePath is not null && IsUnder(file, Path.GetDirectoryName(project.FilePath)!))
@@ -265,12 +348,16 @@ public sealed class WorkspaceService
             if (project?.Language != LanguageNames.CSharp || result.CompilerArguments.Length == 0)
                 continue;
 
-            // Buildalyzer ignores NoWarn and WarningsAsErrors; take those from the real compiler command line.
-            var compiler = CSharpCommandLineParser.Default.Parse(result.CompilerArguments, Path.GetDirectoryName(result.ProjectFilePath), sdkDirectory: null).CompilationOptions;
+            // Buildalyzer ignores NoWarn, WarningsAsErrors and analyzer configuration (.editorconfig, .globalconfig);
+            // take those from the real compiler command line.
+            var arguments = CSharpCommandLineParser.Default.Parse(result.CompilerArguments, Path.GetDirectoryName(result.ProjectFilePath), sdkDirectory: null);
             var compilationOptions = project.CompilationOptions!
-                .WithSpecificDiagnosticOptions(compiler.SpecificDiagnosticOptions)
-                .WithGeneralDiagnosticOption(compiler.GeneralDiagnosticOption);
-            workspace.TryApplyChanges(workspace.CurrentSolution.WithProjectCompilationOptions(project.Id, compilationOptions));
+                .WithSpecificDiagnosticOptions(arguments.CompilationOptions.SpecificDiagnosticOptions)
+                .WithGeneralDiagnosticOption(arguments.CompilationOptions.GeneralDiagnosticOption);
+            var solution = workspace.CurrentSolution.WithProjectCompilationOptions(project.Id, compilationOptions);
+            foreach (var config in arguments.AnalyzerConfigPaths.Where(File.Exists))
+                solution = solution.AddAnalyzerConfigDocument(DocumentId.CreateNewId(project.Id), Path.GetFileName(config), SourceText.From(File.ReadAllText(config)), filePath: config);
+            workspace.TryApplyChanges(solution);
         }
 
         return new(workspace.CurrentSolution, results);
