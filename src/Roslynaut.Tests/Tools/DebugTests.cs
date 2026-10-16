@@ -73,6 +73,86 @@ public class DebugTests
     private string tests = null!;
     private string testFile = null!;
 
+    // Calc.Twice for a breakpoint at a method; two caught exceptions, of which only one should stop.
+    private string CreateThrower()
+    {
+        var thrower = Path.Combine(directory.FullName, "Thrower", "Thrower.csproj");
+        Directory.CreateDirectory(Path.GetDirectoryName(thrower)!);
+        File.WriteAllText(thrower, """<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>""");
+        File.WriteAllText(Path.Combine(Path.GetDirectoryName(thrower)!, "Program.cs"), """
+            var value = Calc.Twice(21);
+            System.Console.WriteLine($"value {value}");
+            try { throw new System.InvalidOperationException("first"); } catch (System.InvalidOperationException) { }
+            try { throw new System.ArgumentException("second"); } catch (System.ArgumentException) { }
+
+            static class Calc
+            {
+                public static int Twice(int x) => x * 2;
+            }
+            """);
+        return thrower;
+    }
+
+    // global.json in its folder puts it on Microsoft.Testing.Platform.
+    [Test]
+    public async Task Test_OnTestingPlatform_BreaksInTheTest()
+    {
+        var folder = Path.Combine(directory.FullName, "Mtp");
+        Directory.CreateDirectory(Path.Combine(folder, "Tests"));
+        File.WriteAllText(Path.Combine(folder, "global.json"), """{ "test": { "runner": "Microsoft.Testing.Platform" } }""");
+        var project = Path.Combine(folder, "Tests", "MtpTests.csproj");
+        var file = Path.Combine(folder, "Tests", "Tests.cs");
+        File.WriteAllText(project, """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><OutputType>Exe</OutputType></PropertyGroup>
+              <ItemGroup><PackageReference Include="xunit.v3" Version="3.1.0" /></ItemGroup>
+            </Project>
+            """);
+        File.WriteAllText(file, """
+            namespace MtpTests;
+
+            public class Tests
+            {
+                [Xunit.Fact]
+                public void Adds()
+                {
+                    var sum = 2 + 3;
+                    Xunit.Assert.Equal(5, sum);
+                }
+            }
+            """);
+
+        await using var debugger = new DebugService(new WorkspaceService(), new PdbService());
+        var wait = TimeSpan.FromMinutes(3);
+
+        var state = await debugger.TestAsync(project, "FullyQualifiedName~MtpTests.Tests.Adds", [new(file, 9)], stopOnExceptions: null, wait, CancellationToken.None);
+        state.Should().Match<DebugState>(stopped => stopped.Status == "Stopped" && stopped.Reason == "breakpoint");
+        state.Locals.Should().Contain(local => local.Name == "sum" && local.Value == "5");
+
+        state = await debugger.ResumeAsync(ResumeAction.Continue, wait, CancellationToken.None);
+        state.Should().Match<DebugState>(exited => exited.Status == "Exited" && exited.Output.Contains("total: 1"));
+    }
+
+    [Test]
+    public async Task FunctionBreakpoint_SetValue_AndStopAtOneExceptionType()
+    {
+        await using var debugger = new DebugService(new WorkspaceService(), new PdbService());
+        var wait = TimeSpan.FromSeconds(60);
+
+        var state = await debugger.StartAsync(CreateThrower(), [], [new(Function: "Calc.Twice")], stopAtEntry: false, ["System.ArgumentException"], wait, CancellationToken.None);
+        state.Should().Match<DebugState>(stopped => stopped.Status == "Stopped" && stopped.Stack[0].Name.Contains("Twice"));
+
+        (await debugger.SetAsync("x", "50", 0, CancellationToken.None)).Value.Should().Be("50");
+
+        state = await debugger.ResumeAsync(ResumeAction.Continue, wait, CancellationToken.None);
+        state.Should().Match<DebugState>(stopped => stopped.Reason == "exception" && stopped.Exception!.Contains("System.ArgumentException"));
+        var output = state.Output;
+
+        state = await debugger.ResumeAsync(ResumeAction.Continue, wait, CancellationToken.None);
+        state.Should().Match<DebugState>(exited => exited.Status == "Exited");
+        (output + state.Output).Should().Contain("value 100");
+    }
+
     [OneTimeTearDown]
     public void DeleteProgram() => directory?.Delete(recursive: true);
 
@@ -82,7 +162,7 @@ public class DebugTests
         await using var debugger = new DebugService(new WorkspaceService(), new PdbService());
         var wait = TimeSpan.FromSeconds(60);
 
-        var state = await debugger.StartAsync(project, [], [new(program, 4)], stopAtEntry: false, stopOnAllExceptions: false, wait, CancellationToken.None);
+        var state = await debugger.StartAsync(project, [], [new(program, 4)], stopAtEntry: false, stopOnExceptions: null, wait, CancellationToken.None);
         state.Should().Match<DebugState>(stopped => stopped.Status == "Stopped" && stopped.Reason == "breakpoint");
         state.Stack[0].Should().Match<Frame>(frame => frame.Line == 4 && frame.FilePath!.EndsWith("Program.cs"));
         state.Locals.Should().Contain(local => local.Name == "total" && local.Value == "0").And.Contain(local => local.Name == "n" && local.Value == "1");
@@ -112,7 +192,7 @@ public class DebugTests
         {
             await using var debugger = new DebugService(new WorkspaceService(), new PdbService());
 
-            var state = await debugger.AttachAsync(process.Id, [new(Path.Combine(Path.GetDirectoryName(looper)!, "Program.cs"), 4)], stopOnAllExceptions: false, TimeSpan.FromSeconds(60), CancellationToken.None);
+            var state = await debugger.AttachAsync(process.Id, [new(Path.Combine(Path.GetDirectoryName(looper)!, "Program.cs"), 4)], stopOnExceptions: null, TimeSpan.FromSeconds(60), CancellationToken.None);
 
             state.Should().Match<DebugState>(stopped => stopped.Status == "Stopped" && stopped.Reason == "breakpoint");
             state.Locals.Should().Contain(local => local.Name == "i");
@@ -132,7 +212,7 @@ public class DebugTests
         await using var debugger = new DebugService(new WorkspaceService(), new PdbService());
         var wait = TimeSpan.FromMinutes(3);
 
-        var state = await debugger.TestAsync(tests, "FullyQualifiedName~SampleTests.Adds", [new(testFile, 9)], stopOnAllExceptions: false, wait, CancellationToken.None);
+        var state = await debugger.TestAsync(tests, "FullyQualifiedName~SampleTests.Adds", [new(testFile, 9)], stopOnExceptions: null, wait, CancellationToken.None);
         state.Should().Match<DebugState>(stopped => stopped.Status == "Stopped" && stopped.Reason == "breakpoint");
         state.Locals.Should().Contain(local => local.Name == "sum" && local.Value == "5");
 

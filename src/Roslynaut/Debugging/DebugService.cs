@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using System.Threading.Channels;
+using Microsoft.Diagnostics.NETCore.Client;
 using ModelContextProtocol;
 
 namespace Roslynaut.Debugging;
@@ -19,10 +20,13 @@ public enum ResumeAction
     Pause,
 }
 
-public sealed record Breakpoint(string FilePath, int Line, string? Condition = null);
+/// <param name="FilePath">With Line: break at that line of this file.</param>
+/// <param name="Condition">Break only when this C# expression is true, such as 'i == 3'.</param>
+/// <param name="Function">Or else: break where this method starts, such as 'MyApp.Orders.Submit' or 'Submit'.</param>
+public sealed record Breakpoint(string? FilePath = null, int Line = 0, string? Condition = null, string? Function = null);
 
 /// <param name="Verified">Whether the debugger could bind the breakpoint to code; Message says why not.</param>
-public sealed record BreakpointState(string FilePath, int Line, bool Verified, string? Message);
+public sealed record BreakpointState(string? FilePath, int Line, bool Verified, string? Message, string? Function = null);
 
 /// <param name="FilePath">The source file, by the path the PDB records.</param>
 /// <param name="Source">
@@ -37,8 +41,10 @@ public sealed record Variable(string Name, string Value, string? Type, int Refer
 /// <param name="Status">Stopped, Running (still, after the wait) or Exited.</param>
 /// <param name="Reason">Why it stopped: breakpoint, step, exception, pause or entry.</param>
 /// <param name="Output">What the program wrote since the previous state.</param>
+/// <param name="Exception">When it stopped at an exception: its type and message.</param>
 public sealed record DebugState(
-    string Status, string? Reason, string? Description, IReadOnlyList<Frame> Stack, IReadOnlyList<Variable> Locals, int? ExitCode, string Output);
+    string Status, string? Reason, string? Description, IReadOnlyList<Frame> Stack, IReadOnlyList<Variable> Locals, int? ExitCode, string Output,
+    string? Exception = null);
 
 /// <summary>
 /// One debugging session at a time, with netcoredbg over the Debug Adapter Protocol: launches a program, attaches to a process or a test
@@ -54,7 +60,7 @@ public sealed partial class DebugService(WorkspaceService workspace, PdbService 
     private Session? _session;
 
     public Task<DebugState> StartAsync(
-        string programPath, IReadOnlyList<string> arguments, IReadOnlyList<Breakpoint> breakpoints, bool stopAtEntry, bool stopOnAllExceptions,
+        string programPath, IReadOnlyList<string> arguments, IReadOnlyList<Breakpoint> breakpoints, bool stopAtEntry, IReadOnlyList<string>? stopOnExceptions,
         TimeSpan wait, CancellationToken cancellationToken) =>
         LockedAsync(async () =>
         {
@@ -69,15 +75,15 @@ public sealed partial class DebugService(WorkspaceService workspace, PdbService 
                 stopAtEntry,
                 console = "internalConsole",
             };
-            return await BeginAsync(adapter, "launch", launch, new Session.Options(), breakpoints, stopOnAllExceptions, wait, cancellationToken);
+            return await BeginAsync(adapter, "launch", launch, new Session.Options(), breakpoints, stopOnExceptions, wait, cancellationToken);
         });
 
     /// <summary>Attaches to a running .NET process; ending the session detaches and leaves it running.</summary>
-    public Task<DebugState> AttachAsync(int processId, IReadOnlyList<Breakpoint> breakpoints, bool stopOnAllExceptions, TimeSpan wait, CancellationToken cancellationToken) =>
+    public Task<DebugState> AttachAsync(int processId, IReadOnlyList<Breakpoint> breakpoints, IReadOnlyList<string>? stopOnExceptions, TimeSpan wait, CancellationToken cancellationToken) =>
         LockedAsync(async () =>
         {
             await EndAsync();
-            return await BeginAsync(FindAdapter(), "attach", new { processId }, new Session.Options(Detach: true), breakpoints, stopOnAllExceptions, wait, cancellationToken);
+            return await BeginAsync(FindAdapter(), "attach", new { processId }, new Session.Options(Detach: true), breakpoints, stopOnExceptions, wait, cancellationToken);
         });
 
     /// <summary>
@@ -85,17 +91,33 @@ public sealed partial class DebugService(WorkspaceService workspace, PdbService 
     /// includes dotnet test's, with the test results once the test host exits. Ending the session ends the test run.
     /// </summary>
     public Task<DebugState> TestAsync(
-        string projectPath, string? filter, IReadOnlyList<Breakpoint> breakpoints, bool stopOnAllExceptions, TimeSpan wait, CancellationToken cancellationToken) =>
+        string projectPath, string? filter, IReadOnlyList<Breakpoint> breakpoints, IReadOnlyList<string>? stopOnExceptions, TimeSpan wait, CancellationToken cancellationToken) =>
         LockedAsync(async () =>
         {
             await EndAsync();
             var adapter = FindAdapter();
             var (run, output, processId) = await StartTestHostAsync(projectPath, filter, cancellationToken);
-            return await BeginAsync(adapter, "attach", new { processId }, new Session.Options(Run: run, Output: output), breakpoints, stopOnAllExceptions, wait, cancellationToken);
+            return await BeginAsync(adapter, "attach", new { processId }, new Session.Options(Run: run, Output: output), breakpoints, stopOnExceptions, wait, cancellationToken);
         });
 
     public Task<IReadOnlyList<BreakpointState>> SetBreakpointsAsync(string filePath, IReadOnlyList<Breakpoint> breakpoints, CancellationToken cancellationToken) =>
         LockedAsync(() => SetBreakpointsAsync(Current, Path.GetFullPath(filePath), breakpoints, cancellationToken));
+
+    /// <summary>Replaces all the breakpoints at methods.</summary>
+    public Task<IReadOnlyList<BreakpointState>> SetFunctionBreakpointsAsync(IReadOnlyList<Breakpoint> breakpoints, CancellationToken cancellationToken) =>
+        LockedAsync(() => SetFunctionBreakpointsAsync(Current, breakpoints, cancellationToken));
+
+    /// <summary>Sets a variable, field or property of the stopped program, by evaluating the value in a frame.</summary>
+    public Task<Variable> SetAsync(string expression, string value, int frame, CancellationToken cancellationToken) =>
+        LockedAsync(async () =>
+        {
+            var session = Current;
+            if (!session.IsStopped)
+                throw new McpException("The program is running; set values once it stops, or pause it with debug_resume.");
+
+            var result = await session.Client.RequestAsync("setExpression", new { expression, value, frameId = await session.FrameIdAsync(frame, cancellationToken) }, cancellationToken);
+            return new Variable(expression, DapClient.Text(result, "value") ?? "", DapClient.Text(result, "type"), Reference(result));
+        });
 
     public Task<DebugState> ResumeAsync(ResumeAction action, TimeSpan wait, CancellationToken cancellationToken) =>
         LockedAsync(async () =>
@@ -145,7 +167,7 @@ public sealed partial class DebugService(WorkspaceService workspace, PdbService 
 
     /// <param name="request">launch or attach, with its arguments.</param>
     private async Task<DebugState> BeginAsync(
-        string adapter, string request, object arguments, Session.Options options, IReadOnlyList<Breakpoint> breakpoints, bool stopOnAllExceptions,
+        string adapter, string request, object arguments, Session.Options options, IReadOnlyList<Breakpoint> breakpoints, IReadOnlyList<string>? stopOnExceptions,
         TimeSpan wait, CancellationToken cancellationToken)
     {
         Session session;
@@ -168,9 +190,19 @@ public sealed partial class DebugService(WorkspaceService workspace, PdbService 
             var start = client.RequestAsync(request, arguments, cancellationToken);
             await session.Initialized.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
 
-            foreach (var file in breakpoints.GroupBy(breakpoint => Path.GetFullPath(breakpoint.FilePath), StringComparer.OrdinalIgnoreCase))
+            foreach (var file in breakpoints.Where(breakpoint => breakpoint.Function is null).GroupBy(breakpoint => Path.GetFullPath(breakpoint.FilePath
+                ?? throw new McpException("A breakpoint needs a FilePath and a Line, or a Function.")), StringComparer.OrdinalIgnoreCase))
                 await SetBreakpointsAsync(session, file.Key, [.. file], cancellationToken);
-            await client.RequestAsync("setExceptionBreakpoints", new { filters = stopOnAllExceptions ? new[] { "all" } : ["user-unhandled"] }, cancellationToken);
+            if (breakpoints.Where(breakpoint => breakpoint.Function is not null).ToList() is { Count: > 0 } functions)
+                await SetFunctionBreakpointsAsync(session, functions, cancellationToken);
+
+            // Unhandled exceptions always stop; others stop where thrown when asked for, by type or all of them.
+            await client.RequestAsync("setExceptionBreakpoints", stopOnExceptions switch
+            {
+                null or [] => new { filters = new[] { "user-unhandled" } },
+                ["*"] => new { filters = new[] { "all" } },
+                _ => (object)new { filters = new[] { "user-unhandled" }, filterOptions = new[] { new { filterId = "all", condition = string.Join(", ", stopOnExceptions) } } },
+            }, cancellationToken);
             await client.RequestAsync("configurationDone", null, cancellationToken);
             await start;
         }
@@ -184,25 +216,46 @@ public sealed partial class DebugService(WorkspaceService workspace, PdbService 
     }
 
     /// <summary>Starts dotnet test with VSTEST_HOST_DEBUG, and waits for the id of the test host it starts, which waits for a debugger.</summary>
-    private static async Task<(Process Run, StringBuilder Output, int ProcessId)> StartTestHostAsync(string projectPath, string? filter, CancellationToken cancellationToken)
+    /// <summary>
+    /// Under Microsoft.Testing.Platform, the test application waits for a debugger with TESTINGPLATFORM_WAIT_ATTACH_DEBUGGER, but dotnet test does
+    /// not pass on what it writes; so it is found by its name instead.
+    /// </summary>
+    private async Task<(Process Run, StringBuilder Output, int ProcessId)> StartTestHostAsync(string projectPath, string? filter, CancellationToken cancellationToken)
     {
         var path = Path.GetFullPath(projectPath);
         if (!File.Exists(path))
             throw new McpException($"Project not found: {path}");
 
-        // ponytail: assumes the VSTest runner, as run_tests does; Microsoft.Testing.Platform projects wait for a debugger with --debug instead.
+        var platform = Tools.RunTestsTool.UsesTestingPlatform(path);
+        IReadOnlyList<string> arguments = platform
+            ? ["test", "--project", path, .. filter is null ? [] : Tools.RunTestsTool.FilterArguments(filter, await Tools.RunTestsTool.FilterStyleAsync(workspace, path))]
+            : ["test", path, "-v:q", .. filter is null ? (string[])[] : ["--filter", filter]];
+        var application = platform
+            ? (await workspace.GetAsync(path)).Results.FirstOrDefault(result => string.Equals(result.ProjectFilePath, path, StringComparison.OrdinalIgnoreCase))?.GetProperty("AssemblyName")
+                ?? throw new McpException($"{path} has no AssemblyName to find its test application by.")
+            : null;
+
         var start = new ProcessStartInfo(DotnetCli.Executable)
         {
+            // dotnet reads global.json from the working directory.
+            WorkingDirectory = Path.GetDirectoryName(path)!,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
-            Environment = { ["VSTEST_HOST_DEBUG"] = "1", ["DOTNET_CLI_UI_LANGUAGE"] = "en", ["DOTNET_NOLOGO"] = "1" },
+            Environment =
+            {
+                ["VSTEST_HOST_DEBUG"] = "1", ["TESTINGPLATFORM_WAIT_ATTACH_DEBUGGER"] = "1", ["DOTNET_CLI_UI_LANGUAGE"] = "en", ["DOTNET_NOLOGO"] = "1",
+            },
         };
-        foreach (var argument in (string[])["test", path, "-v:q", .. filter is null ? (string[])[] : ["--filter", filter]])
+        foreach (var argument in arguments)
             start.ArgumentList.Add(argument);
 
         var output = new StringBuilder();
         var processId = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
         var run = Process.Start(start)!;
+        var started = run.StartTime;
+        using var stopSearch = new CancellationTokenSource();
+        if (application is not null)
+            _ = FindApplicationAsync(application, started, processId, stopSearch.Token);
         DataReceivedEventHandler received = (_, line) =>
         {
             if (line.Data is null)
@@ -235,6 +288,51 @@ public sealed partial class DebugService(WorkspaceService workspace, PdbService 
         {
             Kill(run);
             throw;
+        }
+        finally
+        {
+            await stopSearch.CancelAsync();
+        }
+    }
+
+    /// <summary>
+    /// The test application dotnet test starts: a process by the name of the test project's app host, started after dotnet test, whose runtime
+    /// is up to attach to.
+    /// </summary>
+    // ponytail: by name, so it needs the app host (UseAppHost, the default for test applications); Linux cuts process names to 15 characters.
+    private static async Task FindApplicationAsync(string name, DateTime after, TaskCompletionSource<int> found, CancellationToken cancellationToken)
+    {
+        try
+        {
+            while (!found.Task.IsCompleted)
+            {
+                var runtimes = DiagnosticsClient.GetPublishedProcesses().ToHashSet();
+                foreach (var process in Process.GetProcessesByName(name))
+                {
+                    using (process)
+                    {
+                        if (runtimes.Contains(process.Id) && StartedAfter(process, after))
+                            found.TrySetResult(process.Id);
+                    }
+                }
+
+                await Task.Delay(250, cancellationToken);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+
+        static bool StartedAfter(Process process, DateTime after)
+        {
+            try
+            {
+                return process.StartTime >= after;
+            }
+            catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception)
+            {
+                return false;
+            }
         }
     }
 
@@ -287,6 +385,20 @@ public sealed partial class DebugService(WorkspaceService workspace, PdbService 
         await session.Client.DisposeAsync();
         if (session.Settings.Run is { } run)
             Kill(run);
+    }
+
+    private static async Task<IReadOnlyList<BreakpointState>> SetFunctionBreakpointsAsync(Session session, IReadOnlyList<Breakpoint> breakpoints, CancellationToken cancellationToken)
+    {
+        var response = await session.Client.RequestAsync("setFunctionBreakpoints", new
+        {
+            breakpoints = breakpoints.Select(breakpoint => new { name = breakpoint.Function, condition = breakpoint.Condition }).ToArray(),
+        }, cancellationToken);
+        return [.. response.GetProperty("breakpoints").EnumerateArray().Zip(breakpoints, (state, breakpoint) => new BreakpointState(
+            state.TryGetProperty("source", out var source) ? DapClient.Text(source, "path") : null,
+            state.TryGetProperty("line", out var line) ? line.GetInt32() : 0,
+            state.GetProperty("verified").GetBoolean(),
+            DapClient.Text(state, "message"),
+            breakpoint.Function))];
     }
 
     private static async Task<IReadOnlyList<BreakpointState>> SetBreakpointsAsync(Session session, string filePath, IReadOnlyList<Breakpoint> breakpoints, CancellationToken cancellationToken)
@@ -420,7 +532,21 @@ public sealed partial class DebugService(WorkspaceService workspace, PdbService 
             var stack = await StackAsync(cancellationToken);
             var locals = stack.Count == 0 ? [] : await LocalsAsync(await FrameIdAsync(0, cancellationToken), cancellationToken);
             var frames = await Task.WhenAll(stack.Select(frame => WithSourceAsync(frame.Frame, frame.Module, cancellationToken)));
-            return new("Stopped", reason, description, frames, locals, null, TakeOutput());
+            return new("Stopped", reason, description, frames, locals, null, TakeOutput(), reason == "exception" ? await ExceptionAsync(cancellationToken) : null);
+        }
+
+        /// <summary>The exception the stopped thread is at, as "Type: message".</summary>
+        private async Task<string?> ExceptionAsync(CancellationToken cancellationToken)
+        {
+            try
+            {
+                var info = await Client.RequestAsync("exceptionInfo", new { threadId = ThreadId }, cancellationToken);
+                return $"{DapClient.Text(info, "exceptionId")}: {DapClient.Text(info, "description")}";
+            }
+            catch (McpException)
+            {
+                return null;
+            }
         }
 
         public async Task<int> FrameIdAsync(int frame, CancellationToken cancellationToken)

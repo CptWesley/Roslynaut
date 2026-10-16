@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Text.RegularExpressions;
@@ -16,14 +17,14 @@ internal static class ProcessInspection
     public static IEnumerable<ProcessEntry> List() =>
         DiagnosticsClient.GetPublishedProcesses().Where(id => id != Environment.ProcessId).Select(Describe).OfType<ProcessEntry>().ToList();
 
-    public static IReadOnlyList<ThreadEntry> Threads(int? processId, string? dumpPath, int maxFrames, PdbService pdbs)
+    /// <param name="lockObjects">Also walk the heap for the System.Threading.Lock objects threads hold, which keep their owner in a field.</param>
+    public static IReadOnlyList<ThreadEntry> Threads(int? processId, string? dumpPath, int maxFrames, PdbService pdbs, bool lockObjects = false)
     {
         using var target = Open(processId, dumpPath);
         using var runtime = RuntimeOf(target);
 
-        // ponytail: Monitor locks with a sync block only, which every contended one has; uncontended ones live in the object header, and
-        // System.Threading.Lock keeps its owner in a field. process_objects shows the owner of a given object's Monitor lock either way.
-        // A dump without the heap still has the threads.
+        // ponytail: Monitor locks with a sync block only, which every contended one has; uncontended ones live in the object header.
+        // process_objects shows the owner of a given object's Monitor lock either way. A dump without the heap still has the threads.
         ClrHeap? heap;
         try
         {
@@ -34,13 +35,23 @@ internal static class ProcessInspection
             heap = null;
         }
 
-        var held = (heap?.EnumerateSyncBlocks() ?? []).Where(block => block.IsMonitorHeld).ToLookup(block => block.HoldingThreadAddress);
+        var monitors = (heap?.EnumerateSyncBlocks() ?? []).Where(block => block.IsMonitorHeld).ToLookup(
+            block => runtime.Threads.FirstOrDefault(thread => thread.Address == block.HoldingThreadAddress)?.ManagedThreadId,
+            block => Describe(heap!.GetObject(block.Object)) + (block.WaitingThreadCount > 0 ? $", {block.WaitingThreadCount} waiting" : ""));
+
+        // A Lock records the operating system id of the thread that holds it.
+        var locks = (lockObjects && heap is { CanWalkHeap: true } ? heap.EnumerateObjects() : [])
+            .Where(item => item.IsValid && item.Type?.Name == "System.Threading.Lock" && item.Type.GetFieldByName("_owningThreadId") is not null)
+            .Select(item => (Owner: item.ReadField<uint>("_owningThreadId"), Lock: Describe(item)))
+            .Where(item => item.Owner != 0)
+            .ToLookup(item => item.Owner, item => item.Lock);
+
         return [.. runtime.Threads.Where(thread => thread.IsAlive).Select(thread => new ThreadEntry(
             thread.ManagedThreadId,
             thread.OSThreadId,
             thread.CurrentException is { } exception ? Describe(exception) : null,
             [.. thread.EnumerateStackTrace().Where(frame => frame.Kind == ClrStackFrameKind.ManagedMethod).Take(maxFrames).Select(frame => Describe(frame, pdbs))],
-            [.. held[thread.Address].Select(block => Describe(heap!.GetObject(block.Object)) + (block.WaitingThreadCount > 0 ? $", {block.WaitingThreadCount} waiting" : ""))]))];
+            [.. monitors[thread.ManagedThreadId], .. locks[thread.OSThreadId]]))];
     }
 
     private static ClrHeap HeapOf(ClrRuntime runtime)
@@ -180,7 +191,8 @@ internal static class ProcessInspection
         }
     }
 
-    public static HeapSummary Heap(int? processId, string? dumpPath, Regex? type, int top)
+    /// <summary>The object count and size of every type on the heap.</summary>
+    public static HeapSnapshot Snapshot(int? processId, string? dumpPath)
     {
         using var target = Open(processId, dumpPath);
         using var runtime = RuntimeOf(target);
@@ -190,20 +202,31 @@ internal static class ProcessInspection
                 ? "The heap cannot be walked right now, for instance during a garbage collection; try again."
                 : "The heap cannot be walked in this dump; take one with the heap, such as with dotnet-dump collect --type Heap.");
 
-        var types = new Dictionary<string, (long Count, ulong Size)>();
-        var (objects, size) = (0L, 0UL);
+        var types = new Dictionary<string, (long Count, long Size)>();
         foreach (var item in heap.EnumerateObjects())
         {
-            if (!item.IsValid || item.Type?.Name is not { } name)
-                continue;
-
-            objects++;
-            size += item.Size;
-            if (type is null || type.IsMatch(name))
-                types[name] = types.TryGetValue(name, out var stats) ? (stats.Count + 1, stats.Size + item.Size) : (1, item.Size);
+            if (item.IsValid && item.Type?.Name is { } name)
+                types[name] = types.TryGetValue(name, out var stats) ? (stats.Count + 1, stats.Size + (long)item.Size) : (1, (long)item.Size);
         }
 
-        return new(objects, size, [.. types.OrderByDescending(entry => entry.Value.Size).Take(top).Select(entry => new TypeStats(entry.Key, entry.Value.Count, entry.Value.Size))]);
+        return new(types);
+    }
+
+    /// <summary>The largest types of a snapshot; or, against an earlier one, the types that grew the most, with how much.</summary>
+    public static HeapSummary Summarize(string id, HeapSnapshot snapshot, HeapSnapshot? baseline, Regex? type, int top)
+    {
+        var types = snapshot.Types.Keys.Concat(baseline?.Types.Keys ?? []).Distinct().Where(name => type is null || type.IsMatch(name)).Select(name =>
+        {
+            var (now, before) = (snapshot.Types.GetValueOrDefault(name), baseline?.Types.GetValueOrDefault(name));
+            return new TypeStats(name, now.Count, now.Size, now.Count - before?.Count, now.Size - before?.Size);
+        });
+        return new(
+            id,
+            snapshot.Objects,
+            snapshot.Size,
+            snapshot.Objects - baseline?.Objects,
+            snapshot.Size - baseline?.Size,
+            [.. (baseline is null ? types.OrderByDescending(stats => stats.Size) : types.OrderByDescending(stats => stats.SizeChange)).Take(top)]);
     }
 
     private static DataTarget Open(int? processId, string? dumpPath)
@@ -274,7 +297,10 @@ internal static class ProcessInspection
 
     /// <param name="Exception">The exception the thread is handling, with its inner exceptions.</param>
     /// <param name="Stack">The managed frames, innermost first; with "in file:line n" where the module's PDB is at hand.</param>
-    /// <param name="HeldLocks">The objects whose Monitor lock (C# lock) the thread holds while others wait or have waited for it, with how many wait.</param>
+    /// <param name="HeldLocks">
+    /// The objects whose Monitor lock (C# lock) the thread holds while others wait or have waited for it, with how many wait; with lockObjects,
+    /// also the System.Threading.Lock objects it holds.
+    /// </param>
     public sealed record ThreadEntry(int ManagedThreadId, uint OSThreadId, string? Exception, IReadOnlyList<string> Stack, IReadOnlyList<string> HeldLocks);
 
     /// <param name="Address">Pass to process_objects or process_roots.</param>
@@ -290,9 +316,19 @@ internal static class ProcessInspection
     /// <param name="Chain">The objects from the root to the object asked about, each referencing the next.</param>
     public sealed record RootPath(string Kind, string? Frame, IReadOnlyList<string> Chain);
 
-    public sealed record HeapSummary(long Objects, ulong Size, IReadOnlyList<TypeStats> Types);
+    public sealed record HeapSnapshot(IReadOnlyDictionary<string, (long Count, long Size)> Types)
+    {
+        public long Objects { get; } = Types.Values.Sum(stats => stats.Count);
 
-    public sealed record TypeStats(string Type, long Count, ulong Size);
+        public long Size { get; } = Types.Values.Sum(stats => stats.Size);
+    }
+
+    /// <param name="Snapshot">Pass to process_heap as compareTo later, to see what grew since.</param>
+    /// <param name="ObjectsChange">Against the snapshot compared to: how many objects more (or fewer).</param>
+    /// <param name="SizeChange">Against the snapshot compared to: how many bytes more (or fewer).</param>
+    public sealed record HeapSummary(string Snapshot, long Objects, long Size, long? ObjectsChange, long? SizeChange, IReadOnlyList<TypeStats> Types);
+
+    public sealed record TypeStats(string Type, long Count, long Size, long? CountChange = null, long? SizeChange = null);
 }
 
 internal static class ProcessDefaults
@@ -334,27 +370,45 @@ public sealed class ProcessThreadsTool(PdbService pdbs) : IMcpTool
     private Task<IReadOnlyList<ProcessInspection.ThreadEntry>> GetThreadsAsync(
         [Description(ProcessDefaults.ProcessId)] int? processId = null,
         [Description(ProcessDefaults.DumpPath)] string? dumpPath = null,
-        [Description("How many frames to return per thread, from the innermost.")] int maxFrames = 30) =>
-        Task.Run(() => ProcessInspection.Threads(processId, dumpPath, maxFrames, pdbs));
+        [Description("How many frames to return per thread, from the innermost.")] int maxFrames = 30,
+        [Description("Also find the System.Threading.Lock objects each thread holds, which takes a walk of the heap; Monitor locks (C# lock on an "
+            + "object) show without it.")] bool lockObjects = false) =>
+        Task.Run(() => ProcessInspection.Threads(processId, dumpPath, maxFrames, pdbs, lockObjects));
 }
 
 public sealed class ProcessHeapTool : IMcpTool
 {
+    private const int MaxSnapshots = 20;
+
+    // ponytail: snapshots live in memory, the last 20; each holds a count and size per type, not the objects.
+    private readonly ConcurrentDictionary<string, ProcessInspection.HeapSnapshot> _snapshots = new();
+    private int _lastId;
+
     public Delegate Handler => GetHeapAsync;
 
     [McpServerTool(Name = "process_heap", ReadOnly = true)]
     [Description("Snapshots a running .NET process and summarizes its managed heap: the object count and size, and the types that take the most "
-        + "memory with their object counts and sizes: for memory leaks and growth. Walking a big heap takes a while. Reads a dump file instead, "
-        + "if it has the heap.")]
-    private static Task<ProcessInspection.HeapSummary> GetHeapAsync(
+        + "memory with their object counts and sizes: for memory leaks and growth. With compareTo, the Snapshot of an earlier call, the types that "
+        + "grew the most since, with how much, which points at a leak. Walking a big heap takes a while. Reads a dump file instead, if it has the heap.")]
+    private Task<ProcessInspection.HeapSummary> GetHeapAsync(
         [Description(ProcessDefaults.ProcessId)] int? processId = null,
         [Description(ProcessDefaults.DumpPath)] string? dumpPath = null,
-        [Description("Optional regex for the type names to count, e.g. '^MyApp\\.' or 'Cache'.")] string? type = null,
-        [Description("How many types to return, largest first.")] int top = 50)
-    {
-        var regex = ProcessDefaults.TypePattern(type);
-        return Task.Run(() => ProcessInspection.Heap(processId, dumpPath, regex, top));
-    }
+        [Description("Optional regex for the type names to show, e.g. '^MyApp\\.' or 'Cache'.")] string? type = null,
+        [Description("How many types to return, largest first, or that grew most first with compareTo.")] int top = 50,
+        [Description("The Snapshot of an earlier process_heap result to compare with.")] string? compareTo = null) =>
+        Task.Run(() =>
+        {
+            var regex = ProcessDefaults.TypePattern(type);
+            ProcessInspection.HeapSnapshot? baseline = null;
+            if (compareTo is not null && !_snapshots.TryGetValue(compareTo, out baseline))
+                throw new McpException($"There is no snapshot {compareTo}; only the last {MaxSnapshots} are kept, until the server restarts.");
+
+            var snapshot = ProcessInspection.Snapshot(processId, dumpPath);
+            var id = Interlocked.Increment(ref _lastId).ToString();
+            _snapshots[id] = snapshot;
+            _snapshots.TryRemove((int.Parse(id) - MaxSnapshots).ToString(), out _);
+            return ProcessInspection.Summarize(id, snapshot, baseline, regex, top);
+        });
 }
 
 public sealed class ProcessObjectsTool : IMcpTool

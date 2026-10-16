@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Text;
+using System.Text.Json;
 using ModelContextProtocol;
+using NuGet.Versioning;
 
 namespace Roslynaut.Tools;
 
@@ -14,8 +16,8 @@ public sealed record MethodAsm(string Method, string Asm);
 /// </summary>
 internal static class JitDisassembler
 {
-    public const string ResultDescription = "The code comes from the JIT of the server's .NET runtime (the newest installed one for assemblies built "
-        + "for a later .NET), fully optimized, for this machine's CPU. "
+    public const string ResultDescription = "The code comes from the JIT of the .NET the assembly is built for (its newest installed patch; for a "
+        + "framework assembly, its own framework), or else of the nearest installed .NET, fully optimized, for this machine's CPU; the listing names it. "
         + "Assemblies built for debugging compile unoptimized (MinOpts). Generic code is shown for reference-type arguments, as the code they all share "
         + "(System.__Canon). " + IlDisassembler.ResultDescription;
 
@@ -46,9 +48,11 @@ internal static class JitDisassembler
         }
 
         var listingFile = Path.GetTempFileName();
+        var runtimeConfig = Path.Combine(Path.GetTempPath(), $"roslynaut-jithost-{Guid.NewGuid():N}.runtimeconfig.json");
         try
         {
-            var (runtime, errors) = RunHost(assembly, methods, listingFile, runtimeVersion > Environment.Version.Major);
+            File.WriteAllText(runtimeConfig, RuntimeConfig(RuntimeFor(assembly.Path.Value, runtimeVersion)));
+            var (runtime, errors) = RunHost(assembly, methods, listingFile, runtimeConfig);
 
             // Every method is compiled once, in the order given, so overloads get their listings in that order too.
             var listings = File.ReadAllText(listingFile).Split(ListingStart).Skip(1)
@@ -64,11 +68,58 @@ internal static class JitDisassembler
         finally
         {
             File.Delete(listingFile);
+            File.Delete(runtimeConfig);
         }
     }
 
-    /// <param name="newerRuntime">Whether the assembly is built for a newer .NET than the server's, which cannot load it.</param>
-    private static (string Runtime, Dictionary<int, string> Errors) RunHost(LoadedAssembly assembly, List<Method> methods, string listingFile, bool newerRuntime)
+    /// <summary>
+    /// The installed runtime to compile with, and its ASP.NET Core if installed: for a framework assembly, the framework it is part of; else the
+    /// newest patch of the .NET it is built for; else the oldest newer .NET (as rolling forward picks), or the newest one for a later .NET; and
+    /// for an assembly built for .NET Standard or .NET Framework, the server's.
+    /// </summary>
+    internal static (NuGetVersion NetCore, NuGetVersion? AspNetCore) RuntimeFor(string assemblyPath, int? major)
+    {
+        var shared = Path.Combine(Path.GetDirectoryName(DotnetCli.Executable)!, "shared");
+        var netCore = Installed(Path.Combine(shared, "Microsoft.NETCore.App"));
+        var aspNetCore = Installed(Path.Combine(shared, "Microsoft.AspNetCore.App"));
+        if (netCore.Count == 0)
+            throw new McpException($"No .NET runtime is installed under {shared}.");
+
+        // shared/<framework>/<version>/<file>
+        var framework = Path.GetRelativePath(shared, assemblyPath).Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) is [var name, var version, _]
+            && NuGetVersion.TryParse(version, out var frameworkVersion) ? (Name: name, Version: frameworkVersion) : default;
+        var target = framework.Version?.Major ?? major ?? Environment.Version.Major;
+
+        var chosen = framework.Name == "Microsoft.NETCore.App" && netCore.Contains(framework.Version!)
+            ? framework.Version!
+            : netCore.Where(version => version.Major == target).DefaultIfEmpty(null).Max()
+                ?? netCore.Where(version => version.Major > target).GroupBy(version => version.Major).MinBy(group => group.Key)?.Max()
+                ?? netCore.Max()!;
+        var web = framework.Name == "Microsoft.AspNetCore.App" && aspNetCore.Contains(framework.Version!)
+            ? framework.Version
+            : aspNetCore.Where(version => version.Major == chosen.Major).DefaultIfEmpty(null).Max();
+        return (chosen, web);
+
+        static List<NuGetVersion> Installed(string directory) =>
+            Directory.Exists(directory)
+                ? [.. Directory.EnumerateDirectories(directory).Select(Path.GetFileName).Select(name => NuGetVersion.TryParse(name, out var version) ? version : null).OfType<NuGetVersion>()]
+                : [];
+    }
+
+    /// <summary>A runtimeconfig.json that runs the host on exactly these frameworks; the host is built for the oldest supported .NET.</summary>
+    private static string RuntimeConfig((NuGetVersion NetCore, NuGetVersion? AspNetCore) runtime) => JsonSerializer.Serialize(new
+    {
+        runtimeOptions = new
+        {
+            tfm = $"net{runtime.NetCore.Major}.0",
+            rollForward = "Disable",
+            frameworks = (object[])[
+                new { name = "Microsoft.NETCore.App", version = runtime.NetCore.ToNormalizedString() },
+                .. runtime.AspNetCore is { } web ? [new { name = "Microsoft.AspNetCore.App", version = web.ToNormalizedString() }] : Array.Empty<object>()],
+        },
+    });
+
+    private static (string Runtime, Dictionary<int, string> Errors) RunHost(LoadedAssembly assembly, List<Method> methods, string listingFile, string runtimeConfig)
     {
         if (!File.Exists(HostPath))
             throw new McpException($"The JIT host is missing: {HostPath}");
@@ -86,20 +137,12 @@ internal static class JitDisassembler
                 ["DOTNET_TieredCompilation"] = "0",
             },
         };
-        foreach (var argument in (string[])["exec", HostPath, path, .. methods.Select(method => method.Token.ToString())])
+        foreach (var argument in (string[])["exec", "--runtimeconfig", runtimeConfig, HostPath, path, .. methods.Select(method => method.Token.ToString())])
             start.ArgumentList.Add(argument);
 
-        // The host runs on the same framework, so it uses its own copy of framework assemblies, which are precompiled.
+        // The host runs on that very framework, so it uses its own copy of framework assemblies, which are precompiled.
         if (path.StartsWith(FrameworkDirectory, StringComparison.OrdinalIgnoreCase))
             start.Environment["DOTNET_ReadyToRun"] = "0";
-
-        // ponytail: the newest installed runtime, previews included, not the one the assembly is built for; pick that with a generated
-        // runtimeconfig.json if listings of a later .NET mislead. (--fx-version does not work: the host also needs ASP.NET Core of its own version.)
-        if (newerRuntime)
-        {
-            start.Environment["DOTNET_ROLL_FORWARD"] = "LatestMajor";
-            start.Environment["DOTNET_ROLL_FORWARD_TO_PRERELEASE"] = "1";
-        }
 
         using var host = Process.Start(start)!;
         host.StandardInput.Write(string.Concat(assembly.Dependencies.Value.Select(dependency => $"{dependency.Key}\t{dependency.Value}\n")));

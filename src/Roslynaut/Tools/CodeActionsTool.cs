@@ -12,8 +12,8 @@ public sealed class CodeActionsTool(WorkspaceService workspace, CodeActionServic
     [McpServerTool(Name = "code_actions", ReadOnly = true)]
     [Description("Lists the code fixes for the diagnostics at a position, line or selection and the refactorings available there, like an IDE's "
         + "light bulb: add a using, implement an interface, generate a method, extract a method from the selected statements, introduce a local for "
-        + "the selected expression, fix a warning, and so on. Apply one with apply_code_action. Refactorings that need an IDE dialog, such as "
-        + "change signature or extract interface, are left out. Paged.")]
+        + "the selected expression, fix a warning, and so on. Apply one with apply_code_action. Refactorings that need an IDE dialog are left out; "
+        + "change_signature and extract_interface run two of them. Paged.")]
     private async Task<PagedResult<CodeActionEntry>> FindCodeActionsAsync(
         [Description(ToolDefaults.ProjectPath)] string projectPath,
         [Description(ToolDefaults.FilePath)] string filePath,
@@ -72,14 +72,16 @@ public sealed class ApplyCodeActionTool(WorkspaceService workspace, CodeActionSe
 
     [McpServerTool(Name = "apply_code_action", Destructive = true)]
     [Description("Applies a code action that code_actions listed, by its id; writes the changed files to disk and returns their paths. "
-        + "Ids hold until the code changes.")]
+        + "Ids hold until the code changes. An action whose title ends in '...' picks members, as an IDE would ask for in a dialog.")]
     private async Task<AppliedCodeAction> ApplyCodeActionAsync(
         [Description(ToolDefaults.ProjectPath)] string projectPath,
         [Description("The Id of an entry from code_actions.")] string id,
+        [Description("For an action that picks members, such as 'Generate overrides...' or 'Generate constructor from members...': the members to "
+            + "use, by name; all it offers by default.")] string[]? members = null,
         CancellationToken cancellationToken = default)
     {
         var solution = (await workspace.GetAsync(projectPath)).Solution;
-        var (action, changed) = await codeActions.ApplyAsync(solution, id, cancellationToken);
+        var (action, changed) = await codeActions.ApplyAsync(solution, id, cancellationToken, members);
         return new(action.Title, await WorkspaceService.WriteChangesAsync(solution, changed, cancellationToken));
     }
 

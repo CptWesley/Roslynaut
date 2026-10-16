@@ -185,6 +185,18 @@ public class BuildAndRunTestsTests
     }
 
     [Test]
+    public async Task Build_WithTimings_SaysWhereTheTimeWent()
+    {
+        var timings = (await BuildTool.BuildAsync(project, timings: true)).Timings;
+
+        timings.Should().NotBeNull();
+        timings!.Milliseconds.Should().BePositive();
+        timings.Projects.Should().Contain(timing => timing.Name.StartsWith("Sample.Tests"));
+        timings.Targets.Should().NotBeEmpty().And.OnlyContain(timing => timing.Project != null);
+        timings.Tasks.Should().NotBeEmpty();
+    }
+
+    [Test]
     public async Task RunTests_CountsOutcomes_AndReportsFailures()
     {
         var run = await RunTestsTool.RunTestsAsync(project);
@@ -256,5 +268,150 @@ public class BuildAndRunTestsTests
         {
             File.Delete(broken);
         }
+    }
+}
+
+/// <summary>run_tests under Microsoft.Testing.Platform: what its dotnet test writes, and filters per test framework.</summary>
+public class TestingPlatformTests
+{
+    // As TUnit writes a failure: the message has lines that are not indented.
+    private const string TUnitOutput = """
+        failed Fails (37ms)
+          AssertionException: Expected 1 + 1 to be equal to 3
+
+        but found 2
+
+        at Assert.That(1 + 1).IsEqualTo(3)
+          from C:\src\Tu\bin\Debug\net10.0\Tu.dll (net10.0|x64)
+          TUnit.Engine.Exceptions.TestFailedException: AssertionException: Expected 1 + 1 to be equal to 3
+        C:\src\Tu\bin\Debug\net10.0\Tu.dll (net10.0|x64) failed with 1 error(s) [+1/x1/?1] (266ms)
+        Exit code: 2
+
+        Test run summary: Failed!
+          total: 3
+          failed: 1
+          succeeded: 1
+          skipped: 1
+          duration: 549ms
+        """;
+
+    private const string XUnitOutput = """
+        Running tests from C:\src\Xu\bin\Debug\net10.0\Xu.dll (net10.0|x64)
+        failed Xu.Tests.Fails (19ms)
+          Assert.Equal() Failure: Values differ
+        Expected: 3
+        Actual:   2
+          from C:\src\Xu\bin\Debug\net10.0\Xu.dll (net10.0|x64)
+          Assert.Equal() Failure: Values differ
+            at Xu.Tests.Fails() in C:\src\Xu\T.cs:5
+            at System.Reflection.MethodBaseInvoker.InterpretedInvoke_Method(Object obj, IntPtr* args)
+        skipped Xu.Tests.Skipped
+          Not now
+          from C:\src\Xu\bin\Debug\net10.0\Xu.dll (net10.0|x64)
+
+        Test run summary: Failed!
+          total: 3
+          failed: 1
+          succeeded: 1
+          skipped: 1
+        """;
+
+    [Test]
+    public void SummarizeConsole_ReadsCountsAndFailures()
+    {
+        var run = RunTestsTool.SummarizeConsole(2, XUnitOutput);
+        (run.Succeeded, run.Total, run.Passed, run.Failed, run.Skipped, run.Output).Should().Be((false, 3, 1, 1, 1, (string?)null));
+        run.Failures.Should().ContainSingle().Which.Should().Be(new RunTestsTool.TestFailure("Xu.Tests.Fails", "Failed",
+            "Assert.Equal() Failure: Values differ\nExpected: 3\nActual:   2",
+            @"at Xu.Tests.Fails() in C:\src\Xu\T.cs:5" + "\nat System.Reflection.MethodBaseInvoker.InterpretedInvoke_Method(Object obj, IntPtr* args)"));
+
+        RunTestsTool.SummarizeConsole(2, TUnitOutput).Failures.Should().ContainSingle().Which.Message.Should()
+            .Be("AssertionException: Expected 1 + 1 to be equal to 3\n\nbut found 2\n\nat Assert.That(1 + 1).IsEqualTo(3)");
+    }
+
+    [Test]
+    public void SummarizeConsole_WithoutTests_KeepsTheOutput()
+    {
+        RunTestsTool.SummarizeConsole(5, "  Standard output: Unknown option '--coverage'\n  total: 0\n").Output.Should().Contain("Unknown option");
+    }
+
+    [Test]
+    public void FilterArguments_TranslateTestNames()
+    {
+        const string filter = "FullyQualifiedName~App.Tests.CalcTests.Adds|FullyQualifiedName~App.Tests.OtherTests.Subtracts";
+
+        RunTestsTool.FilterArguments(filter, RunTestsTool.FilterStyle.VSTest).Should().Equal("--filter", filter);
+        RunTestsTool.FilterArguments(filter, RunTestsTool.FilterStyle.XUnit).Should().Equal(
+            "--filter-method", "*App.Tests.CalcTests.Adds*", "--filter-method", "*App.Tests.OtherTests.Subtracts*");
+        RunTestsTool.FilterArguments("FullyQualifiedName=App.Tests.CalcTests.Adds", RunTestsTool.FilterStyle.XUnit).Should().Equal("--filter-method", "App.Tests.CalcTests.Adds");
+        RunTestsTool.FilterArguments(filter, RunTestsTool.FilterStyle.TUnit).Should().Equal("--treenode-filter", "/*/App.Tests/(CalcTests|OtherTests)/(Adds|Subtracts)");
+        FluentActions.Invoking(() => RunTestsTool.FilterArguments("TestCategory=Fast", RunTestsTool.FilterStyle.TUnit))
+            .Should().Throw<ModelContextProtocol.McpException>().WithMessage("*--treenode-filter*");
+    }
+}
+
+/// <summary>run_tests against real xUnit v3 and TUnit projects that global.json puts on Microsoft.Testing.Platform.</summary>
+[NonParallelizable]
+public class TestingPlatformRunTests
+{
+    private DirectoryInfo directory = null!;
+
+    [OneTimeSetUp]
+    public void CreateProjects()
+    {
+        directory = Directory.CreateTempSubdirectory("roslynaut-mtp-");
+        void Write(string path, string text)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(Path.Combine(directory.FullName, path))!);
+            File.WriteAllText(Path.Combine(directory.FullName, path), text);
+        }
+
+        Write("global.json", """{ "test": { "runner": "Microsoft.Testing.Platform" } }""");
+        foreach (var (name, package, version, code) in new[]
+        {
+            ("Xu", "xunit.v3", "3.1.0", """
+                namespace Xu;
+                public class Tests
+                {
+                    [Xunit.Fact] public void Passes() => Xunit.Assert.Equal(2, 1 + 1);
+                    [Xunit.Fact] public void Fails() => Xunit.Assert.Equal(3, 1 + 1);
+                }
+                """),
+            ("Tu", "TUnit", "0.57.24", """
+                namespace Tu;
+                public class Tests
+                {
+                    [Test] public async Task Passes() => await Assert.That(1 + 1).IsEqualTo(2);
+                    [Test] public async Task Fails() => await Assert.That(1 + 1).IsEqualTo(3);
+                }
+                """),
+        })
+        {
+            Write($"{name}/{name}.csproj", $"""
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup><TargetFramework>net10.0</TargetFramework><OutputType>Exe</OutputType><ImplicitUsings>enable</ImplicitUsings></PropertyGroup>
+                  <ItemGroup><PackageReference Include="{package}" Version="{version}" /></ItemGroup>
+                </Project>
+                """);
+            Write($"{name}/Tests.cs", code);
+        }
+    }
+
+    [OneTimeTearDown]
+    public void DeleteProjects() => directory.Delete(recursive: true);
+
+    [TestCase("Xu")]
+    [TestCase("Tu")]
+    public async Task RunTests_CountsAndFilters(string name)
+    {
+        var project = Path.Combine(directory.FullName, name, $"{name}.csproj");
+        RunTestsTool.UsesTestingPlatform(project).Should().BeTrue();
+
+        var run = await RunTestsTool.RunTestsAsync(project);
+        (run.Succeeded, run.Total, run.Passed, run.Failed).Should().Be((false, 2, 1, 1));
+        run.Failures.Should().ContainSingle().Which.Message.Should().Contain("3");
+
+        var filtered = await RunTestsTool.RunTestsAsync(project, $"FullyQualifiedName~{name}.Tests.Passes", workspace: new WorkspaceService());
+        (filtered.Succeeded, filtered.Total, filtered.Passed).Should().Be((true, 1, 1));
     }
 }

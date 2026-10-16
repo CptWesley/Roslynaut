@@ -129,3 +129,39 @@ public class WorkspaceOptionsTests
         }
     }
 }
+
+[NonParallelizable]
+public class PropertyTraceTests
+{
+    [Test]
+    public async Task Trace_ListsEveryDefinitionInOrder_AndTheValue()
+    {
+        var directory = Directory.CreateTempSubdirectory("roslynaut-trace-");
+        try
+        {
+            File.WriteAllText(Path.Combine(directory.FullName, "Directory.Build.props"), "<Project><PropertyGroup><LangVersion>12</LangVersion></PropertyGroup></Project>");
+            var project = Path.Combine(directory.FullName, "P.csproj");
+            File.WriteAllText(project, """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>
+                  <PropertyGroup Condition="'$(Configuration)' == 'Release'"><LangVersion>13</LangVersion></PropertyGroup>
+                  <Target Name="Bump"><PropertyGroup><LangVersion>14</LangVersion></PropertyGroup></Target>
+                </Project>
+                """);
+
+            var trace = await Roslynaut.Tools.MsBuildPropertyTraceTool.TraceAsync(project, "LangVersion");
+
+            trace.Value.Should().Be("12");
+            trace.Definitions[0].Should().Match<Roslynaut.Tools.MsBuildPropertyTraceTool.PropertyDefinition>(
+                definition => definition.File!.EndsWith("Directory.Build.props") && definition.Value == "12" && definition.Condition == null);
+            trace.Definitions[1].Should().Match<Roslynaut.Tools.MsBuildPropertyTraceTool.PropertyDefinition>(
+                definition => definition.File!.EndsWith("P.csproj") && definition.Value == "13" && definition.Condition!.Contains("Release"));
+            trace.Definitions.Should().ContainSingle(definition => definition.Target == "Bump" && definition.Value == "14")
+                .And.NotContain(definition => definition.Value == "$(LangVersion)");
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
+    }
+}

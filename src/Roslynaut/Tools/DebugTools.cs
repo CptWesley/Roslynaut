@@ -8,8 +8,10 @@ namespace Roslynaut.Tools;
 internal static class DebugDefaults
 {
     public const string Wait = "How long to wait for the program to stop or exit; it keeps running after that, and the state says Running.";
-    public const string Breakpoints = "Breakpoints: in the file at filePath, the 1-based line, with an optional condition such as 'i == 3'.";
-    public const string AllExceptions = "Stop at every exception thrown, not only at unhandled ones.";
+    public const string Breakpoints = "Breakpoints: at the 1-based Line of the file at FilePath, or where the method Function starts, such as "
+        + "'MyApp.Orders.Submit'; each with an optional Condition such as 'i == 3'.";
+    public const string Exceptions = "Exception types to stop at where they are thrown, even when caught, such as 'System.InvalidOperationException'; "
+        + "'*' for every exception. Unhandled exceptions always stop.";
 }
 
 public sealed class DebugAttachTool(DebugService debugger) : IMcpTool
@@ -22,10 +24,10 @@ public sealed class DebugAttachTool(DebugService debugger) : IMcpTool
     private Task<DebugState> AttachAsync(
         [Description("The process id, e.g. from dotnet_processes.")] int processId,
         [Description(DebugDefaults.Breakpoints)] Breakpoint[]? breakpoints = null,
-        [Description(DebugDefaults.AllExceptions)] bool stopOnAllExceptions = false,
+        [Description(DebugDefaults.Exceptions)] string[]? stopOnExceptions = null,
         [Description(DebugDefaults.Wait)] int waitSeconds = 30,
         CancellationToken cancellationToken = default) =>
-        debugger.AttachAsync(processId, breakpoints ?? [], stopOnAllExceptions, TimeSpan.FromSeconds(waitSeconds), cancellationToken);
+        debugger.AttachAsync(processId, breakpoints ?? [], stopOnExceptions, TimeSpan.FromSeconds(waitSeconds), cancellationToken);
 }
 
 public sealed class DebugTestTool(DebugService debugger) : IMcpTool
@@ -40,10 +42,10 @@ public sealed class DebugTestTool(DebugService debugger) : IMcpTool
         [Description("The test project (.csproj).")] string projectPath,
         [Description("A dotnet test --filter expression for the tests to run, such as a Filter from find_tests; omit to run all of them.")] string? filter = null,
         [Description(DebugDefaults.Breakpoints)] Breakpoint[]? breakpoints = null,
-        [Description(DebugDefaults.AllExceptions)] bool stopOnAllExceptions = false,
+        [Description(DebugDefaults.Exceptions)] string[]? stopOnExceptions = null,
         [Description(DebugDefaults.Wait + " The build comes first.")] int waitSeconds = 60,
         CancellationToken cancellationToken = default) =>
-        debugger.TestAsync(projectPath, filter, breakpoints ?? [], stopOnAllExceptions, TimeSpan.FromSeconds(waitSeconds), cancellationToken);
+        debugger.TestAsync(projectPath, filter, breakpoints ?? [], stopOnExceptions, TimeSpan.FromSeconds(waitSeconds), cancellationToken);
 }
 
 public sealed class DebugStartTool(DebugService debugger) : IMcpTool
@@ -59,10 +61,10 @@ public sealed class DebugStartTool(DebugService debugger) : IMcpTool
         [Description("Command-line arguments for the program.")] string[]? args = null,
         [Description(DebugDefaults.Breakpoints)] Breakpoint[]? breakpoints = null,
         [Description("Stop at the first line of Main.")] bool stopAtEntry = false,
-        [Description(DebugDefaults.AllExceptions)] bool stopOnAllExceptions = false,
+        [Description(DebugDefaults.Exceptions)] string[]? stopOnExceptions = null,
         [Description(DebugDefaults.Wait)] int waitSeconds = 30,
         CancellationToken cancellationToken = default) =>
-        debugger.StartAsync(program, args ?? [], breakpoints ?? [], stopAtEntry, stopOnAllExceptions, TimeSpan.FromSeconds(waitSeconds), cancellationToken);
+        debugger.StartAsync(program, args ?? [], breakpoints ?? [], stopAtEntry, stopOnExceptions, TimeSpan.FromSeconds(waitSeconds), cancellationToken);
 }
 
 public sealed class DebugBreakpointsTool(DebugService debugger) : IMcpTool
@@ -70,19 +72,42 @@ public sealed class DebugBreakpointsTool(DebugService debugger) : IMcpTool
     public Delegate Handler => SetAsync;
 
     [McpServerTool(Name = "debug_breakpoints", Idempotent = true)]
-    [Description("Replaces the breakpoints in one file of the program being debugged; no lines removes them. Returns whether the debugger "
-        + "could bind each one to code.")]
+    [Description("Replaces the breakpoints in one file of the program being debugged, or else all the breakpoints at methods; none removes them. "
+        + "Returns whether the debugger could bind each one to code.")]
     private Task<IReadOnlyList<BreakpointState>> SetAsync(
-        [Description(ToolDefaults.FilePath)] string filePath,
-        [Description("1-based lines to break at.")] int[] lines,
-        [Description("Optional conditions, one per line in the same order; null or empty for none.")] string?[]? conditions = null,
+        [Description("The file whose breakpoints to replace.")] string? filePath = null,
+        [Description("1-based lines of the file to break at.")] int[]? lines = null,
+        [Description("Or else: the methods to break at, such as 'MyApp.Orders.Submit'; replaces all the breakpoints at methods.")] string[]? functions = null,
+        [Description("Optional conditions, one per line or method in the same order; null or empty for none.")] string?[]? conditions = null,
         CancellationToken cancellationToken = default)
     {
-        if (conditions is not null && conditions.Length != lines.Length)
-            throw new McpException("Give one condition per line, or none.");
+        if ((filePath is null) == (functions is null))
+            throw new McpException("Pass a filePath with lines, or functions.");
 
-        return debugger.SetBreakpointsAsync(filePath, [.. lines.Select((line, i) => new Breakpoint(filePath, line, conditions?[i] is { Length: > 0 } condition ? condition : null))], cancellationToken);
+        var count = functions?.Length ?? lines?.Length ?? 0;
+        if (conditions is not null && conditions.Length != count)
+            throw new McpException("Give one condition per line or method, or none.");
+
+        string? ConditionOf(int i) => conditions?[i] is { Length: > 0 } condition ? condition : null;
+        return functions is not null
+            ? debugger.SetFunctionBreakpointsAsync([.. functions.Select((function, i) => new Breakpoint(Condition: ConditionOf(i), Function: function))], cancellationToken)
+            : debugger.SetBreakpointsAsync(filePath!, [.. (lines ?? []).Select((line, i) => new Breakpoint(filePath, line, ConditionOf(i)))], cancellationToken);
     }
+}
+
+public sealed class DebugSetTool(DebugService debugger) : IMcpTool
+{
+    public Delegate Handler => SetAsync;
+
+    [McpServerTool(Name = "debug_set", Destructive = true)]
+    [Description("Sets a variable, field or property of the stopped program to the value of a C# expression, such as order.Total to 0, to try a "
+        + "fix or a case before resuming. Returns the new value.")]
+    private Task<Variable> SetAsync(
+        [Description("What to set, such as 'total' or 'order.Total'.")] string expression,
+        [Description("The new value, as a C# expression such as '0', '\"text\"' or 'other.Total'.")] string value,
+        [Description("The frame, by its index in the stack: 0 is the innermost.")] int frame = 0,
+        CancellationToken cancellationToken = default) =>
+        debugger.SetAsync(expression, value, frame, cancellationToken);
 }
 
 public sealed class DebugResumeTool(DebugService debugger) : IMcpTool

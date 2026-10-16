@@ -11,15 +11,20 @@ internal static class DotnetCli
 
     /// <summary>Returns the exit code and the combined standard output and error.</summary>
     /// <param name="input">What to write to standard input, if anything.</param>
-    public static Task<(int ExitCode, string Output)> RunAsync(IReadOnlyList<string> arguments, TimeSpan timeout, CancellationToken cancellationToken, string? input = null) =>
-        RunAsync(Executable, arguments, timeout, cancellationToken, input);
+    /// <param name="workingDirectory">
+    /// Where to run, such as the directory of the project or solution: dotnet reads global.json, which picks the SDK and the test runner, from there.
+    /// </param>
+    public static Task<(int ExitCode, string Output)> RunAsync(
+        IReadOnlyList<string> arguments, TimeSpan timeout, CancellationToken cancellationToken, string? input = null, string? workingDirectory = null) =>
+        RunAsync(Executable, arguments, timeout, cancellationToken, input, workingDirectory);
 
     /// <summary>Runs another executable, such as git, the same way.</summary>
     public static async Task<(int ExitCode, string Output)> RunAsync(
-        string executable, IReadOnlyList<string> arguments, TimeSpan timeout, CancellationToken cancellationToken, string? input = null)
+        string executable, IReadOnlyList<string> arguments, TimeSpan timeout, CancellationToken cancellationToken, string? input = null, string? workingDirectory = null)
     {
         var start = new ProcessStartInfo(executable)
         {
+            WorkingDirectory = workingDirectory ?? "",
             RedirectStandardInput = input is not null,
             RedirectStandardOutput = true,
             RedirectStandardError = true,

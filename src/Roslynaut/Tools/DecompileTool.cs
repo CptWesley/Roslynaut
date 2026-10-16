@@ -43,7 +43,7 @@ public sealed class DecompileTool(AssemblyLoader assemblies, PdbService pdbs, Re
 
         // From bytes, so the file stays unlocked. References resolve next to it, from the NuGet cache, or from installed frameworks.
         var path = assembly.Path.Value;
-        using var file = new PEFile(path, new MemoryStream(File.ReadAllBytes(path)));
+        using var file = new ICSharpCode.Decompiler.Metadata.PEFile(path, new MemoryStream(File.ReadAllBytes(path)));
         var decompiler = new CSharpDecompiler(file, new UniversalAssemblyResolver(path, throwOnError: false, file.DetectTargetFrameworkId()), new DecompilerSettings())
         {
             DebugInfoProvider = pdb is null ? null : new DebugInfo(pdb),

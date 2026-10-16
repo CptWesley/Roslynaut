@@ -16,6 +16,7 @@ public sealed class FindTestsTool(WorkspaceService workspace, ResultCache cache)
         "NUnit.Framework.TheoryAttribute",
         "Xunit.FactAttribute",
         "Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute",
+        "TUnit.Core.TestAttribute",
     ];
 
     // ponytail: follows callers to a fixed depth; raise it, or index tests by what they reach, if tests go through deeper helpers.
@@ -24,7 +25,7 @@ public sealed class FindTestsTool(WorkspaceService workspace, ResultCache cache)
     public Delegate Handler => FindTestsAsync;
 
     [McpServerTool(Name = "find_tests", ReadOnly = true)]
-    [Description("Finds NUnit, xUnit and MSTest test methods: all of them, or those that use a symbol, directly or through up to 3 calls in between. "
+    [Description("Finds NUnit, xUnit, MSTest and TUnit test methods: all of them, or those that use a symbol, directly or through up to 3 calls in between. "
         + "Each comes with its project and a Filter for run_tests. Paged.")]
     private async Task<PagedResult<TestEntry>> FindTestsAsync(
         [Description(ToolDefaults.ProjectPath)] string projectPath,

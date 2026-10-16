@@ -110,6 +110,36 @@ public class AsmTests
             .Which.Asm.Should().Contain("Roslynaut.Tests.TestSolution:Create(System.String):Microsoft.CodeAnalysis.Solution (MinOpts)");
     }
 
+    private static readonly string NetCoreDirectory = Path.Combine(Path.GetDirectoryName(DotnetCli.Executable)!, "shared", "Microsoft.NETCore.App");
+
+    private static List<NuGet.Versioning.NuGetVersion> InstalledRuntimes() =>
+        [.. Directory.EnumerateDirectories(NetCoreDirectory).Select(Path.GetFileName).Select(name => NuGet.Versioning.NuGetVersion.TryParse(name, out var version) ? version : null).OfType<NuGet.Versioning.NuGetVersion>()];
+
+    [Test]
+    public void RuntimeFor_PicksTheTargetsDotNet_OrTheNearestInstalled()
+    {
+        var installed = InstalledRuntimes();
+        var path = typeof(AsmTests).Assembly.Location;
+
+        JitDisassembler.RuntimeFor(path, Environment.Version.Major).NetCore.Should().Be(installed.Where(version => version.Major == Environment.Version.Major).Max()!);
+        JitDisassembler.RuntimeFor(path, 1).NetCore.Major.Should().Be(installed.Min(version => version.Major), "the oldest newer one, as rolling forward picks");
+        JitDisassembler.RuntimeFor(path, 99).NetCore.Should().Be(installed.Max()!);
+        JitDisassembler.RuntimeFor(path, null).NetCore.Major.Should().Be(Environment.Version.Major, "as the server's, for .NET Standard");
+    }
+
+    // A framework assembly of an older .NET compiles on that very runtime, with its own framework.
+    [Test]
+    public void AssemblyAsm_OfOlderFramework_UsesItsRuntime()
+    {
+        var older = InstalledRuntimes().Where(version => version.Major < Environment.Version.Major && version.Major >= 8 && !version.IsPrerelease).Max();
+        Assume.That(older, Is.Not.Null, "Needs an installed .NET from 8 on, older than the server's.");
+        var linq = Path.Combine(NetCoreDirectory, older!.ToNormalizedString(), "System.Linq.dll");
+
+        JitDisassembler.RuntimeFor(linq, older.Major).NetCore.Should().Be(older);
+        JitDisassembler.Disassemble(assemblies.Read(linq), ["System.Linq.Enumerable.Count"]).Should().NotBeEmpty()
+            .And.Contain(method => method.Asm.StartsWith($"; .NET {older.Major}.{older.Minor}.{older.Patch}") && method.Asm.Contains("(FullOpts)"));
+    }
+
     // Framework assemblies are precompiled, and System.Private.CoreLib cannot be loaded twice.
     [Test]
     public void AssemblyAsm_DisassemblesCoreLib()

@@ -2,6 +2,7 @@ using Buildalyzer;
 using ModelContextProtocol;
 using NuGet.Common;
 using NuGet.Configuration;
+using NuGet.Credentials;
 using NuGet.Frameworks;
 using NuGet.Packaging;
 using NuGet.Packaging.Core;
@@ -18,9 +19,23 @@ namespace Roslynaut;
 /// of the nuget.config files above it and the user's, read again on every call. Packages download into the global packages folder,
 /// where restore finds them later.
 /// </summary>
-// ponytail: credentials come from nuget.config only; feeds that need a credential provider (such as Azure Artifacts) fail until one is wired in.
+/// <remarks>
+/// Private feeds get their credentials from nuget.config, or else from credential providers, such as Azure Artifacts' plugin, as restore does.
+/// The server cannot sign anyone in, so providers run non-interactively, on what an interactive restore (dotnet restore --interactive) cached.
+/// </remarks>
 public sealed class NuGetService(WorkspaceService workspace)
 {
+    private const string SignInHint = " The feed needs a credential: add it to nuget.config, or install its credential provider (such as Azure Artifacts' "
+        + "artifacts-credprovider) and sign in once with dotnet restore --interactive, which leaves a credential the provider reuses.";
+
+    static NuGetService()
+    {
+        // NuGet starts plugins that are .NET assemblies with the dotnet this names; the server may run from its own executable instead.
+        if (Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") is null)
+            Environment.SetEnvironmentVariable("DOTNET_HOST_PATH", DotnetCli.Executable);
+        DefaultCredentialServiceUtility.SetupDefaultCredentialService(NullLogger.Instance, nonInteractive: true);
+    }
+
     public const string PackageId = "Package id, e.g. 'Newtonsoft.Json'.";
     public const string Version = "Package version, e.g. '13.0.3'; the latest stable one by default.";
     public const string TargetFramework = "Target framework to pick for, e.g. 'net8.0'; by default those of the project, or of the solution's projects.";
@@ -194,7 +209,8 @@ public sealed class NuGetService(WorkspaceService workspace)
         }
         catch (Exception e) when (e is FatalProtocolException or SignatureException)
         {
-            throw new McpException(e.InnerException is { } inner ? $"{e.Message} {inner.Message}" : e.Message, e);
+            var message = e.InnerException is { } inner ? $"{e.Message} {inner.Message}" : e.Message;
+            throw new McpException(message.Contains("401") || message.Contains("403") ? message + SignInHint : message, e);
         }
     }
 

@@ -74,6 +74,30 @@ public class CodeActionTests
         actions.Should().NotBeEmpty().And.NotContain(action => action.Title.StartsWith("Change signature"));
     }
 
+    // An IDE asks which members in a dialog; members picks them instead.
+    [Test]
+    public async Task PickMembers_UsesTheChosenOnes()
+    {
+        const string code = "class C { }";
+        var (solution, actions) = await FindAsync(code, "class C");
+        var overrides = actions.Should().Contain(action => action.Title == "Generate overrides...").Subject;
+
+        var (_, changed) = await codeActions.ApplyAsync(solution, overrides.Id, CancellationToken.None, ["ToString"]);
+
+        (await changed.Projects.Single().Documents.Single().GetTextAsync()).ToString().Should().Contain("public override string ToString()").And.NotContain("GetHashCode");
+    }
+
+    [Test]
+    public async Task MoveToNamespace_MovesTheTypeAndItsUsers()
+    {
+        var solution = TestSolution.Create("namespace A { public class C { } } namespace D { class User { A.C c; } }");
+        var type = (await SymbolTree.ResolveAsync(solution, "A.C", CancellationToken.None)).Single();
+
+        var changed = await DialogRefactorings.MoveToNamespaceAsync(solution, type, "B.Inner", CancellationToken.None);
+
+        (await changed.Projects.Single().Documents.Single().GetTextAsync()).ToString().Should().Contain("namespace B.Inner").And.NotContain("A.C c;");
+    }
+
     // Ids belong to the snapshot they were found for; once the code changes, they are gone.
     [Test]
     public async Task Apply_OnOtherSnapshot_Throws()

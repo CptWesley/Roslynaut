@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using System.Xml.Linq;
 using Microsoft.CodeAnalysis;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
@@ -38,6 +39,82 @@ public sealed class MsBuildEvaluateTool(WorkspaceService workspace) : IMcpTool
 
     /// <param name="Include">The item's value, such as a file path or a package id.</param>
     public sealed record Item(string Include, IReadOnlyDictionary<string, string> Metadata);
+}
+
+public sealed class MsBuildPropertyTraceTool : IMcpTool
+{
+    public Delegate Handler => TraceAsync;
+
+    [McpServerTool(Name = "msbuild_property_trace", ReadOnly = true)]
+    [Description("Explains where an MSBuild property gets its value: every place in the project and its imports, such as Directory.Build.props "
+        + "and the SDK's props and targets, that sets it, in evaluation order, each with its file, condition and the text it sets; and the value it "
+        + "ends with. Settings inside a target apply only when that target runs. Global properties and environment variables can set it too.")]
+    internal static async Task<PropertyTrace> TraceAsync(
+        [Description("Path to a .csproj file.")] string projectPath,
+        [Description("The property, such as LangVersion or OutputPath.")] string name,
+        CancellationToken cancellationToken = default)
+    {
+        var path = Path.GetFullPath(projectPath);
+        if (!File.Exists(path) || Path.GetExtension(path).ToLowerInvariant() is ".sln" or ".slnx")
+            throw new McpException($"Not a project file: {path}");
+
+        // The preprocessed project: the project with every import inlined, in evaluation order.
+        var preprocessed = Path.GetTempFileName();
+        try
+        {
+            var directory = Path.GetDirectoryName(path);
+            var (exitCode, output) = await DotnetCli.RunAsync(["msbuild", path, $"-pp:{preprocessed}", "-nologo"], TimeSpan.FromMinutes(5), cancellationToken, workingDirectory: directory);
+            if (exitCode != 0)
+                throw new McpException($"dotnet msbuild could not read the project: {BuildTool.Tail(output)}");
+
+            var (_, value) = await DotnetCli.RunAsync(["msbuild", path, $"-getProperty:{name}", "-nologo"], TimeSpan.FromMinutes(5), cancellationToken, workingDirectory: directory);
+            return new(name, value.Trim(), Definitions(XDocument.Load(preprocessed), name));
+        }
+        finally
+        {
+            File.Delete(preprocessed);
+        }
+    }
+
+    /// <summary>
+    /// The definitions of a property in a preprocessed project, in order. Comments between imports name the file that follows; within them
+    /// MSBuild writes "--" as "__", since XML comments cannot hold it.
+    /// </summary>
+    internal static IReadOnlyList<PropertyDefinition> Definitions(XDocument preprocessed, string name)
+    {
+        var definitions = new List<PropertyDefinition>();
+        string? file = null;
+        foreach (var node in preprocessed.DescendantNodes())
+        {
+            if (node is XComment comment && comment.Value.Contains("=========="))
+            {
+                // ponytail: a path with "--" in it comes back with "__".
+                file = comment.Value.Split('\n').Select(line => line.Trim()).LastOrDefault(line => line.Length > 0 && Path.IsPathRooted(line)) ?? file;
+                continue;
+            }
+
+            if (node is not XElement { Parent: { Name.LocalName: "PropertyGroup" } group } element || !element.Name.LocalName.Equals(name, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            // Conditions of Choose/When around the group count too.
+            var conditions = element.AncestorsAndSelf().Select(ancestor => ancestor.Attribute("Condition")?.Value).OfType<string>().Reverse().ToList();
+            definitions.Add(new(
+                file,
+                conditions.Count == 0 ? null : string.Join(" and ", conditions),
+                element.Value.Trim(),
+                group.Ancestors().FirstOrDefault(ancestor => ancestor.Name.LocalName == "Target")?.Attribute("Name")?.Value));
+        }
+
+        return definitions;
+    }
+
+    /// <param name="Value">The value the project's evaluation ends with; for a project with several target frameworks, before it picks one.</param>
+    /// <param name="Definitions">Every place that sets it, in evaluation order: later ones whose conditions hold win.</param>
+    public sealed record PropertyTrace(string Property, string Value, IReadOnlyList<PropertyDefinition> Definitions);
+
+    /// <param name="Value">The text it sets, before $(...) and conditions are evaluated.</param>
+    /// <param name="Target">The target it is in, if any: then it applies only when that target runs.</param>
+    public sealed record PropertyDefinition(string? File, string? Condition, string Value, string? Target);
 }
 
 public sealed class WorkspaceOptionsTool(WorkspaceService workspace) : IMcpTool
@@ -133,7 +210,7 @@ public sealed class PackagesTool(WorkspaceService workspace, ResultCache cache) 
     internal static async Task<IEnumerable<Package>> ListAsync(string path, PackageFilter filter, bool transitive, CancellationToken cancellationToken)
     {
         // dotnet list package reads what restore wrote.
-        var (restored, restoreOutput) = await DotnetCli.RunAsync(["restore", path, "-v:q"], TimeSpan.FromMinutes(10), cancellationToken);
+        var (restored, restoreOutput) = await DotnetCli.RunAsync(["restore", path, "-v:q"], TimeSpan.FromMinutes(10), cancellationToken, workingDirectory: Path.GetDirectoryName(path));
         if (restored != 0)
             throw new McpException($"dotnet restore failed: {BuildTool.Tail(restoreOutput)}");
 
@@ -143,7 +220,7 @@ public sealed class PackagesTool(WorkspaceService workspace, ResultCache cache) 
         if (transitive)
             arguments.Add("--include-transitive");
 
-        var (_, output) = await DotnetCli.RunAsync(arguments, TimeSpan.FromMinutes(5), cancellationToken);
+        var (_, output) = await DotnetCli.RunAsync(arguments, TimeSpan.FromMinutes(5), cancellationToken, workingDirectory: Path.GetDirectoryName(path));
         var (start, end) = (output.IndexOf('{'), output.LastIndexOf('}'));
         if (start < 0 || end < start)
             throw new McpException($"dotnet list package failed: {BuildTool.Tail(output)}");

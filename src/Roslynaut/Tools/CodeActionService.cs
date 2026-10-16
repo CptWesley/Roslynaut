@@ -48,7 +48,7 @@ public sealed class CodeActionService
         [
             // Actions with options, such as "Change signature..." or "Extract interface...", ask an IDE dialog for them; this workspace has none.
             .. found.SelectMany(entry => Flatten(entry.Action, "").Select(action => (action.Action, action.Title, entry.DiagnosticId)))
-                .Where(entry => entry.Action is not CodeActionWithOptions)
+                .Where(entry => entry.Action is not CodeActionWithOptions withOptions || DialogRefactorings.CanBuildOptions(withOptions))
                 .Select(entry =>
             {
                 var id = Interlocked.Increment(ref _lastId).ToString();
@@ -71,10 +71,13 @@ public sealed class CodeActionService
     }
 
     /// <summary>The solution with the changes of a code action that <see cref="FindAsync"/> found for this same snapshot.</summary>
-    public async Task<(CodeAction Action, Solution Changed)> ApplyAsync(Solution solution, string id, CancellationToken cancellationToken)
+    /// <param name="members">For an action that picks members, such as "Generate overrides...": which ones, by name; all by default.</param>
+    public async Task<(CodeAction Action, Solution Changed)> ApplyAsync(Solution solution, string id, CancellationToken cancellationToken, IReadOnlyList<string>? members = null)
     {
         if (string.IsNullOrEmpty(id) || !_actions.TryGetValue(solution, out var actions) || !actions.TryGetValue(id, out var action))
             throw new McpException($"No code action {id} for the current code: the code changed since code_actions found it, or the id is wrong. Ask code_actions again.");
+        if (action is CodeActionWithOptions withOptions)
+            return (action, await DialogRefactorings.ApplyWithOptionsAsync(withOptions, members, cancellationToken));
 
         var operations = await action.GetOperationsAsync(cancellationToken);
         var changed = operations.OfType<ApplyChangesOperation>().LastOrDefault()?.ChangedSolution;

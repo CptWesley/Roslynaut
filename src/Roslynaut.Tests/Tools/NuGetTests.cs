@@ -210,3 +210,113 @@ public class NuGetTests
             new PackageLicense(Id, "1.0.0", true, Path.Combine(directory.FullName, "packages", Id.ToLowerInvariant(), "1.0.0", "LICENSE.txt"), "File"));
     }
 }
+
+/// <summary>A private feed that needs a credential, served locally: with none, NuGet asks the credential providers without prompting.</summary>
+[NonParallelizable]
+public class NuGetCredentialTests
+{
+    private const string User = "reader";
+    private const string Password = "s3cret";
+
+    private System.Net.HttpListener listener = null!;
+    private string feed = null!;
+
+    [OneTimeSetUp]
+    public void StartFeed()
+    {
+        // A free port.
+        var probe = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        probe.Start();
+        var port = ((System.Net.IPEndPoint)probe.LocalEndpoint).Port;
+        probe.Stop();
+
+        feed = $"http://localhost:{port}/";
+        listener = new System.Net.HttpListener { Prefixes = { feed } };
+        listener.Start();
+        _ = Task.Run(ServeAsync);
+    }
+
+    [OneTimeTearDown]
+    public void StopFeed() => listener.Close();
+
+    // A service index with a search endpoint that finds nothing, behind Basic authentication.
+    private async Task ServeAsync()
+    {
+        var expected = "Basic " + Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes($"{User}:{Password}"));
+        while (listener.IsListening)
+        {
+            System.Net.HttpListenerContext context;
+            try
+            {
+                context = await listener.GetContextAsync();
+            }
+            catch (Exception e) when (e is System.Net.HttpListenerException or ObjectDisposedException)
+            {
+                return;
+            }
+
+            var response = context.Response;
+            if (context.Request.Headers["Authorization"] != expected)
+            {
+                response.StatusCode = 401;
+                response.AddHeader("WWW-Authenticate", "Basic realm=\"feed\"");
+            }
+            else
+            {
+                var body = context.Request.Url!.AbsolutePath.EndsWith("index.json")
+                    ? $$"""{ "version": "3.0.0", "resources": [ { "@id": "{{feed}}query", "@type": "SearchQueryService" }, { "@id": "{{feed}}query", "@type": "SearchQueryService/3.0.0-rc" }, { "@id": "{{feed}}query", "@type": "SearchQueryService/3.0.0-beta" }, { "@id": "{{feed}}query", "@type": "SearchQueryService/3.5.0" } ] }"""
+                    : """{ "totalHits": 0, "data": [] }""";
+                var bytes = System.Text.Encoding.UTF8.GetBytes(body);
+                response.ContentType = "application/json";
+                await response.OutputStream.WriteAsync(bytes);
+            }
+
+            response.Close();
+        }
+    }
+
+    private async Task<string> ProjectWithFeedAsync(string credentials)
+    {
+        var directory = Directory.CreateTempSubdirectory("roslynaut-feed-");
+        File.WriteAllText(Path.Combine(directory.FullName, "nuget.config"), $"""
+            <configuration>
+              <packageSources>
+                <clear />
+                <add key="private" value="{feed}index.json" allowInsecureConnections="true" />
+              </packageSources>
+              {credentials}
+            </configuration>
+            """);
+        var project = Path.Combine(directory.FullName, "App.csproj");
+        await File.WriteAllTextAsync(project, """<Project Sdk="Microsoft.NET.Sdk" />""");
+        return project;
+    }
+
+    [Test]
+    public async Task Search_WithoutCredential_FailsWithHowToSignIn()
+    {
+        var project = await ProjectWithFeedAsync("");
+
+        await new NuGetService(new WorkspaceService()).Awaiting(nuget => nuget.SearchAsync(project, "anything", false, 0, 10, CancellationToken.None))
+            .Should().ThrowAsync<ModelContextProtocol.McpException>().WithMessage("*401*dotnet restore --interactive*");
+
+        // The credential providers were asked, through the service restore uses too.
+        NuGet.Protocol.HttpHandlerResourceV3.CredentialService!.Value.Should().BeOfType<NuGet.Credentials.CredentialService>();
+    }
+
+    [Test]
+    public async Task Search_WithCredentialInNuGetConfig_SignsIn()
+    {
+        var project = await ProjectWithFeedAsync($"""
+            <packageSourceCredentials>
+              <private>
+                <add key="Username" value="{User}" />
+                <add key="ClearTextPassword" value="{Password}" />
+              </private>
+            </packageSourceCredentials>
+            """);
+
+        (await new NuGetService(new WorkspaceService()).SearchAsync(project, "anything", false, 0, 10, CancellationToken.None))
+            .Should().ContainSingle().Which.Source.Should().Be("private");
+    }
+}
