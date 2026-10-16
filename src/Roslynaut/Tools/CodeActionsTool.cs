@@ -23,12 +23,30 @@ public sealed class CodeActionsTool(WorkspaceService workspace, CodeActionServic
     {
         var document = await workspace.GetDocumentAsync(projectPath, filePath);
         var text = await document.GetTextAsync(cancellationToken);
-        if (line < 1 || line > text.Lines.Count || column < 1)
-            throw new McpException($"Position {line}:{column} is outside '{filePath}'.");
-
-        var span = column is null ? text.Lines[line - 1].Span : new TextSpan(text.Lines[line - 1].Start + column.Value - 1, 0);
+        var span = column is null ? WorkspaceService.LinesOf(text, line, line, filePath) : new TextSpan(WorkspaceService.PositionOf(text, line, column.Value, filePath), 0);
         return await cache.GetPageAsync<CodeActionEntry>(document.Project.Solution, $"code_actions|{filePath}|{line}|{column}", page, pageSize,
             async () => await codeActions.FindAsync(document, span, cancellationToken));
+    }
+}
+
+public sealed class FixAllTool(WorkspaceService workspace, CodeActionService codeActions) : IMcpTool
+{
+    public Delegate Handler => FixAllAsync;
+
+    [McpServerTool(Name = "fix_all", Destructive = true)]
+    [Description("Fixes every diagnostic with an id at once, in one file or in the whole solution, as an IDE's 'Fix all occurrences' does; "
+        + "writes the changed files to disk and returns their paths.")]
+    private async Task<ApplyCodeActionTool.AppliedCodeAction> FixAllAsync(
+        [Description(ToolDefaults.ProjectPath)] string projectPath,
+        [Description("The diagnostic id, such as CS0168 or IDE0005.")] string diagnosticId,
+        [Description("Optional C# file to fix in; without it, the whole solution.")] string? filePath = null,
+        [Description("Which fix to apply, by its title as code_actions lists it, when there are several; the first otherwise.")] string? title = null,
+        CancellationToken cancellationToken = default)
+    {
+        var solution = (await workspace.GetAsync(projectPath)).Solution;
+        var document = filePath is null ? null : WorkspaceService.GetDocument(solution, filePath);
+        var (fixTitle, changed) = await codeActions.FixAllAsync(solution, document, diagnosticId, title, cancellationToken);
+        return new(fixTitle, await WorkspaceService.WriteChangesAsync(solution, changed, cancellationToken));
     }
 }
 

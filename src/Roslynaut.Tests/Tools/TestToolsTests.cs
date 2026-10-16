@@ -126,6 +126,27 @@ public class BuildAndRunTestsTests
     }
 
     [Test]
+    public async Task Packages_ListsTopLevel_AndTransitiveWhenAsked()
+    {
+        (await PackagesTool.ListAsync(project, PackageFilter.All, transitive: false, CancellationToken.None))
+            .Should().Contain(package => package.Id == "NUnit" && package.Requested == "5.0.0" && !package.Transitive);
+        (await PackagesTool.ListAsync(project, PackageFilter.All, transitive: true, CancellationToken.None))
+            .Should().Contain(package => package.Transitive);
+    }
+
+    [Test]
+    public async Task MsBuildEvaluate_AndProjectGraph_ReadTheDesignTimeBuild()
+    {
+        var loaded = await new WorkspaceService().GetAsync(project);
+
+        var evaluation = MsBuildEvaluateTool.Evaluate(loaded, ["TargetFramework", "Package*"]).Should().ContainSingle().Subject;
+        evaluation.Properties["TargetFramework"].Should().Be("net10.0");
+        evaluation.Items["PackageReference"].Select(item => item.Include).Should().Contain("NUnit");
+        ProjectGraphTool.Graph(loaded).Should().ContainSingle().Which.Should().Match<ProjectGraphTool.ProjectNode>(node =>
+            node.Name == "Sample.Tests" && node.TargetFramework == "net10.0" && node.References.Count == 0);
+    }
+
+    [Test]
     public async Task Build_WithCompileError_ReturnsIt()
     {
         var broken = Path.Combine(directory.FullName, "Broken.cs");

@@ -49,13 +49,15 @@ public sealed class DiagnosticsTool(WorkspaceService workspace, ResultCache cach
         return diagnostics
             .Where(diagnostic => diagnostic.Severity >= severity)
             .OrderByDescending(diagnostic => diagnostic.Severity)
-            .Select(diagnostic => new DiagnosticEntry(
-                diagnostic.Id,
-                diagnostic.Severity.ToString(),
-                diagnostic.GetMessage(),
-                diagnostic.Location.IsInSource ? SourceLocation.From(diagnostic.Location) : null))
+            .Select(EntryOf)
             .Distinct();
     }
+
+    internal static DiagnosticEntry EntryOf(Diagnostic diagnostic) => new(
+        diagnostic.Id,
+        diagnostic.Severity.ToString(),
+        diagnostic.GetMessage(),
+        diagnostic.Location.IsInSource ? SourceLocation.From(diagnostic.Location) : null);
 
     /// <summary>The diagnostics of a project, or of one of its documents, of any severity; suppressed ones are left out.</summary>
     internal static async Task<List<Diagnostic>> GetAsync(Project project, Document? document, bool analyzers, CancellationToken cancellationToken)

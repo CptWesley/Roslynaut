@@ -26,7 +26,8 @@ public sealed class FindSymbolsTool(WorkspaceService workspace, ResultCache cach
     public Delegate Handler => FindSymbolsAsync;
 
     [McpServerTool(Name = "find_symbols", ReadOnly = true)]
-    [Description("Searches symbols (namespaces, types, members, parameters, locals) by name in the whole solution or within a scope. "
+    [Description("Searches symbols (namespaces, types, members, parameters, locals) by name and structure (attribute, base type, type, "
+        + "accessibility, modifiers) in the whole solution or within a scope. "
         + "Outer symbols come first. Paged.")]
     private async Task<PagedResult<SymbolEntry>> FindSymbolsAsync(
         [Description(ToolDefaults.ProjectPath)] string projectPath,
@@ -35,14 +36,22 @@ public sealed class FindSymbolsTool(WorkspaceService workspace, ResultCache cach
             + "Omit to return everything in scope.")] string? query = null,
         [Description("Optional path of a C# file, or a symbol path to search within. " + ToolDefaults.SymbolPath)] string? scope = null,
         [Description("Kind of symbols to return. Variable means locals and parameters.")] SymbolCategory kind = SymbolCategory.Any,
+        [Description("Optional regex for the name of an attribute the symbol has, with or without 'Attribute', e.g. 'Obsolete' or '^(Test|Fact)$'.")]
+        string? attribute = null,
+        [Description("Optional regex for a base type or interface of the type, e.g. 'IDisposable' or 'ControllerBase'.")] string? baseType = null,
+        [Description("Optional regex for the type of a variable, field, property or event, or the return type of a method, e.g. '^Task' or 'List<int>'.")]
+        string? type = null,
+        [Description("Optional accessibility: Public, Internal, Protected, Private, ProtectedOrInternal or ProtectedAndInternal.")] string? accessibility = null,
+        [Description("Optional modifiers that must all apply: " + SymbolFilters.Modifiers + ".")] string[]? modifiers = null,
         [Description(ToolDefaults.Page)] int page = 0,
         [Description(ToolDefaults.PageSize)] int pageSize = ToolDefaults.DefaultPageSize,
         CancellationToken cancellationToken = default)
     {
-        var matches = ParseQuery(query);
+        var (named, filtered) = (ParseQuery(query), SymbolFilters.Parse(attribute, baseType, type, accessibility, modifiers));
         var solution = (await workspace.GetAsync(projectPath)).Solution;
-        return await cache.GetPageAsync(solution, $"find_symbols|{query}|{scope}|{kind}", page, pageSize,
-            () => SearchAsync(solution, matches, scope, kind, cancellationToken));
+        var key = $"find_symbols|{query}|{scope}|{kind}|{attribute}|{baseType}|{type}|{accessibility}|{string.Join(',', modifiers ?? [])}";
+        return await cache.GetPageAsync(solution, key, page, pageSize,
+            () => SearchAsync(solution, symbol => named(symbol) && filtered(symbol), scope, kind, cancellationToken));
     }
 
     internal static async Task<IEnumerable<SymbolEntry>> SearchAsync(

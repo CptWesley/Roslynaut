@@ -30,8 +30,7 @@ public sealed class CodeActionService
 
     public async Task<List<CodeActionEntry>> FindAsync(Document document, TextSpan span, CancellationToken cancellationToken)
     {
-        var assemblies = Features.Concat(document.Project.AnalyzerReferences.OfType<AnalyzerFileReference>().Select(reference => reference.GetAssembly()));
-        var providers = assemblies.Distinct().Select(assembly => _providers.GetOrAdd(assembly, Discover)).ToList();
+        var providers = ProvidersOf(document.Project).ToList();
 
         var found = new List<(CodeAction Action, string? DiagnosticId)>();
         var diagnostics = await DiagnosticsTool.GetAsync(document.Project, document, analyzers: true, cancellationToken);
@@ -77,6 +76,72 @@ public sealed class CodeActionService
         var operations = await action.GetOperationsAsync(cancellationToken);
         var changed = operations.OfType<ApplyChangesOperation>().LastOrDefault()?.ChangedSolution;
         return (action, changed ?? throw new McpException($"'{action.Title}' does not change any code."));
+    }
+
+    /// <summary>
+    /// The solution with every diagnostic of an id fixed at once, in a document or in the whole solution, by the first provider that can.
+    /// </summary>
+    /// <param name="title">Which of the fixes for the diagnostic to apply, when there are several; the first otherwise.</param>
+    public async Task<(string Title, Solution Changed)> FixAllAsync(
+        Solution solution, Document? document, string diagnosticId, string? title, CancellationToken cancellationToken)
+    {
+        var diagnostics = new List<Diagnostic>();
+        foreach (var project in document is null ? solution.Projects : [document.Project])
+            diagnostics.AddRange((await DiagnosticsTool.GetAsync(project, document, analyzers: true, cancellationToken)).Where(diagnostic => diagnostic.Id == diagnosticId));
+
+        var first = diagnostics.FirstOrDefault(diagnostic => diagnostic.Location.IsInSource)
+            ?? throw new McpException($"There are no {diagnosticId} diagnostics to fix.");
+        var firstDocument = solution.GetDocument(first.Location.SourceTree)!;
+        foreach (var fixer in ProvidersOf(firstDocument.Project).SelectMany(provider => provider.Fixers).Where(fixer => fixer.FixableDiagnosticIds.Contains(diagnosticId)))
+        {
+            if (fixer.GetFixAllProvider() is not { } fixAll)
+                continue;
+
+            var actions = new List<CodeAction>();
+            try
+            {
+                await fixer.RegisterCodeFixesAsync(new CodeFixContext(firstDocument, first, (action, _) => actions.Add(action), cancellationToken));
+            }
+            catch (Exception) when (!cancellationToken.IsCancellationRequested)
+            {
+                continue;
+            }
+
+            if (actions.SelectMany(action => Flatten(action, "")).FirstOrDefault(action => title is null || action.Title == title) is not ({ } chosen, var chosenTitle))
+                continue;
+
+            var scope = document is null ? FixAllScope.Solution : FixAllScope.Document;
+            var context = new FixAllContext(firstDocument, fixer, scope, chosen.EquivalenceKey, [diagnosticId], new KnownDiagnostics(diagnostics), cancellationToken);
+            if (await fixAll.GetFixAsync(context) is not { } fix)
+                continue;
+
+            var operations = await fix.GetOperationsAsync(cancellationToken);
+            if (operations.OfType<ApplyChangesOperation>().LastOrDefault()?.ChangedSolution is { } changed)
+                return (chosenTitle, changed);
+        }
+
+        throw new McpException($"No fix can fix all {diagnosticId} diagnostics{(title is null ? "" : $" as '{title}'")}.");
+    }
+
+    private IEnumerable<Providers> ProvidersOf(Project project) =>
+        Features.Concat(project.AnalyzerReferences.OfType<AnalyzerFileReference>().Select(reference => reference.GetAssembly()))
+            .Distinct()
+            .Select(assembly => _providers.GetOrAdd(assembly, Discover));
+
+    /// <summary>Hands a fix-all provider the diagnostics found already.</summary>
+    private sealed class KnownDiagnostics(IReadOnlyList<Diagnostic> diagnostics) : FixAllContext.DiagnosticProvider
+    {
+        public override async Task<IEnumerable<Diagnostic>> GetDocumentDiagnosticsAsync(Document document, CancellationToken cancellationToken)
+        {
+            var tree = await document.GetSyntaxTreeAsync(cancellationToken);
+            return diagnostics.Where(diagnostic => diagnostic.Location.SourceTree == tree);
+        }
+
+        public override Task<IEnumerable<Diagnostic>> GetProjectDiagnosticsAsync(Project project, CancellationToken cancellationToken) =>
+            Task.FromResult(Enumerable.Empty<Diagnostic>());
+
+        public override Task<IEnumerable<Diagnostic>> GetAllDiagnosticsAsync(Project project, CancellationToken cancellationToken) =>
+            Task.FromResult(diagnostics.Where(diagnostic => diagnostic.Location.SourceTree is { } tree && project.GetDocument(tree) is not null));
     }
 
     /// <summary>Actions that group others, such as "Suppress or configure issues", stand for their nested actions.</summary>

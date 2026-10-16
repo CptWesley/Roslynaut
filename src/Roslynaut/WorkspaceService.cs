@@ -126,13 +126,27 @@ public sealed class WorkspaceService
 
     public static async Task<ISymbol> GetSymbolAtAsync(Document document, int line, int column, CancellationToken cancellationToken)
     {
-        var text = await document.GetTextAsync(cancellationToken);
-        if (line < 1 || line > text.Lines.Count || column < 1)
-            throw new McpException($"Position {line}:{column} is outside '{document.FilePath}'.");
-
-        var position = text.Lines[line - 1].Start + column - 1;
+        var position = PositionOf(await document.GetTextAsync(cancellationToken), line, column, document.FilePath);
         return await SymbolFinder.FindSymbolAtPositionAsync(document, position, cancellationToken)
             ?? throw new McpException($"No symbol found at {document.FilePath}:{line}:{column}.");
+    }
+
+    /// <summary>The offset of a 1-based line and column in a text.</summary>
+    public static int PositionOf(SourceText text, int line, int column, string? filePath)
+    {
+        if (line < 1 || line > text.Lines.Count || column < 1 || column > text.Lines[line - 1].SpanIncludingLineBreak.Length + 1)
+            throw new McpException($"Position {line}:{column} is outside '{filePath}'.");
+
+        return text.Lines[line - 1].Start + column - 1;
+    }
+
+    /// <summary>The span from the start of one 1-based line to the end of another.</summary>
+    public static TextSpan LinesOf(SourceText text, int startLine, int endLine, string? filePath)
+    {
+        if (startLine < 1 || endLine < startLine || endLine > text.Lines.Count)
+            throw new McpException($"Lines {startLine} to {endLine} are outside '{filePath}'.");
+
+        return TextSpan.FromBounds(text.Lines[startLine - 1].Start, text.Lines[endLine - 1].End);
     }
 
     /// <summary>A loaded workspace plus the file watchers that queue changes for it.</summary>
