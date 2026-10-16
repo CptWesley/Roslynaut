@@ -36,16 +36,19 @@ public sealed class ReferencesTool(WorkspaceService workspace, ResultCache cache
             foreach (var reference in await SymbolFinder.FindReferencesAsync(symbol, solution, cancellationToken))
             {
                 foreach (var location in reference.Locations)
-                {
-                    var model = (await location.Document.GetSemanticModelAsync(cancellationToken))!;
-                    var container = model.GetEnclosingSymbol(location.Location.SourceSpan.Start, cancellationToken);
-                    var access = IsWrite(model, location.Location, cancellationToken) ? "Write" : reference.Definition is IMethodSymbol ? "Call" : "Read";
-                    entries.Add(new(SourceLocation.From(location.Location), container?.ToDisplayString(), access));
-                }
+                    entries.Add(await EntryOfAsync(location, reference.Definition, cancellationToken));
             }
         }
 
         return entries.Distinct();
+    }
+
+    internal static async Task<ReferenceEntry> EntryOfAsync(ReferenceLocation location, ISymbol definition, CancellationToken cancellationToken)
+    {
+        var model = (await location.Document.GetSemanticModelAsync(cancellationToken))!;
+        var container = model.GetEnclosingSymbol(location.Location.SourceSpan.Start, cancellationToken);
+        var access = IsWrite(model, location.Location, cancellationToken) ? "Write" : definition is IMethodSymbol ? "Call" : "Read";
+        return new(SourceLocation.From(location.Location), container?.ToDisplayString(), access);
     }
 
     private static bool IsWrite(SemanticModel model, Location location, CancellationToken cancellationToken)
@@ -64,6 +67,6 @@ public sealed class ReferencesTool(WorkspaceService workspace, ResultCache cache
     }
 
     /// <param name="Container">The member or type the reference is in.</param>
-    /// <param name="Access">Read, Write or Call.</param>
+    /// <param name="Access">Read, Write or Call; Declaration in document_highlight.</param>
     public sealed record ReferenceEntry(SourceLocation Location, string? Container, string Access);
 }

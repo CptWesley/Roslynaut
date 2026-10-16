@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Roslynaut.Debugging;
 using Roslynaut.Tools;
 
 namespace Roslynaut;
@@ -18,6 +19,7 @@ public static class Program
             .AddSingleton<ResultCache>()
             .AddSingleton<AssemblyLoader>()
             .AddSingleton<CodeActionService>()
+            .AddSingleton<DebugService>()
             .AddSingleton<IMcpTool, ProjectInfoTool>()
             .AddSingleton<IMcpTool, WorkspaceSymbolsTool>()
             .AddSingleton<IMcpTool, DocumentSymbolsTool>()
@@ -34,6 +36,23 @@ public static class Program
             .AddSingleton<IMcpTool, DataFlowTool>()
             .AddSingleton<IMcpTool, UnusedSymbolsTool>()
             .AddSingleton<IMcpTool, GeneratedSourcesTool>()
+            .AddSingleton<IMcpTool, DocumentHighlightTool>()
+            .AddSingleton<IMcpTool, SignatureHelpTool>()
+            .AddSingleton<IMcpTool, CompletionTool>()
+            .AddSingleton<IMcpTool, InlayHintsTool>()
+            .AddSingleton<IMcpTool, SyntaxTreeTool>()
+            .AddSingleton<IMcpTool, CodeMetricsTool>()
+            .AddSingleton<IMcpTool, SearchPatternTool>()
+            .AddSingleton<IMcpTool, FindOperationsTool>()
+            .AddSingleton<IMcpTool, EvaluateTool>()
+            .AddSingleton<IMcpTool, DotnetProcessesTool>()
+            .AddSingleton<IMcpTool, ProcessThreadsTool>()
+            .AddSingleton<IMcpTool, ProcessHeapTool>()
+            .AddSingleton<IMcpTool, DebugStartTool>()
+            .AddSingleton<IMcpTool, DebugBreakpointsTool>()
+            .AddSingleton<IMcpTool, DebugResumeTool>()
+            .AddSingleton<IMcpTool, DebugInspectTool>()
+            .AddSingleton<IMcpTool, DebugStopTool>()
             .AddSingleton<IMcpTool, RenameSymbolTool>()
             .AddSingleton<IMcpTool, CodeActionsTool>()
             .AddSingleton<IMcpTool, ApplyCodeActionTool>()

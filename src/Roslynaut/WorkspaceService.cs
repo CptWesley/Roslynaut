@@ -8,6 +8,7 @@ using Buildalyzer.Workspaces;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.FindSymbols;
+using Microsoft.CodeAnalysis.Host.Mef;
 using Microsoft.CodeAnalysis.Text;
 using ModelContextProtocol;
 using Roslynaut.Tools;
@@ -278,7 +279,7 @@ public sealed class WorkspaceService
                     solution = solution.WithDocumentText(ids, Read(file));
                 // ponytail: a new file joins the deepest enclosing project, as with default globbing; explicit Compile items need a project file change.
                 else if (created && FindOwner(solution, file) is { } project)
-                    solution = project.AddDocument(Path.GetFileName(file), Read(file), filePath: file).Project.Solution;
+                    solution = project.AddDocument(Path.GetFileName(file), Read(file), FoldersOf(project.FilePath!, file), file).Project.Solution;
             }
 
             // Apply to the workspace too, so it does not keep the previous snapshot alive.
@@ -328,6 +329,14 @@ public sealed class WorkspaceService
     }
 
 
+    /// <summary>The folders of a file below its project's directory, such as ["Models", "Orders"]; none for build output in bin and obj.</summary>
+    private static string[] FoldersOf(string projectPath, string? filePath)
+    {
+        var relative = filePath is null ? ".." : Path.GetRelativePath(Path.GetDirectoryName(projectPath)!, Path.GetDirectoryName(filePath)!);
+        string[] folders = relative == "." ? [] : relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        return folders is [] or [".." or "bin" or "obj", ..] || Path.IsPathRooted(relative) ? [] : folders;
+    }
+
     private static LoadedWorkspace Load(string path)
     {
         var isSolution = Path.GetExtension(path).ToLowerInvariant() is ".sln" or ".slnx";
@@ -355,7 +364,7 @@ public sealed class WorkspaceService
             pending = built.SelectMany(result => result.ProjectReferences).Select(Path.GetFullPath).Where(seen.Add).ToList();
         }
 
-        var workspace = new AdhocWorkspace();
+        var workspace = new SettableWorkspace();
         foreach (var result in results)
         {
             var project = result.AddToWorkspace(workspace);
@@ -371,9 +380,25 @@ public sealed class WorkspaceService
             var solution = workspace.CurrentSolution.WithProjectCompilationOptions(project.Id, compilationOptions);
             foreach (var config in arguments.AnalyzerConfigPaths.Where(File.Exists))
                 solution = solution.AddAnalyzerConfigDocument(DocumentId.CreateNewId(project.Id), Path.GetFileName(config), SourceText.From(File.ReadAllText(config)), filePath: config);
-            workspace.TryApplyChanges(solution);
+
+            // Buildalyzer leaves out folders and the default namespace, which refactorings such as "change namespace to match folder" need.
+            solution = solution.WithProjectDefaultNamespace(project.Id, result.GetProperty("RootNamespace"));
+            foreach (var document in solution.GetProject(project.Id)!.Documents)
+                solution = solution.WithDocumentFolders(document.Id, FoldersOf(result.ProjectFilePath, document.FilePath));
+            workspace.Set(solution);
         }
 
         return new(workspace.CurrentSolution, results);
     }
+}
+
+/// <summary>
+/// Like <see cref="AdhocWorkspace"/>, which is sealed, an in-memory workspace that takes any change; and also changes TryApplyChanges
+/// ignores, such as a project's default namespace.
+/// </summary>
+internal sealed class SettableWorkspace() : Workspace(MefHostServices.DefaultHost, "Custom")
+{
+    public override bool CanApplyChange(ApplyChangesKind feature) => true;
+
+    public void Set(Solution solution) => SetCurrentSolution(solution);
 }

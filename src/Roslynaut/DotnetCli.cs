@@ -10,10 +10,12 @@ internal static class DotnetCli
         Path.GetDirectoryName(typeof(object).Assembly.Location)!, "..", "..", "..", OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet"));
 
     /// <summary>Returns the exit code and the combined standard output and error.</summary>
-    public static async Task<(int ExitCode, string Output)> RunAsync(IReadOnlyList<string> arguments, TimeSpan timeout, CancellationToken cancellationToken)
+    /// <param name="input">What to write to standard input, if anything.</param>
+    public static async Task<(int ExitCode, string Output)> RunAsync(IReadOnlyList<string> arguments, TimeSpan timeout, CancellationToken cancellationToken, string? input = null)
     {
         var start = new ProcessStartInfo(Executable)
         {
+            RedirectStandardInput = input is not null,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
 
@@ -24,6 +26,12 @@ internal static class DotnetCli
             start.ArgumentList.Add(argument);
 
         using var process = Process.Start(start)!;
+        if (input is not null)
+        {
+            await process.StandardInput.WriteAsync(input);
+            process.StandardInput.Close();
+        }
+
         using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutSource.CancelAfter(timeout);
         try
