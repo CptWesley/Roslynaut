@@ -6,6 +6,7 @@ using NuGet.Frameworks;
 using NuGet.Packaging;
 using NuGet.Packaging.Core;
 using NuGet.Packaging.Signing;
+using NuGet.ProjectModel;
 using NuGet.Protocol;
 using NuGet.Protocol.Core.Types;
 using NuGet.Versioning;
@@ -102,16 +103,34 @@ public sealed class NuGetService(WorkspaceService workspace)
         if (targetFramework is not null)
             return [NuGetFramework.Parse(targetFramework)];
 
-        var path = Path.GetFullPath(projectPath);
-        var results = (await workspace.GetAsync(path)).Results;
-
-        // A project's workspace holds the projects it references as well.
-        var own = results.Where(result => result.ProjectFilePath.Equals(path, StringComparison.OrdinalIgnoreCase)).ToList();
-        return [.. (own.Count > 0 ? own : results).Select(TargetFrameworkOf).OfType<NuGetFramework>().Distinct()];
+        return [.. ProjectsOf(await workspace.GetAsync(projectPath), projectPath).Select(TargetFrameworkOf).OfType<NuGetFramework>().Distinct()];
     }
 
     public static NuGetFramework? TargetFrameworkOf(IAnalyzerResult result) =>
         (result.TargetFramework ?? result.GetProperty("TargetFrameworkMoniker")) is { Length: > 0 } framework ? NuGetFramework.Parse(framework) : null;
+
+    /// <summary>
+    /// What restore last wrote (project.assets.json) for the loaded project, or for the solution's projects, by project file.
+    /// Loading the workspace restores, so it matches the loaded snapshot.
+    /// </summary>
+    public static IReadOnlyList<(string Project, LockFile Assets)> AssetsOf(LoadedWorkspace loaded, string projectPath)
+    {
+        List<(string, LockFile)> assets = [.. ProjectsOf(loaded, projectPath)
+            .Select(result => (result.ProjectFilePath, Path: result.GetProperty("ProjectAssetsFile")))
+            .Where(project => File.Exists(project.Path))
+            .Select(project => (project.ProjectFilePath, LockFileUtilities.GetLockFile(project.Path, NullLogger.Instance)))];
+        return assets.Count > 0 ? assets : throw new McpException("No loaded project has restore results (project.assets.json): none uses PackageReference.");
+    }
+
+    /// <summary>The settings of the nuget.config files above a project or solution, then the user's.</summary>
+    public static ISettings LoadSettings(string projectPath)
+    {
+        var path = Path.GetFullPath(projectPath);
+        if (!File.Exists(path))
+            throw new McpException($"Project or solution not found: {path}");
+
+        return Settings.LoadDefaultSettings(Path.GetDirectoryName(path));
+    }
 
     /// <summary>The newest listed version, stable unless asked for; the newest prerelease if there is no stable one.</summary>
     public static IPackageSearchMetadata? Latest(IEnumerable<IPackageSearchMetadata> versions, bool prerelease)
@@ -125,34 +144,40 @@ public sealed class NuGetService(WorkspaceService workspace)
     public static NuGetFramework? Nearest(NuGetFramework target, IEnumerable<NuGetFramework> frameworks) => Reducer.GetNearest(target, frameworks);
 
     /// <summary>
-    /// The assemblies a target framework gets from a package, from the first of the folders (lib, ref) that has a compatible framework,
-    /// picking the nearest one as restore does. Null if no folder has one.
+    /// The files a target framework gets from a package, relative to it: those of the nearest framework, as restore picks it,
+    /// in the first of the folders (such as lib, ref) that has a compatible one. Null if no folder has one.
     /// </summary>
-    public static (NuGetFramework Framework, IReadOnlyList<string> Paths)? AssembliesFor(
-        PackageFolderReader package, string directory, NuGetFramework target, IEnumerable<string> folders)
+    public static (NuGetFramework Framework, IReadOnlyList<string> Items)? NearestItems(PackageFolderReader package, NuGetFramework target, IEnumerable<string> folders)
     {
         foreach (var folder in folders)
         {
             var groups = package.GetItems(folder).ToList();
-            if (Nearest(target, groups.Select(group => group.TargetFramework)) is not { } nearest)
-                continue;
-
-            // Placeholder files (_._) make a framework compatible without assemblies, as for packages the framework provides.
-            return (nearest, [.. groups.Where(group => group.TargetFramework.Equals(nearest)).SelectMany(group => group.Items)
-                .Where(item => item.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
-                .Select(item => Path.GetFullPath(Path.Combine(directory, item)))]);
+            if (Nearest(target, groups.Select(group => group.TargetFramework)) is { } nearest)
+                return (nearest, [.. groups.Where(group => group.TargetFramework.Equals(nearest)).SelectMany(group => group.Items)]);
         }
 
         return null;
     }
 
-    private static Config ConfigOf(string projectPath)
+    /// <summary>The full paths of the assemblies a target framework gets from a package, as <see cref="NearestItems"/> picks them.</summary>
+    public static (NuGetFramework Framework, IReadOnlyList<string> Paths)? AssembliesFor(
+        PackageFolderReader package, string directory, NuGetFramework target, IEnumerable<string> folders) =>
+        NearestItems(package, target, folders) is var (nearest, items)
+            // Placeholder files (_._) make a framework compatible without assemblies, as for packages the framework provides.
+            ? (nearest, [.. items.Where(item => item.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)).Select(item => Path.GetFullPath(Path.Combine(directory, item)))])
+            : null;
+
+    /// <summary>The loaded project, or the solution's projects: a project's workspace holds the projects it references as well.</summary>
+    private static IEnumerable<IAnalyzerResult> ProjectsOf(LoadedWorkspace loaded, string projectPath)
     {
         var path = Path.GetFullPath(projectPath);
-        if (!File.Exists(path))
-            throw new McpException($"Project or solution not found: {path}");
+        var own = loaded.Results.Where(result => result.ProjectFilePath.Equals(path, StringComparison.OrdinalIgnoreCase)).ToList();
+        return own.Count > 0 ? own : loaded.Results;
+    }
 
-        var settings = Settings.LoadDefaultSettings(Path.GetDirectoryName(path));
+    private static Config ConfigOf(string projectPath)
+    {
+        var settings = LoadSettings(projectPath);
         return new(
             settings,
             PackageSourceMapping.GetPackageSourceMapping(settings),

@@ -42,7 +42,7 @@ Tests use NUnit with AwesomeAssertions (`.Should()`). Both are global usings.
 - `AssemblyLoader` reads assemblies with Mono.Cecil and emits compilations to temporary files. Cecil modules are not thread-safe: lock the module while reading it.
 - `CodeActionService` collects Roslyn code fixes and refactorings from the Features assemblies and the project's analyzer packages. It remembers them per snapshot so `apply_code_action` can apply them by id.
 - `DebugService` runs one netcoredbg session at a time over DAP (`DapClient`).
-- `NuGetService` reads a project's nuget.config files (sources, source mapping, global packages folder) the way restore does, and downloads packages into the global packages folder for the `package_*` tools.
+- `NuGetService` reads a project's nuget.config files (sources, source mapping, global packages folder) the way restore does, downloads packages into the global packages folder, and reads restore results (project.assets.json) for the `package_*` and `nuget_config` tools.
 
 **Transport.** In stdio mode, stdout carries the MCP protocol, so all logging goes to stderr. Never write to `Console.Out` in the server.
 
