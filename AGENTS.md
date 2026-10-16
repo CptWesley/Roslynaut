@@ -50,6 +50,8 @@ Tests use NUnit with AwesomeAssertions (`.Should()`). Both are global usings.
   - `symbol_source`, `definition`, `assembly_sources`, `decompile` (local variable names), `process_threads`, the debug frames and `package_assembly` use it.
   - Tools without the network (`decompile`, `process_threads`) call `FindPdb`, which only finds PDBs on disk or downloaded earlier.
 
+**Binary logs.** `build` writes a binary log with `binlogPath` (and always with `timings`, adding `-p:ReportAnalyzer=true` and `-profileevaluation`). The `build_*` tools read one through `BuildLog`, which runs MSBuild.StructuredLogger's `BuildAnalyzer` (double writes, file copies, analyzer summaries) and keeps the last two logs read. The log has no record of targets skipped for a false condition.
+
 **Transport.** In stdio mode, stdout carries the MCP protocol, so all logging goes to stderr. Never write to `Console.Out` in the server.
 
 ## Testing
