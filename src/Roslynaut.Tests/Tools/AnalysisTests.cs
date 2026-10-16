@@ -1,5 +1,5 @@
-using System.Reflection;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Diagnostics;
 using Microsoft.CodeAnalysis.Text;
 using ModelContextProtocol;
@@ -166,38 +166,38 @@ public class AnalysisTests
     }
 
     [Test]
-    public async Task GeneratedSources_ListsAndReturnsGeneratorOutput()
+    public async Task GeneratedSources_ListsAndReturnsGeneratorOutput_WithoutLockingTheGenerator()
     {
-        var solution = Solution.Projects.Single().AddAnalyzerReference(new AnalyzerFileReference(typeof(HelloGenerator).Assembly.Location, new Loader())).Solution;
+        // An assembly of its own: Roslyn takes one the host already loaded, such as this one, from the host and not from its file.
+        var directory = Directory.CreateTempSubdirectory("roslynaut-generator-");
+        var generator = Path.Combine(directory.FullName, "Generator.dll");
+        CSharpCompilation.Create("Generator", [CSharpSyntaxTree.ParseText("""
+                using Microsoft.CodeAnalysis;
+                [Generator]
+                public sealed class HelloGenerator : IIncrementalGenerator
+                {
+                    public void Initialize(IncrementalGeneratorInitializationContext context) =>
+                        context.RegisterPostInitializationOutput(output => output.AddSource("Hello.g.cs", "namespace Generated { public static class Hello { } }"));
+                }
+                """)],
+                ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!).Split(Path.PathSeparator).Select(path => MetadataReference.CreateFromFile(path)),
+                new(OutputKind.DynamicallyLinkedLibrary))
+            .Emit(generator).Success.Should().BeTrue();
+        var solution = Solution.Projects.Single().AddAnalyzerReference(new AnalyzerFileReference(generator, WorkspaceService.NonLockingAnalyzerLoader())).Solution;
 
         (await GeneratedSourcesTool.ListAsync(solution, null, CancellationToken.None)).Should().ContainSingle()
             .Which.Should().Match<GeneratedSourcesTool.GeneratedSource>(source => source.Name == "Hello.g.cs" && source.Lines == 1 && source.Source == null);
         (await GeneratedSourcesTool.ListAsync(solution, "hello", CancellationToken.None)).Should().ContainSingle()
             .Which.Source.Should().Contain("class Hello");
+
+        // A build that writes the generator again must be able to; Windows lets a loaded assembly be deleted, not written.
+        File.WriteAllBytes(generator, []);
+        directory.Delete(recursive: true);
     }
 
     private static async Task<IEnumerable<ExpressionInfoTool.ExpressionInfo>> DescribeAt(string text, int offset) =>
         await ExpressionInfoTool.DescribeAsync(Solution.Projects.Single().Documents.Single(), Code.IndexOf(text, StringComparison.Ordinal) + offset, CancellationToken.None);
-
-    private sealed class Loader : IAnalyzerAssemblyLoader
-    {
-        public void AddDependencyLocation(string fullPath)
-        {
-        }
-
-        public Assembly LoadFromPath(string fullPath) => Assembly.LoadFrom(fullPath);
-    }
 }
-
-/// <summary>A source generator for <see cref="AnalysisTests.GeneratedSources_ListsAndReturnsGeneratorOutput"/>.</summary>
-#pragma warning disable RS1036, RS1038, RS1041 // A test generator: never loaded by a compiler.
-[Generator(LanguageNames.CSharp)]
-public sealed class HelloGenerator : IIncrementalGenerator
-{
-    public void Initialize(IncrementalGeneratorInitializationContext context) =>
-        context.RegisterPostInitializationOutput(output => output.AddSource("Hello.g.cs", "namespace Generated { public static class Hello { } }"));
-}
-#pragma warning restore RS1036, RS1038, RS1041
 
 public class NamespaceGraphTests
 {

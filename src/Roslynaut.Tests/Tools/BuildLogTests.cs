@@ -98,6 +98,15 @@ public class BuildLogTests
         timings.Parallelism.Should().BePositive();
     }
 
+    // An analyzer's time in the summary is in ms only below a second.
+    [TestCase(66)]
+    [TestCase(1_234)]
+    [TestCase(135_123)]
+    [TestCase(3_723_123)]
+    public void ParseDuration_ReadsEachFormatOfTheSummary(long milliseconds) =>
+        BuildTool.ParseDuration(Microsoft.Build.Logging.StructuredLogger.TextUtilities.DisplayDuration(TimeSpan.FromMilliseconds(milliseconds), showZero: true))
+            .Should().Be(milliseconds);
+
     [Test]
     public void Problems_FindDoubleWrites_DuplicateBuilds_AndReferenceConflicts()
     {

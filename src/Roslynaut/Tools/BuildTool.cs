@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Globalization;
 using System.Text.RegularExpressions;
 using Microsoft.Build.Logging.StructuredLogger;
 using ModelContextProtocol;
@@ -15,9 +16,9 @@ public sealed class BuildTool : IMcpTool
     private static readonly Regex Message = new(
         @"^\s*(?<origin>.+?)(?:\((?<line>\d+),(?<column>\d+)(?:,\d+,\d+)?\))?\s?: (?<severity>error|warning) (?<code>[^\s:]+): (?<message>.*?)(?: \[(?<project>[^\[\]]+)\])?\s*$");
 
-    // BuildAnalyzer's summaries of what csc reported: "73 ms   Assembly, Version=..." folders holding "Analyzer (IDs) = 66 ms" items.
-    private static readonly Regex AssemblyTime = new(@"^\d+ ms\s+(?<name>[^,]+)");
-    private static readonly Regex AnalyzerTime = new(@"^(?<name>.+) = (?<ms>\d+) ms$");
+    // BuildAnalyzer's summaries of what csc reported: "1.234 s   Assembly, Version=..." folders holding "Analyzer (IDs) = 66 ms" items.
+    private static readonly Regex AssemblyTime = new(@"^(?<time>.+?) {3}(?<name>[^,]+)");
+    private static readonly Regex AnalyzerTime = new(@"^(?<name>.+) = (?<time>.+)$");
 
     public Delegate Handler => BuildAsync;
 
@@ -110,10 +111,15 @@ public sealed class BuildTool : IMcpTool
         .. (build.FindChild<Folder>(summary)?.Children.OfType<Folder>() ?? [])
             .SelectMany(assembly => assembly.Children.OfType<Item>().Select(analyzer => (Assembly: AssemblyTime.Match(assembly.Name), Analyzer: AnalyzerTime.Match(analyzer.Text))))
             .Where(timing => timing.Assembly.Success && timing.Analyzer.Success)
-            .Select(timing => new AnalyzerTiming(timing.Analyzer.Groups["name"].Value, timing.Assembly.Groups["name"].Value, long.Parse(timing.Analyzer.Groups["ms"].Value)))
+            .Select(timing => new AnalyzerTiming(timing.Analyzer.Groups["name"].Value, timing.Assembly.Groups["name"].Value, ParseDuration(timing.Analyzer.Groups["time"].Value)))
             .OrderByDescending(timing => timing.Milliseconds)
             .Take(top),
     ];
+
+    /// <summary>A duration as StructuredLogger's TextUtilities.DisplayDuration writes it: "66 ms", "1.234 s", "2:15.123", or from an hour on "01:02:03.1230000".</summary>
+    internal static long ParseDuration(string duration) => duration.EndsWith(" ms", StringComparison.Ordinal)
+        ? long.Parse(duration[..^3], CultureInfo.InvariantCulture)
+        : (long)TimeSpan.ParseExact(duration, [@"s\.fff' s'", @"m\:ss\.fff", "c"], CultureInfo.InvariantCulture).TotalMilliseconds;
 
     /// <summary>The elements, conditions and globs that evaluation spent the most time in, over all evaluations, from -profileevaluation.</summary>
     private static IReadOnlyList<Timing> EvaluationHotspots(Build build, int top) =>

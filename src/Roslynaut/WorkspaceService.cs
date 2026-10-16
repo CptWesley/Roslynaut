@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.IO.Enumeration;
+using System.Reflection;
 using System.Text;
 using Buildalyzer;
 using Buildalyzer.Environment;
@@ -439,10 +440,21 @@ public sealed class WorkspaceService
         }
 
         var workspace = new SettableWorkspace();
-        var loader = workspace.Services.GetRequiredService<IAnalyzerService>().GetLoader();
+        // A new loader per load picks up rebuilt generators after a reload.
+        // ponytail: assemblies of earlier loads stay loaded; a collectible load context per load if that memory matters.
+        var loader = NonLockingAnalyzerLoader();
         workspace.Set(projects.Aggregate(workspace.CurrentSolution, (solution, project) => solution.AddProject(ProjectOf(project.Result, project.Id, outputs, loader))));
         return new(workspace.CurrentSolution, results, errors);
     }
+
+    /// <summary>
+    /// Roslyn's analyzer loader that shadow-copies analyzers and generators on Windows and loads them from streams elsewhere. The workspace's
+    /// IAnalyzerService loader loads them in place and locks them, so builds that write them fail (MSB3027) while the server runs. It is internal.
+    /// </summary>
+    internal static IAnalyzerAssemblyLoader NonLockingAnalyzerLoader() =>
+        (IAnalyzerAssemblyLoader)typeof(AnalyzerFileReference).Assembly.GetType("Microsoft.CodeAnalysis.AnalyzerAssemblyLoader", throwOnError: true)!
+            .GetMethod("CreateNonLockingLoader", BindingFlags.NonPublic | BindingFlags.Static)!
+            .Invoke(null, [Path.Combine(Path.GetTempPath(), "Roslynaut", "Analyzers"), null, null, null])!;
 
     private static string? LanguageOf(string projectPath) => Path.GetExtension(projectPath).ToLowerInvariant() switch
     {
