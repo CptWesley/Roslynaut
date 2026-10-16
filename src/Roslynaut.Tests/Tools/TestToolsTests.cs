@@ -147,6 +147,15 @@ public class BuildAndRunTestsTests
     }
 
     [Test]
+    public async Task ReferencedSymbols_HaveDocumentation()
+    {
+        var solution = (await new WorkspaceService().GetAsync(project)).Solution;
+        var compilation = await solution.Projects.Single().GetCompilationAsync();
+
+        compilation!.GetTypeByMetadataName("System.String")!.GetDocumentationCommentXml().Should().Contain("<summary>");
+    }
+
+    [Test]
     public async Task Build_WithCompileError_ReturnsIt()
     {
         var broken = Path.Combine(directory.FullName, "Broken.cs");

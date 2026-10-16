@@ -337,6 +337,15 @@ public sealed class WorkspaceService
         return folders is [] or [".." or "bin" or "obj", ..] || Path.IsPathRooted(relative) ? [] : folders;
     }
 
+    /// <summary>
+    /// A reference with the documentation comments of the XML file next to its assembly, as NuGet packages and reference packs ship them;
+    /// Buildalyzer creates references without, which leaves referenced symbols undocumented.
+    /// </summary>
+    private static MetadataReference WithDocumentation(MetadataReference reference) =>
+        reference is PortableExecutableReference { FilePath: { } path } && Path.ChangeExtension(path, ".xml") is var xml && File.Exists(xml)
+            ? MetadataReference.CreateFromFile(path, reference.Properties, XmlDocumentationProvider.CreateFromFile(xml))
+            : reference;
+
     private static LoadedWorkspace Load(string path)
     {
         var isSolution = Path.GetExtension(path).ToLowerInvariant() is ".sln" or ".slnx";
@@ -377,7 +386,8 @@ public sealed class WorkspaceService
             var compilationOptions = project.CompilationOptions!
                 .WithSpecificDiagnosticOptions(arguments.CompilationOptions.SpecificDiagnosticOptions)
                 .WithGeneralDiagnosticOption(arguments.CompilationOptions.GeneralDiagnosticOption);
-            var solution = workspace.CurrentSolution.WithProjectCompilationOptions(project.Id, compilationOptions);
+            var solution = workspace.CurrentSolution.WithProjectCompilationOptions(project.Id, compilationOptions)
+                .WithProjectMetadataReferences(project.Id, project.MetadataReferences.Select(WithDocumentation));
             foreach (var config in arguments.AnalyzerConfigPaths.Where(File.Exists))
                 solution = solution.AddAnalyzerConfigDocument(DocumentId.CreateNewId(project.Id), Path.GetFileName(config), SourceText.From(File.ReadAllText(config)), filePath: config);
 
