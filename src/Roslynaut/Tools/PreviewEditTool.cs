@@ -6,8 +6,10 @@ using ModelContextProtocol.Server;
 
 namespace Roslynaut.Tools;
 
-/// <param name="OldText">Text that occurs exactly once in the file.</param>
-public sealed record TextEdit(string FilePath, string OldText, string NewText);
+public sealed record TextEdit(
+    [property: Description("The C# file to edit.")] string FilePath,
+    [property: Description("Text that occurs exactly once in the file.")] string OldText,
+    [property: Description("The text to put in its place.")] string NewText);
 
 public sealed class PreviewEditTool(WorkspaceService workspace) : IMcpTool
 {

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
@@ -20,10 +21,12 @@ public enum ResumeAction
     Pause,
 }
 
-/// <param name="FilePath">With Line: break at that line of this file.</param>
-/// <param name="Condition">Break only when this C# expression is true, such as 'i == 3'.</param>
-/// <param name="Function">Or else: break where this method starts, such as 'MyApp.Orders.Submit' or 'Submit'.</param>
-public sealed record Breakpoint(string? FilePath = null, int Line = 0, string? Condition = null, string? Function = null);
+/// <summary>A breakpoint, as tools take it; the descriptions are what MCP clients see in the schema.</summary>
+public sealed record Breakpoint(
+    [property: Description("With Line: the file to break in.")] string? FilePath = null,
+    [property: Description("The 1-based line to break at.")] int Line = 0,
+    [property: Description("Break only when this C# expression is true, such as 'i == 3'.")] string? Condition = null,
+    [property: Description("Or else: the method to break where it starts, such as 'MyApp.Orders.Submit' or 'Submit'.")] string? Function = null);
 
 /// <param name="Verified">Whether the debugger could bind the breakpoint to code; Message says why not.</param>
 public sealed record BreakpointState(string? FilePath, int Line, bool Verified, string? Message, string? Function = null);
@@ -306,14 +309,21 @@ public sealed partial class DebugService(WorkspaceService workspace, PdbService 
         {
             while (!found.Task.IsCompleted)
             {
-                var runtimes = DiagnosticsClient.GetPublishedProcesses().ToHashSet();
-                foreach (var process in Process.GetProcessesByName(name))
+                try
                 {
-                    using (process)
+                    var runtimes = DiagnosticsClient.GetPublishedProcesses().ToHashSet();
+                    foreach (var process in Process.GetProcessesByName(name))
                     {
-                        if (runtimes.Contains(process.Id) && StartedAfter(process, after))
-                            found.TrySetResult(process.Id);
+                        using (process)
+                        {
+                            if (runtimes.Contains(process.Id) && StartedAfter(process, after))
+                                found.TrySetResult(process.Id);
+                        }
                     }
+                }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidOperationException)
+                {
+                    // Listing the processes' diagnostics pipes can fail while processes come and go; the next round tries again.
                 }
 
                 await Task.Delay(250, cancellationToken);
@@ -321,6 +331,11 @@ public sealed partial class DebugService(WorkspaceService workspace, PdbService 
         }
         catch (OperationCanceledException)
         {
+        }
+        catch (Exception e)
+        {
+            // Fail the session at once, rather than wait for the build timeout for an application it can no longer look for.
+            found.TrySetException(e);
         }
 
         static bool StartedAfter(Process process, DateTime after)

@@ -13,10 +13,11 @@ using ModelContextProtocol.Server;
 namespace Roslynaut.Tools;
 
 /// <summary>A parameter of the new signature: an existing one by its name, or a new one with its type and what call sites pass.</summary>
-/// <param name="Type">For a new parameter: its type, such as int or List&lt;string&gt;.</param>
-/// <param name="Value">For a new parameter: the expression call sites pass, such as 0 or null.</param>
-/// <param name="DefaultValue">For a new parameter: makes it optional with this default; call sites then pass nothing unless Value is given.</param>
-public sealed record ParameterSpec(string Name, string? Type = null, string? Value = null, string? DefaultValue = null);
+public sealed record ParameterSpec(
+    [property: Description("An existing parameter's name, or a new one's.")] string Name,
+    [property: Description("For a new parameter: its type, such as 'int' or 'List<string>'.")] string? Type = null,
+    [property: Description("For a new parameter: the expression call sites pass, such as '0' or 'null'.")] string? Value = null,
+    [property: Description("For a new parameter: makes it optional with this default; call sites then pass nothing unless Value is given.")] string? DefaultValue = null);
 
 /// <summary>
 /// Roslyn's refactorings that an IDE runs with options from a dialog, run with options built here instead and passed to
