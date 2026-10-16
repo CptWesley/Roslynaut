@@ -53,7 +53,7 @@ public sealed class PackageUpgradeCheckTool(WorkspaceService workspace, NuGetSer
                 var (_, paths) = NuGetService.AssembliesFor(reader, directory, framework, ["ref", "lib"])
                     ?? throw new McpException($"{identity} has no assemblies for {framework.GetShortFolderName()}, the target framework of {project.Name}.");
                 after = after.WithProjectMetadataReferences(project.Id, project.MetadataReferences.Except(old)
-                    .Concat(paths.Select(path => WorkspaceService.WithDocumentation(MetadataReference.CreateFromFile(path)))));
+                    .Concat(paths.Select(path => WorkspaceService.ReferenceTo(path))));
             }
 
             if (!referenced)

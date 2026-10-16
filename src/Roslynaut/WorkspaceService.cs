@@ -4,12 +4,15 @@ using System.Text;
 using Buildalyzer;
 using Buildalyzer.Environment;
 using Buildalyzer.IO;
-using Buildalyzer.Workspaces;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.Diagnostics;
 using Microsoft.CodeAnalysis.FindSymbols;
+using Microsoft.CodeAnalysis.Host;
 using Microsoft.CodeAnalysis.Host.Mef;
 using Microsoft.CodeAnalysis.Text;
+using Microsoft.CodeAnalysis.VisualBasic;
+using ProjectInfo = Microsoft.CodeAnalysis.ProjectInfo;
 using ModelContextProtocol;
 using Roslynaut.Tools;
 
@@ -87,7 +90,7 @@ public sealed class WorkspaceService
 
     /// <summary>
     /// The encoding of a file by its byte order mark, so rewriting it keeps that; UTF-8 without one otherwise.
-    /// Not the encoding of the document's text: Buildalyzer reads files as UTF-16.
+    /// Not the encoding of the document's text, which documents that tools add have none of.
     /// </summary>
     private static Encoding EncodingOf(string path)
     {
@@ -319,15 +322,14 @@ public sealed class WorkspaceService
 
         private static bool IsUnder(string path, string directory) =>
             path.StartsWith(directory + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
-
-        // From a stream, so the text gets an encoding: compilations cannot emit debug information without one.
-        private static SourceText Read(string file)
-        {
-            using var stream = File.OpenRead(file);
-            return SourceText.From(stream);
-        }
     }
 
+    // From a stream, so the text gets an encoding: compilations cannot emit debug information without one.
+    private static SourceText Read(string file)
+    {
+        using var stream = File.OpenRead(file);
+        return SourceText.From(stream);
+    }
 
     /// <summary>The folders of a file below its project's directory, such as ["Models", "Orders"]; none for build output in bin and obj.</summary>
     private static string[] FoldersOf(string projectPath, string? filePath)
@@ -338,13 +340,11 @@ public sealed class WorkspaceService
     }
 
     /// <summary>
-    /// A reference with the documentation comments of the XML file next to its assembly, as NuGet packages and reference packs ship them;
-    /// Buildalyzer creates references without, which leaves referenced symbols undocumented.
+    /// A reference to an assembly, with the documentation comments of the XML file next to it, as NuGet packages and reference packs ship them;
+    /// without those, referenced symbols are undocumented.
     /// </summary>
-    internal static MetadataReference WithDocumentation(MetadataReference reference) =>
-        reference is PortableExecutableReference { FilePath: { } path } && Path.ChangeExtension(path, ".xml") is var xml && File.Exists(xml)
-            ? MetadataReference.CreateFromFile(path, reference.Properties, XmlDocumentationProvider.CreateFromFile(xml))
-            : reference;
+    internal static MetadataReference ReferenceTo(string path, MetadataReferenceProperties properties = default) =>
+        MetadataReference.CreateFromFile(path, properties, Path.ChangeExtension(path, ".xml") is var xml && File.Exists(xml) ? XmlDocumentationProvider.CreateFromFile(xml) : null);
 
     private static LoadedWorkspace Load(string path)
     {
@@ -373,42 +373,68 @@ public sealed class WorkspaceService
             pending = built.SelectMany(result => result.ProjectReferences).Select(Path.GetFullPath).Where(seen.Add).ToList();
         }
 
-        // Add all projects first: adding a project also adds the references of projects added before to it.
-        var workspace = new SettableWorkspace();
-        var added = results.Select(result => (Result: result, result.AddToWorkspace(workspace)?.Id)).ToList();
-        var solution = workspace.CurrentSolution;
-        foreach (var (result, id) in added)
+        var projects = results.Where(result => LanguageOf(result.ProjectFilePath) is not null)
+            .Select(result => (Result: result, Id: ProjectId.CreateNewId(result.ProjectFilePath)))
+            .ToList();
+
+        // The compiler gets a referenced project's reference assembly, or the assembly itself when it has none.
+        var outputs = new Dictionary<string, ProjectId>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (result, id) in projects)
         {
-            if (solution.GetProject(id) is not { Language: LanguageNames.CSharp } project || result.CompilerArguments.Length == 0)
-                continue;
-
-            // Buildalyzer keeps few compiler options (not even AllowUnsafeBlocks, NoWarn, or the parser's documentation mode and features),
-            // and no analyzer configuration (.editorconfig, .globalconfig): take those from the real compiler command line.
-            var arguments = CSharpCommandLineParser.Default.Parse(result.CompilerArguments, Path.GetDirectoryName(result.ProjectFilePath), sdkDirectory: null);
-            solution = solution
-                .WithProjectCompilationOptions(project.Id, arguments.CompilationOptions.WithStrongNameProvider(new DesktopStrongNameProvider(arguments.KeyFileSearchPaths)))
-                .WithProjectParseOptions(project.Id, arguments.ParseOptions)
-                .WithProjectMetadataReferences(project.Id, project.MetadataReferences.Select(WithDocumentation));
-            foreach (var config in arguments.AnalyzerConfigPaths.Where(File.Exists))
-                solution = solution.AddAnalyzerConfigDocument(DocumentId.CreateNewId(project.Id), Path.GetFileName(config), SourceText.From(File.ReadAllText(config)), filePath: config);
-
-            // Buildalyzer references every referenced project, also those the compiler does not get, such as source generators
-            // (ReferenceOutputAssembly="false"): keep those whose output the compiler references.
-            var references = result.References.Select(Path.GetFileName).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            foreach (var reference in project.ProjectReferences)
-            {
-                if (solution.GetProject(reference.ProjectId)?.OutputFilePath is { } output && !references.Contains(Path.GetFileName(output)))
-                    solution = solution.RemoveProjectReference(project.Id, reference);
-            }
-
-            // Buildalyzer leaves out folders and the default namespace, which refactorings such as "change namespace to match folder" need.
-            solution = solution.WithProjectDefaultNamespace(project.Id, result.GetProperty("RootNamespace"));
-            foreach (var document in solution.GetProject(project.Id)!.Documents)
-                solution = solution.WithDocumentFolders(document.Id, FoldersOf(result.ProjectFilePath, document.FilePath));
+            foreach (var output in new[] { result.GetProperty("TargetRefPath"), result.GetProperty("TargetPath") }.Where(output => !string.IsNullOrEmpty(output)))
+                outputs.TryAdd(output, id);
         }
 
-        workspace.Set(solution);
+        var workspace = new SettableWorkspace();
+        var loader = workspace.Services.GetRequiredService<IAnalyzerService>().GetLoader();
+        workspace.Set(projects.Aggregate(workspace.CurrentSolution, (solution, project) => solution.AddProject(ProjectOf(project.Result, project.Id, outputs, loader))));
         return new(workspace.CurrentSolution, results);
+    }
+
+    private static string? LanguageOf(string projectPath) => Path.GetExtension(projectPath).ToLowerInvariant() switch
+    {
+        ".csproj" => LanguageNames.CSharp,
+        ".vbproj" => LanguageNames.VisualBasic,
+        _ => null,
+    };
+
+    /// <summary>
+    /// A project as the compiler sees it, from the compiler command line of its build; empty if the build did not get that far.
+    /// Not Buildalyzer.Workspaces' AddToWorkspace, which keeps few compiler options (not even AllowUnsafeBlocks or NoWarn), no analyzer
+    /// configuration, folders or default namespace, reads files as UTF-16, and references projects the compiler does not get, such as
+    /// source generators (ReferenceOutputAssembly="false").
+    /// </summary>
+    /// <param name="outputs">The projects by the paths of their outputs, which their references to each other point to.</param>
+    private static ProjectInfo ProjectOf(IAnalyzerResult result, ProjectId id, Dictionary<string, ProjectId> outputs, IAnalyzerAssemblyLoader loader)
+    {
+        var (name, language) = (Path.GetFileNameWithoutExtension(result.ProjectFilePath), LanguageOf(result.ProjectFilePath)!);
+        var targetPath = result.GetProperty("TargetPath") is { Length: > 0 } target ? target : null;
+        var project = ProjectInfo.Create(id, VersionStamp.Create(), name, name, language, result.ProjectFilePath, targetPath);
+        if (result.CompilerArguments.Length == 0)
+            return project;
+
+        var directory = Path.GetDirectoryName(result.ProjectFilePath)!;
+        CommandLineParser parser = language == LanguageNames.CSharp ? CSharpCommandLineParser.Default : VisualBasicCommandLineParser.Default;
+        var arguments = parser.Parse(result.CompilerArguments, directory, sdkDirectory: null, additionalReferenceDirectories: null);
+        IEnumerable<DocumentInfo> Documents(IEnumerable<string> files) => files.Select(file => Path.GetFullPath(file, directory)).Where(File.Exists)
+            .Select(file => DocumentInfo.Create(DocumentId.CreateNewId(id, file), Path.GetFileName(file), FoldersOf(result.ProjectFilePath, file),
+                loader: TextLoader.From(TextAndVersion.Create(Read(file), VersionStamp.Create(), file)), filePath: file));
+        var references = arguments.MetadataReferences.Select(reference => (Path: Path.GetFullPath(reference.Reference, directory), reference.Properties)).ToList();
+
+        return project
+            .WithAssemblyName(arguments.CompilationName ?? name)
+            .WithCompilationOptions(arguments.CompilationOptions.WithStrongNameProvider(new DesktopStrongNameProvider(arguments.KeyFileSearchPaths)))
+            .WithParseOptions(arguments.ParseOptions)
+            .WithDocuments(Documents(arguments.SourceFiles.Select(file => file.Path)))
+            .WithAdditionalDocuments(Documents(arguments.AdditionalFiles.Select(file => file.Path)))
+            .WithAnalyzerConfigDocuments(Documents(arguments.AnalyzerConfigPaths))
+            .WithProjectReferences(references.Where(reference => outputs.ContainsKey(reference.Path))
+                .Select(reference => new ProjectReference(outputs[reference.Path], reference.Properties.Aliases, reference.Properties.EmbedInteropTypes)))
+            .WithMetadataReferences(references.Where(reference => !outputs.ContainsKey(reference.Path) && File.Exists(reference.Path))
+                .Select(reference => ReferenceTo(reference.Path, reference.Properties)))
+            .WithAnalyzerReferences(arguments.AnalyzerReferences.Select(reference => Path.GetFullPath(reference.FilePath, directory)).Where(File.Exists)
+                .Select(file => new AnalyzerFileReference(file, loader)))
+            .WithDefaultNamespace(result.GetProperty("RootNamespace"));
     }
 
     /// <summary>
