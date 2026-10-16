@@ -21,7 +21,8 @@ public sealed class DecompileTool(AssemblyLoader assemblies, ResultCache cache) 
     private Task<PagedResult<DecompiledMember>> DecompileAsync(
         [Description(IlDisassembler.AssemblyPath)] string assemblyPath,
         [Description("Type or member name, optionally partially qualified, e.g. 'System.Linq.Enumerable', 'Dictionary.TryGetValue' or 'Outer.Nested'; "
-            + "or a documentation ID such as 'M:Ns.Type.Method(System.Int32)'. A method name returns all its overloads.")] string name,
+            + "or a documentation ID such as 'M:Ns.Type.Method(System.Int32)'. A method name returns all its overloads. "
+            + "A generic arity, as in 'List`1' or 'List<T>', must match; without one, any arity does.")] string name,
         [Description(ToolDefaults.Page)] int page = 0,
         [Description(ToolDefaults.PageSize)] int pageSize = IlDisassembler.DefaultPageSize)
     {

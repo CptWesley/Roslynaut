@@ -1,5 +1,4 @@
 using System.Text;
-using System.Text.RegularExpressions;
 using ModelContextProtocol;
 using Mono.Cecil;
 using Mono.Cecil.Cil;
@@ -23,7 +22,8 @@ internal static class IlDisassembler
     public const string AssemblyPath = "Path to the .dll or .exe.";
 
     public const string Name = "Type or method name, optionally partially qualified, e.g. 'System.String.Concat', 'Dictionary.TryGetValue' or 'Outer.Nested'; "
-        + "or a documentation ID such as 'M:Ns.Type.Method(System.Int32)'. A method name returns all its overloads.";
+        + "or a documentation ID such as 'M:Ns.Type.Method(System.Int32)'. A method name returns all its overloads. "
+        + "A generic arity, as in 'List`1' or 'List<T>', must match; without one, any arity does.";
 
     public static List<MethodIL> Disassemble(ModuleDefinition module, IReadOnlyCollection<string> names)
     {
@@ -33,8 +33,8 @@ internal static class IlDisassembler
 
     /// <summary>
     /// The types and members named by <paramref name="names"/>: documentation IDs (such as "T:..." or "M:...") or names of types, methods,
-    /// properties, events or fields, optionally partially qualified. Parameter and type argument lists are ignored, so a name matches all
-    /// overloads. Compiler-generated members are left out. Lock the module while calling this.
+    /// properties, events or fields, optionally partially qualified. Parameter lists are ignored, so a name matches all overloads; a generic
+    /// arity, as in "List`1" or "List&lt;T&gt;", must match where a name gives one. Compiler-generated members are left out. Lock the module while calling this.
     /// </summary>
     public static List<IMemberDefinition> FindMembers(ModuleDefinition module, IReadOnlyCollection<string> names)
     {
@@ -44,10 +44,9 @@ internal static class IlDisassembler
             return members;
 
         // Facades, such as System.Collections.dll of a runtime, forward types to the assembly that defines them. A name is of the type or a member.
-        var queries = names.Select(name => Simplify(name.Length > 2 && name[1] == ':' ? name[2..] : name))
-            .SelectMany(query => query.LastIndexOf('.') is > 0 and var dot ? [query, query[..dot]] : new[] { query })
-            .ToList();
-        var forwarded = module.ExportedTypes.FirstOrDefault(type => type.IsForwarder && queries.Any(query => IsNamed(CSharpName(type.FullName), query)));
+        var queries = names.Select(name => Parse(name.Length > 2 && name[1] == ':' ? name[2..] : name)).ToList();
+        var forwarded = module.ExportedTypes.FirstOrDefault(type => type.IsForwarder && Parse(type.FullName) is var typeName
+            && queries.Any(query => IsNamed(typeName, query) || IsNamed(typeName, [.. query.SkipLast(1)])));
         throw new McpException($"No type or member matches {string.Join(", ", names)} in {module.Name}."
             + (forwarded is null ? "" : $" {forwarded.FullName} is forwarded to {forwarded.Scope.Name}: pass {forwarded.Scope.Name}.dll instead."));
     }
@@ -72,12 +71,14 @@ internal static class IlDisassembler
     private static IEnumerable<IMemberDefinition> Find(List<TypeDefinition> types, string name)
     {
         var isDocId = name.Length > 2 && name[1] == ':';
-        var query = isDocId ? name : Simplify(name);
-        bool Matches(IMemberDefinition member, string fullName) => isDocId ? DocCommentId.GetDocCommentId(member) == query : IsNamed(fullName, query);
+        var query = Parse(name);
+        bool Matches(IMemberDefinition member, List<Part> typeName) => isDocId
+            ? DocCommentId.GetDocCommentId(member) == name
+            : IsNamed(member is TypeDefinition ? typeName : [.. typeName, .. Parse(member.Name, (member as MethodDefinition)?.GenericParameters.Count)], query);
 
         foreach (var type in types)
         {
-            var typeName = CSharpName(type.FullName);
+            var typeName = Parse(type.FullName);
             if (Matches(type, typeName))
             {
                 yield return type;
@@ -85,7 +86,7 @@ internal static class IlDisassembler
             }
 
             IEnumerable<IMemberDefinition> members = [.. type.Methods, .. type.Properties, .. type.Events, .. type.Fields];
-            foreach (var member in members.Where(member => !IsGenerated(member) && Matches(member, $"{typeName}.{member.Name}")))
+            foreach (var member in members.Where(member => !IsGenerated(member) && Matches(member, typeName)))
                 yield return member;
         }
     }
@@ -133,30 +134,64 @@ internal static class IlDisassembler
 
     private static string Label(Instruction? instruction) => instruction is null ? "end" : $"IL_{instruction.Offset:x4}";
 
-    /// <summary>Whether a full name is the query, or ends with it after a dot.</summary>
-    private static bool IsNamed(string fullName, string query) =>
-        fullName.Equals(query, StringComparison.OrdinalIgnoreCase) || fullName.EndsWith("." + query, StringComparison.OrdinalIgnoreCase);
-
-    /// <summary>The C#-style name of a type from Cecil's: nested types joined with dots, without generic arity, e.g. "Ns.Outer.Nested".</summary>
-    private static string CSharpName(string fullName) => Regex.Replace(fullName.Replace('/', '.'), @"`+\d+", "");
+    /// <summary>
+    /// Whether a full name ends with the parts of a query, by name and, where the query gives one, by arity. A part of a full name without
+    /// an arity has none.
+    /// </summary>
+    private static bool IsNamed(List<Part> fullName, List<Part> query) =>
+        query.Count > 0 && query.Count <= fullName.Count && fullName.TakeLast(query.Count).Zip(query).All(parts =>
+            parts.First.Name.Equals(parts.Second.Name, StringComparison.OrdinalIgnoreCase) && (parts.Second.Arity is null || parts.Second.Arity == (parts.First.Arity ?? 0)));
 
     /// <summary>
-    /// Drops whitespace, generic arity, and parameter and type argument lists; and accepts Cecil's "Type::Method" and "Outer/Nested",
-    /// and reflection's "Outer`1+Nested" and "Type`1[System.Int32]".
+    /// The dotted parts of a name, each with its generic arity where the name gives one: "Dictionary`2", "Dictionary&lt;TKey, TValue&gt;" and
+    /// "Dictionary&lt;,&gt;" all give 2, as "Method``1" of a documentation ID gives 1. Drops whitespace, parameter lists and reflection's type
+    /// argument lists ("List`1[System.Int32]"); takes Cecil's "Type::Method" and "Outer/Nested", and reflection's "Outer+Nested".
     /// </summary>
-    private static string Simplify(string name)
+    /// <param name="arity">The arity of the last part, such as the type parameters of a method, which Cecil leaves out of its name.</param>
+    private static List<Part> Parse(string name, int? arity = null)
     {
-        var simple = new StringBuilder();
-        var depth = 0;
+        var parts = new List<Part>();
+        var text = new StringBuilder();
+        int? arguments = null;
+        var (depth, generic) = (0, false);
         foreach (var c in name.Replace("::", "."))
         {
-            depth += c switch { '(' or '<' or '[' => 1, ')' or '>' or ']' => -1, _ => 0 };
-            if (depth == 0 && c is not (')' or '>' or ']') && !char.IsWhiteSpace(c))
-                simple.Append(c is '+' or '/' ? '.' : c);
+            if (c is '(' or '<' or '[')
+            {
+                if (depth++ == 0 && (generic = c == '<'))
+                    arguments = 1;
+            }
+            else if (c is ')' or '>' or ']')
+                depth--;
+            else if (depth > 0)
+                arguments += depth == 1 && generic && c == ',' ? 1 : 0;
+            else if (c is '.' or '+' or '/')
+                Add();
+            else if (!char.IsWhiteSpace(c))
+                text.Append(c);
         }
 
-        return CSharpName(simple.ToString());
+        Add();
+        if (arity is not null && parts.Count > 0)
+            parts[^1] = parts[^1] with { Arity = arity };
+        return parts;
+
+        void Add()
+        {
+            var part = text.ToString();
+            text.Clear();
+            if (part.IndexOf('`') is >= 0 and var tick && int.TryParse(part.AsSpan(tick).TrimStart('`'), out var count))
+                (part, arguments) = (part[..tick], count);
+
+            // Empty for the dot of ".ctor".
+            if (part.Length > 0)
+                parts.Add(new(part, arguments));
+            arguments = null;
+        }
     }
+
+    /// <param name="Arity">The number of type parameters, if known.</param>
+    private readonly record struct Part(string Name, int? Arity);
 
     private static bool IsGenerated(IMemberDefinition member) => member.Name.StartsWith('<');
 }

@@ -35,9 +35,9 @@ public class DecompileTests
         IlDisassembler.FindMethods(module, ["Roslynaut.Tools.SymbolEntry.Name"]).Select(method => method.Name).Should().Equal("get_Name", "set_Name");
     }
 
-    // Names as reflection, stack traces and Cecil write them, with generic arity and nested type separators.
+    // Names as reflection, stack traces and Cecil write them, with generic arities and nested type separators.
     [Test]
-    public void FindMembers_GenericAndNestedNames_IgnoreAritiesAndSeparators()
+    public void FindMembers_GenericAndNestedNames_TakeArityAndSeparators()
     {
         var module = assemblies.Read(typeof(object).Assembly.Location).Module;
 
@@ -46,6 +46,19 @@ public class DecompileTests
                 "System.Boolean System.Runtime.CompilerServices.ConditionalWeakTable`2/Enumerator::MoveNext()",
                 "System.Void System.Collections.Generic.List`1::Add(T)",
                 "System.Collections.Generic.Dictionary`2/Entry");
+    }
+
+    [Test]
+    public void FindMembers_Arity_MatchesWhereGiven()
+    {
+        var module = assemblies.Read(typeof(object).Assembly.Location).Module;
+        List<string> Find(string name) => [.. IlDisassembler.FindMembers(module, [name]).Select(member => member.FullName)];
+
+        Find("System.Action`2").Should().Equal("System.Action`2");
+        Find("System.Action<T1, T2, T3>").Should().Equal("System.Action`3");
+        Find("System.Func<,>").Should().Equal("System.Func`2");
+        Find("System.Action").Should().Contain(["System.Action", "System.Action`1", "System.Action`2"]);
+        Find("Interlocked.CompareExchange<T>").Should().ContainSingle().Which.Should().StartWith("T System.Threading.Interlocked::CompareExchange");
     }
 
     [Test]
