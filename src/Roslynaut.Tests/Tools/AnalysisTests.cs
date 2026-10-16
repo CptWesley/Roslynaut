@@ -198,3 +198,37 @@ public sealed class HelloGenerator : IIncrementalGenerator
         context.RegisterPostInitializationOutput(output => output.AddSource("Hello.g.cs", "namespace Generated { public static class Hello { } }"));
 }
 #pragma warning restore RS1036, RS1038, RS1041
+
+public class NamespaceGraphTests
+{
+    private static readonly Microsoft.CodeAnalysis.Solution Layers = TestSolution.Create("""
+        namespace App.Domain { public class Order { public App.Data.Repo? Repo; } }
+        namespace App.Data { public class Repo { public App.Domain.Order? Last; } }
+        namespace App.Web { public class Page { App.Domain.Order? order; void M() { var repo = new App.Data.Repo(); } } }
+        """);
+
+    [Test]
+    public async Task Graph_HasDependencies_AndTheirCycles()
+    {
+        var graph = await NamespaceGraphTool.BuildAsync(Layers, depth: null, prefix: null, CancellationToken.None);
+
+        graph.Dependencies.Select(edge => $"{edge.From} -> {edge.To} ({edge.Types})").Should().Equal(
+            "App.Data -> App.Domain (1)", "App.Domain -> App.Data (1)", "App.Web -> App.Data (1)", "App.Web -> App.Domain (1)");
+        graph.Dependencies[0].Examples.Should().Equal("App.Data.Repo -> App.Domain.Order");
+        graph.Cycles.Should().ContainSingle().Which.Should().Equal("App.Data", "App.Domain");
+    }
+
+    [Test]
+    public async Task Graph_ByDepth_AndPrefix()
+    {
+        (await NamespaceGraphTool.BuildAsync(Layers, depth: 1, prefix: null, CancellationToken.None)).Dependencies.Should().BeEmpty();
+        (await NamespaceGraphTool.BuildAsync(Layers, depth: null, prefix: "App.Web", CancellationToken.None)).Dependencies.Should().HaveCount(2);
+    }
+
+    [Test]
+    public void Cycles_AreTheGroupsThatReachEachOther()
+    {
+        NamespaceGraphTool.Cycles([("A", "B"), ("B", "C"), ("C", "A"), ("D", "A"), ("E", "F")])
+            .Should().ContainSingle().Which.Should().Equal("A", "B", "C");
+    }
+}

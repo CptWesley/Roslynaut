@@ -19,6 +19,11 @@ using Roslynaut.Tools;
 
 namespace Roslynaut;
 
+/// <summary>How to load a project or solution.</summary>
+/// <param name="TargetFramework">The framework to load projects with several for, such as net48; those without it load their first.</param>
+/// <param name="Configuration">The build configuration, such as Release; by default the projects' own, usually Debug.</param>
+public sealed record LoadSettings(string? TargetFramework = null, string? Configuration = null);
+
 /// <summary>A Roslyn solution plus the MSBuild design-time build results it was created from.</summary>
 /// <param name="LoadErrors">
 /// The MSBuild errors of the projects whose design-time build gave no compiler command line, by project path. Such a project has no sources,
@@ -47,6 +52,17 @@ public sealed class WorkspaceService
 
         var workspace = _workspaces.GetOrAdd(path, key => new TrackedWorkspace(key));
         return Task.Run(workspace.Sync);
+    }
+
+    /// <summary>Reloads a project or solution with other settings, which later calls with its path then get.</summary>
+    public Task<LoadedWorkspace> ConfigureAsync(string projectPath, LoadSettings settings)
+    {
+        var path = Path.GetFullPath(projectPath);
+        if (!File.Exists(path))
+            throw new McpException($"Project or solution not found: {path}");
+
+        _workspaces.GetOrAdd(path, key => new TrackedWorkspace(key)).Configure(settings);
+        return GetAsync(path);
     }
 
     public async Task<Document> GetDocumentAsync(string projectPath, string filePath)
@@ -180,7 +196,18 @@ public sealed class WorkspaceService
         private readonly ConcurrentQueue<(string Path, bool Created)> _changes = new();
         private FileSystemWatcher[]? _watchers;
         private LoadedWorkspace? _loaded;
+        private LoadSettings _settings = new();
         private int _overflowed;
+
+        /// <summary>Takes other settings, which the next call loads with.</summary>
+        public void Configure(LoadSettings settings)
+        {
+            lock (_lock)
+            {
+                _settings = settings;
+                _loaded = null;
+            }
+        }
 
         /// <summary>Applies the changes queued since the previous call, loading or reloading the workspace when needed.</summary>
         public LoadedWorkspace Sync()
@@ -220,7 +247,7 @@ public sealed class WorkspaceService
             _changes.Clear();
             _overflowed = 0;
 
-            var loaded = Load(path);
+            var loaded = Load(path, _settings);
             var previous = _watchers;
             _watchers = [.. GetRoots(loaded.Solution).Select(Watch)];
             foreach (var watcher in previous)
@@ -366,7 +393,7 @@ public sealed class WorkspaceService
     internal static MetadataReference ReferenceTo(string path, MetadataReferenceProperties properties = default) =>
         MetadataReference.CreateFromFile(path, properties, Path.ChangeExtension(path, ".xml") is var xml && File.Exists(xml) ? XmlDocumentationProvider.CreateFromFile(xml) : null);
 
-    private static LoadedWorkspace Load(string path)
+    private static LoadedWorkspace Load(string path, LoadSettings settings)
     {
         var isSolution = Path.GetExtension(path).ToLowerInvariant() is ".sln" or ".slnx";
         var manager = isSolution ? new AnalyzerManager(IOPath.Parse(path)) : new AnalyzerManager();
@@ -377,9 +404,11 @@ public sealed class WorkspaceService
         options.TargetsToBuild.Clear();
         options.TargetsToBuild.Add("Compile");
         options.GlobalProperties["NonExistentFile"] = Path.Combine("__NonExistentSubDir__", "__NonExistentFile__");
+        if (settings.Configuration is { } configuration)
+            options.GlobalProperties["Configuration"] = configuration;
 
         // Build level by level, following project references (Buildalyzer's addProjectReferences would build them with the defaults above).
-        // Like Buildalyzer's own GetWorkspace: builds run in parallel and take the first target framework of each project.
+        // Like Buildalyzer's own GetWorkspace: builds run in parallel and take the first target framework of each project, or the chosen one.
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var results = new List<IAnalyzerResult>();
         var errors = new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase);
@@ -387,7 +416,7 @@ public sealed class WorkspaceService
         while (pending.Count > 0)
         {
             var built = pending.AsParallel()
-                .Select(project => (Path: project, Build: Build(manager.GetProject(IOPath.Parse(project)), options)))
+                .Select(project => (Path: project, Build: Build(manager.GetProject(IOPath.Parse(project)), options, settings.TargetFramework)))
                 .ToList();
             foreach (var (project, (_, projectErrors)) in built.Where(project => project.Build.Result is not { CompilerArguments.Length: > 0 } && LanguageOf(project.Path) is not null))
                 errors[project] = projectErrors.Count > 0 ? projectErrors : ["The design-time build gave no compiler command line."];
@@ -462,21 +491,21 @@ public sealed class WorkspaceService
     }
 
     /// <summary>
-    /// Builds a project for its first target framework. Buildalyzer builds without one, and then a project with TargetFrameworks (even just one)
-    /// builds as the outer build, which only dispatches to a build per framework and has no Compile target. The frameworks can come from an
-    /// import, which Buildalyzer's project file reader misses, so take them from that first build.
+    /// Builds a project for the chosen target framework if it has that one, else for its first. Buildalyzer builds without one, and then a
+    /// project with TargetFrameworks (even just one) builds as the outer build, which only dispatches to a build per framework and has no Compile
+    /// target. The frameworks can come from an import, which Buildalyzer's project file reader misses, so take them from that first build.
     /// </summary>
     /// <returns>The result, and the build's errors if it gave no compiler command line, such as when restore did not run.</returns>
     /// <param name="analyzer">Null for a project of a solution that is missing on disk.</param>
-    private static (IAnalyzerResult? Result, IReadOnlyList<string> Errors) Build(IProjectAnalyzer? analyzer, EnvironmentOptions options)
+    private static (IAnalyzerResult? Result, IReadOnlyList<string> Errors) Build(IProjectAnalyzer? analyzer, EnvironmentOptions options, string? targetFramework)
     {
         if (analyzer is null)
             return (null, ["The project file does not exist."]);
 
         var results = analyzer.Build(options);
         if (results.FirstOrDefault() is { CompilerArguments.Length: 0 } outer
-            && outer.GetProperty("TargetFrameworks")?.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries) is [var framework, ..])
-            results = analyzer.Build(framework, options);
+            && outer.GetProperty("TargetFrameworks")?.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries) is [var first, ..] frameworks)
+            results = analyzer.Build(frameworks.FirstOrDefault(framework => string.Equals(framework, targetFramework, StringComparison.OrdinalIgnoreCase)) ?? first, options);
 
         var result = results.FirstOrDefault();
         return (result, result is { CompilerArguments.Length: > 0 }

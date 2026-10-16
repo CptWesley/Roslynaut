@@ -40,6 +40,32 @@ public sealed class MsBuildEvaluateTool(WorkspaceService workspace) : IMcpTool
     public sealed record Item(string Include, IReadOnlyDictionary<string, string> Metadata);
 }
 
+public sealed class WorkspaceOptionsTool(WorkspaceService workspace) : IMcpTool
+{
+    public Delegate Handler => ConfigureAsync;
+
+    [McpServerTool(Name = "workspace_options", Idempotent = true)]
+    [Description("Reloads a project or solution for another target framework or configuration, such as net48 or Release, so that code under "
+        + "#if for it shows, with its diagnostics; every later call with this path uses them. Omit both to go back to the defaults: each "
+        + "project's first target framework, and its own configuration. Returns each project with the framework it loaded and the ones it has.")]
+    private async Task<IEnumerable<LoadedProject>> ConfigureAsync(
+        [Description(ToolDefaults.ProjectPath)] string projectPath,
+        [Description("The target framework, such as net48 or net10.0, for the projects that have it; the others keep their first.")] string? targetFramework = null,
+        [Description("The configuration, such as Release.")] string? configuration = null) =>
+        Describe(await workspace.ConfigureAsync(projectPath, new(targetFramework, configuration)));
+
+    internal static IEnumerable<LoadedProject> Describe(LoadedWorkspace loaded) =>
+        loaded.Results.Select(result => new LoadedProject(
+            result.ProjectFilePath,
+            result.TargetFramework,
+            (result.GetProperty("TargetFrameworks") is { Length: > 0 } frameworks ? frameworks : result.TargetFramework)
+                .Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries),
+            result.GetProperty("Configuration")));
+
+    /// <param name="TargetFrameworks">The frameworks the project targets, for targetFramework.</param>
+    public sealed record LoadedProject(string Project, string TargetFramework, IReadOnlyList<string> TargetFrameworks, string? Configuration);
+}
+
 public sealed class ProjectGraphTool(WorkspaceService workspace) : IMcpTool
 {
     public Delegate Handler => GetGraphAsync;

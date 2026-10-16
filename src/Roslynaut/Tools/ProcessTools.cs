@@ -20,12 +20,140 @@ internal static class ProcessInspection
     {
         using var target = Open(processId, dumpPath);
         using var runtime = RuntimeOf(target);
+
+        // ponytail: Monitor locks with a sync block only, which every contended one has; uncontended ones live in the object header, and
+        // System.Threading.Lock keeps its owner in a field. process_objects shows the owner of a given object's Monitor lock either way.
+        // A dump without the heap still has the threads.
+        ClrHeap? heap;
+        try
+        {
+            heap = HeapOf(runtime);
+        }
+        catch (McpException)
+        {
+            heap = null;
+        }
+
+        var held = (heap?.EnumerateSyncBlocks() ?? []).Where(block => block.IsMonitorHeld).ToLookup(block => block.HoldingThreadAddress);
         return [.. runtime.Threads.Where(thread => thread.IsAlive).Select(thread => new ThreadEntry(
             thread.ManagedThreadId,
             thread.OSThreadId,
             thread.CurrentException is { } exception ? Describe(exception) : null,
-            [.. thread.EnumerateStackTrace().Where(frame => frame.Kind == ClrStackFrameKind.ManagedMethod).Take(maxFrames).Select(frame => Describe(frame, pdbs))]))];
+            [.. thread.EnumerateStackTrace().Where(frame => frame.Kind == ClrStackFrameKind.ManagedMethod).Take(maxFrames).Select(frame => Describe(frame, pdbs))],
+            [.. held[thread.Address].Select(block => Describe(heap!.GetObject(block.Object)) + (block.WaitingThreadCount > 0 ? $", {block.WaitingThreadCount} waiting" : ""))]))];
     }
+
+    private static ClrHeap HeapOf(ClrRuntime runtime)
+    {
+        try
+        {
+            return runtime.Heap;
+        }
+        catch (InvalidDataException e)
+        {
+            // While the runtime starts, or in a dump without the heap.
+            throw new McpException($"The heap cannot be read: {e.Message}");
+        }
+    }
+
+    /// <summary>Objects with their fields: the one at an address, or else the first ones of the types whose names match.</summary>
+    public static IReadOnlyList<ObjectEntry> Objects(int? processId, string? dumpPath, ulong? address, Regex? type, int top)
+    {
+        using var target = Open(processId, dumpPath);
+        using var runtime = RuntimeOf(target);
+        var heap = HeapOf(runtime);
+        if (address is not null)
+        {
+            var found = heap.GetObject(address.Value);
+            return found.IsValid ? [Inspect(found, runtime)] : throw new McpException($"There is no object at {Hex(address.Value)}.");
+        }
+
+        if (type is null)
+            throw new McpException("Pass an address, or a type to find objects of.");
+        if (!heap.CanWalkHeap)
+            throw new McpException("The heap cannot be walked; try again, or take a dump with the heap.");
+
+        return [.. heap.EnumerateObjects().Where(item => item.IsValid && item.Type?.Name is { } name && type.IsMatch(name)).Take(top).Select(item => Inspect(item, runtime))];
+    }
+
+    /// <summary>The chains of references that keep an object alive, from a root such as a static field, a local or a handle, to the object.</summary>
+    public static IReadOnlyList<RootPath> Roots(int? processId, string? dumpPath, ulong address, int top, CancellationToken cancellationToken)
+    {
+        using var target = Open(processId, dumpPath);
+        using var runtime = RuntimeOf(target);
+        var heap = HeapOf(runtime);
+        if (!heap.GetObject(address).IsValid)
+            throw new McpException($"There is no object at {Hex(address)}.");
+
+        return [.. new GCRoot(heap, [address]).EnumerateRootPaths(cancellationToken).Take(top).Select(path => new RootPath(
+            path.Root.RootKind.ToString(),
+            path.Root is ClrStackRoot { StackFrame: { } frame } ? frame.Method?.Signature ?? frame.FrameName : null,
+            [.. Chain(path.Path).Select(link => Describe(heap.GetObject(link)))]))];
+
+        static IEnumerable<ulong> Chain(GCRoot.ChainLink? link)
+        {
+            for (; link is not null; link = link.Next)
+                yield return link.Object;
+        }
+    }
+
+    private static ObjectEntry Inspect(ClrObject item, ClrRuntime runtime)
+    {
+        var type = item.Type!;
+        string? value = type.IsString ? Quote(item.AsString(MaxString)) : item.IsArray ? $"Length {item.AsArray().Length}" : null;
+        var owner = item.SyncBlock is { IsMonitorHeld: true } block
+            ? runtime.Threads.FirstOrDefault(thread => thread.Address == block.HoldingThreadAddress)?.ManagedThreadId
+            : item.GetThinLock()?.Thread?.ManagedThreadId;
+        return new(Hex(item.Address), type.Name ?? "?", item.Size, value, owner,
+            [.. type.Fields.Select(field => new FieldValue(field.Name ?? "?", field.Type?.Name ?? field.ElementType.ToString(), ValueOf(item, field)))]);
+    }
+
+    private const int MaxString = 200;
+
+    private static string ValueOf(ClrObject item, ClrInstanceField field)
+    {
+        try
+        {
+            return field.ElementType switch
+            {
+                ClrElementType.Boolean => item.ReadField<bool>(field).ToString(),
+                ClrElementType.Char => Quote(item.ReadField<char>(field).ToString()),
+                ClrElementType.Int8 => item.ReadField<sbyte>(field).ToString(),
+                ClrElementType.UInt8 => item.ReadField<byte>(field).ToString(),
+                ClrElementType.Int16 => item.ReadField<short>(field).ToString(),
+                ClrElementType.UInt16 => item.ReadField<ushort>(field).ToString(),
+                ClrElementType.Int32 => item.ReadField<int>(field).ToString(),
+                ClrElementType.UInt32 => item.ReadField<uint>(field).ToString(),
+                ClrElementType.Int64 => item.ReadField<long>(field).ToString(),
+                ClrElementType.UInt64 => item.ReadField<ulong>(field).ToString(),
+                ClrElementType.Float => item.ReadField<float>(field).ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ClrElementType.Double => item.ReadField<double>(field).ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ClrElementType.NativeInt or ClrElementType.Pointer or ClrElementType.FunctionPointer => Hex(item.ReadField<nuint>(field)),
+                ClrElementType.NativeUInt => Hex(item.ReadField<nuint>(field)),
+                _ when field.IsObjectReference => item.ReadObjectField(field.Name!) is { IsNull: false } reference ? Describe(reference) : "null",
+                // ponytail: structs show their type only; read their fields with ClrValueType if agents need them.
+                _ => $"{{{field.Type?.Name}}}",
+            };
+        }
+        catch (Exception e) when (e is InvalidOperationException or ArgumentException or IOException)
+        {
+            return "?";
+        }
+    }
+
+    /// <summary>An object as "Type @0x1234", or a string's text.</summary>
+    private static string Describe(ClrObject item) =>
+        item.Type?.IsString == true ? $"{Quote(item.AsString(MaxString))} @{Hex(item.Address)}" : $"{item.Type?.Name ?? "?"} @{Hex(item.Address)}";
+
+    private static string Quote(string? text) => text is null ? "null" : $"\"{text}\"";
+
+    private static string Hex(ulong value) => $"0x{value:x}";
+
+    /// <summary>An address as process_heap, process_objects or process_roots print it, with or without 0x.</summary>
+    public static ulong ParseAddress(string address) =>
+        ulong.TryParse(address.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? address[2..] : address, System.Globalization.NumberStyles.HexNumber, null, out var value)
+            ? value
+            : throw new McpException($"'{address}' is not a hexadecimal address such as 0x1a2b3c.");
 
     /// <summary>
     /// A frame's method, and where in source it is if a PDB is at hand without downloading: the file if on disk, else its SourceLink URL,
@@ -56,7 +184,7 @@ internal static class ProcessInspection
     {
         using var target = Open(processId, dumpPath);
         using var runtime = RuntimeOf(target);
-        var heap = runtime.Heap;
+        var heap = HeapOf(runtime);
         if (!heap.CanWalkHeap)
             throw new McpException(dumpPath is null
                 ? "The heap cannot be walked right now, for instance during a garbage collection; try again."
@@ -146,7 +274,21 @@ internal static class ProcessInspection
 
     /// <param name="Exception">The exception the thread is handling, with its inner exceptions.</param>
     /// <param name="Stack">The managed frames, innermost first; with "in file:line n" where the module's PDB is at hand.</param>
-    public sealed record ThreadEntry(int ManagedThreadId, uint OSThreadId, string? Exception, IReadOnlyList<string> Stack);
+    /// <param name="HeldLocks">The objects whose Monitor lock (C# lock) the thread holds while others wait or have waited for it, with how many wait.</param>
+    public sealed record ThreadEntry(int ManagedThreadId, uint OSThreadId, string? Exception, IReadOnlyList<string> Stack, IReadOnlyList<string> HeldLocks);
+
+    /// <param name="Address">Pass to process_objects or process_roots.</param>
+    /// <param name="Value">A string's text, or an array's length.</param>
+    /// <param name="LockedBy">The managed id of the thread that holds the object's Monitor lock, if any.</param>
+    public sealed record ObjectEntry(string Address, string Type, ulong Size, string? Value, int? LockedBy, IReadOnlyList<FieldValue> Fields);
+
+    /// <param name="Value">A number, a string's text, "Type @0x1234" for a reference, or null.</param>
+    public sealed record FieldValue(string Name, string Type, string Value);
+
+    /// <param name="Kind">What roots the chain, such as Stack, StrongHandle, PinnedHandle or FinalizerQueue; static fields are held by handles.</param>
+    /// <param name="Frame">For a Stack root, the method whose local holds the first object.</param>
+    /// <param name="Chain">The objects from the root to the object asked about, each referencing the next.</param>
+    public sealed record RootPath(string Kind, string? Frame, IReadOnlyList<string> Chain);
 
     public sealed record HeapSummary(long Objects, ulong Size, IReadOnlyList<TypeStats> Types);
 
@@ -157,6 +299,18 @@ internal static class ProcessDefaults
 {
     public const string ProcessId = "The id of a running process, e.g. from dotnet_processes; or else pass dumpPath.";
     public const string DumpPath = "The path of a dump file to read instead of a running process, such as one from dotnet-dump collect or a crash.";
+
+    public static Regex? TypePattern(string? type)
+    {
+        try
+        {
+            return type is null ? null : new Regex(type, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        }
+        catch (ArgumentException e)
+        {
+            throw new McpException($"Invalid type: {e.Message}");
+        }
+    }
 }
 
 public sealed class DotnetProcessesTool : IMcpTool
@@ -173,8 +327,8 @@ public sealed class ProcessThreadsTool(PdbService pdbs) : IMcpTool
     public Delegate Handler => GetThreadsAsync;
 
     [McpServerTool(Name = "process_threads", ReadOnly = true)]
-    [Description("Snapshots a running .NET process and returns its managed threads, each with its call stack and the exception it is handling, "
-        + "if any: for hangs, deadlocks and errors in progress. Frames give their source file and line where a PDB is at hand, also one that "
+    [Description("Snapshots a running .NET process and returns its managed threads, each with its call stack, the exception it is handling, "
+        + "if any, and the locks it holds that other threads wait for: for hangs, deadlocks and errors in progress. Frames give their source file and line where a PDB is at hand, also one that "
         + "assembly_sources or symbol_source downloaded earlier. The process pauses only while the snapshot is taken. Reads a dump file instead, "
         + "such as one of a crash or a hang.")]
     private Task<IReadOnlyList<ProcessInspection.ThreadEntry>> GetThreadsAsync(
@@ -198,16 +352,46 @@ public sealed class ProcessHeapTool : IMcpTool
         [Description("Optional regex for the type names to count, e.g. '^MyApp\\.' or 'Cache'.")] string? type = null,
         [Description("How many types to return, largest first.")] int top = 50)
     {
-        Regex? regex;
-        try
-        {
-            regex = type is null ? null : new Regex(type, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-        }
-        catch (ArgumentException e)
-        {
-            throw new McpException($"Invalid type: {e.Message}");
-        }
-
+        var regex = ProcessDefaults.TypePattern(type);
         return Task.Run(() => ProcessInspection.Heap(processId, dumpPath, regex, top));
+    }
+}
+
+public sealed class ProcessObjectsTool : IMcpTool
+{
+    public Delegate Handler => GetObjectsAsync;
+
+    [McpServerTool(Name = "process_objects", ReadOnly = true)]
+    [Description("Shows objects on the managed heap of a running .NET process or a dump, with their field values: the object at an address, or "
+        + "else the first objects of a type, such as the ones process_heap counts. A field that references an object shows its address, to "
+        + "follow with another call. Also says which thread holds the object's lock, if one does.")]
+    private static Task<IReadOnlyList<ProcessInspection.ObjectEntry>> GetObjectsAsync(
+        [Description(ProcessDefaults.ProcessId)] int? processId = null,
+        [Description(ProcessDefaults.DumpPath)] string? dumpPath = null,
+        [Description("The address of an object, such as 0x1f2e3d4c5b6a from a field or a root chain.")] string? address = null,
+        [Description("Or else a regex for the type names of the objects to show, e.g. '^MyApp\\.OrderCache$'.")] string? type = null,
+        [Description("How many objects of the type to show.")] int top = 10)
+    {
+        var (parsed, regex) = (address is null ? (ulong?)null : ProcessInspection.ParseAddress(address), ProcessDefaults.TypePattern(type));
+        return Task.Run(() => ProcessInspection.Objects(processId, dumpPath, parsed, regex, top));
+    }
+}
+
+public sealed class ProcessRootsTool : IMcpTool
+{
+    public Delegate Handler => GetRootsAsync;
+
+    [McpServerTool(Name = "process_roots", ReadOnly = true)]
+    [Description("Explains why an object in a running .NET process or a dump stays alive, as gcroot does: the chains of references from roots, "
+        + "such as locals, static fields and handles, to the object. For memory leaks, after process_heap and process_objects. Slow on big heaps.")]
+    private static Task<IReadOnlyList<ProcessInspection.RootPath>> GetRootsAsync(
+        [Description("The address of the object, e.g. from process_objects.")] string address,
+        [Description(ProcessDefaults.ProcessId)] int? processId = null,
+        [Description(ProcessDefaults.DumpPath)] string? dumpPath = null,
+        [Description("How many chains to return.")] int top = 5,
+        CancellationToken cancellationToken = default)
+    {
+        var parsed = ProcessInspection.ParseAddress(address);
+        return Task.Run(() => ProcessInspection.Roots(processId, dumpPath, parsed, top, cancellationToken), cancellationToken);
     }
 }

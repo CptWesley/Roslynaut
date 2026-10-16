@@ -5,7 +5,7 @@ namespace Roslynaut.Tools;
 
 public sealed class ProjectInfoTool(WorkspaceService workspace) : IMcpTool
 {
-    private static readonly string[] Properties = ["AssemblyName", "OutputType", "LangVersion", "Nullable", "TargetPath", "IsTestProject"];
+    private static readonly string[] Properties = ["AssemblyName", "OutputType", "LangVersion", "Nullable", "TargetPath", "IsTestProject", "TargetFrameworks", "Configuration"];
 
     public Delegate Handler => GetProjectInfoAsync;
 

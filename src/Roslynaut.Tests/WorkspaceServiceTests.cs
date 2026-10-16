@@ -81,3 +81,51 @@ public class WorkspaceLoadErrorTests
         }
     }
 }
+
+[NonParallelizable]
+public class WorkspaceOptionsTests
+{
+    // Code under #if for another framework or configuration only exists once the workspace loads with it.
+    [Test]
+    public async Task Configure_LoadsTheChosenFrameworkAndConfiguration_AndBack()
+    {
+        var directory = Directory.CreateTempSubdirectory("roslynaut-tfm-");
+        try
+        {
+            var project = Path.Combine(directory.FullName, "Multi.csproj");
+            File.WriteAllText(project, """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup><TargetFrameworks>netstandard2.0;net10.0</TargetFrameworks></PropertyGroup>
+                </Project>
+                """);
+            File.WriteAllText(Path.Combine(directory.FullName, "Code.cs"), """
+                #if NET10_0_OR_GREATER
+                public class Modern { }
+                #else
+                public class Legacy { }
+                #endif
+                #if DEBUG
+                public class DebugOnly { }
+                #endif
+                """);
+
+            var service = new WorkspaceService();
+            async Task<string[]> TypesAsync(LoadedWorkspace loaded) =>
+                [.. (await loaded.Solution.Projects.Single().GetCompilationAsync())!.Assembly.TypeNames.Where(name => name != "<Module>").Order()];
+
+            (await TypesAsync(await service.GetAsync(project))).Should().Equal("DebugOnly", "Legacy");
+
+            var loaded = await service.ConfigureAsync(project, new("net10.0", "Release"));
+            (await TypesAsync(loaded)).Should().Equal("Modern");
+            Roslynaut.Tools.WorkspaceOptionsTool.Describe(loaded).Should().ContainSingle().Which.Should().Match<Roslynaut.Tools.WorkspaceOptionsTool.LoadedProject>(
+                loaded => loaded.TargetFramework == "net10.0" && loaded.TargetFrameworks.SequenceEqual(new[] { "netstandard2.0", "net10.0" }) && loaded.Configuration == "Release");
+            (await TypesAsync(await service.GetAsync(project))).Should().Equal("Modern");
+
+            (await TypesAsync(await service.ConfigureAsync(project, new()))).Should().Equal("DebugOnly", "Legacy");
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
+    }
+}

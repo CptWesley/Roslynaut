@@ -187,9 +187,10 @@ public sealed class Pdb
 /// </summary>
 public sealed class PdbService : IDisposable
 {
-    // ponytail: two fixed symbol servers; read _NT_SYMBOL_PATH if private ones are needed.
-    private static readonly string[] SymbolServers = ["https://msdl.microsoft.com/download/symbols", "https://symbols.nuget.org/download/symbols"];
+    // ponytail: no credentials for symbol servers either, so a private one has to serve anonymously or be a file share.
+    private static readonly string[] PublicSymbolServers = ["https://msdl.microsoft.com/download/symbols", "https://symbols.nuget.org/download/symbols"];
 
+    private readonly IReadOnlyList<string> _symbolServers;
     private readonly int _capacity;
     private readonly string _cache = Path.Combine(Path.GetTempPath(), "Roslynaut");
     private readonly Dictionary<string, CachedPdb> _pdbs = new(StringComparer.OrdinalIgnoreCase);
@@ -200,11 +201,30 @@ public sealed class PdbService : IDisposable
     private long _clock;
 
     /// <param name="capacity">How many PDBs to keep in memory. Finding another one evicts the least recently used.</param>
-    public PdbService(int capacity = 32)
+    /// <param name="symbolServers">
+    /// URLs of symbol servers, or directories such as file shares; by default those that _NT_SYMBOL_PATH names, then Microsoft's and NuGet's.
+    /// </param>
+    public PdbService(int capacity = 32, IReadOnlyList<string>? symbolServers = null)
     {
         _capacity = capacity;
+        _symbolServers = symbolServers ?? [.. SymbolServersOf(Environment.GetEnvironmentVariable("_NT_SYMBOL_PATH")).Concat(PublicSymbolServers).Distinct(StringComparer.OrdinalIgnoreCase)];
         _http.DefaultRequestHeaders.UserAgent.ParseAdd("Roslynaut");
     }
+
+    /// <summary>
+    /// The servers in a symbol path such as "srv*C:\Symbols*https://symbols.example.com;\\share\symbols": the last part of each srv* or symsrv*
+    /// entry, and plain directories. Cache entries, and the local caches inside srv* entries, only hold what the servers had.
+    /// </summary>
+    internal static IEnumerable<string> SymbolServersOf(string? symbolPath) =>
+        (symbolPath ?? "").Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+            .Select(entry => entry.Split('*'))
+            .Select(parts => parts switch
+            {
+                [var kind, .., var server] when kind.Equals("srv", StringComparison.OrdinalIgnoreCase) || kind.Equals("symsrv", StringComparison.OrdinalIgnoreCase) => server,
+                [var directory] => directory,
+                _ => "",
+            })
+            .Where(server => server.Length > 0);
 
     /// <summary>
     /// The PDB of an assembly: next to it, embedded in it, or downloaded from a symbol server earlier; with download, also from a symbol server now.
@@ -373,25 +393,38 @@ public sealed class PdbService : IDisposable
     private async Task<bool> DownloadPdbAsync(SymbolKey symbols, string file)
     {
         var errors = new List<string>();
-        foreach (var server in SymbolServers)
+        foreach (var server in _symbolServers)
         {
             byte[] content;
-            try
+            if (!server.StartsWith("http://", StringComparison.OrdinalIgnoreCase) && !server.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
             {
-                using var request = new HttpRequestMessage(HttpMethod.Get, $"{server}/{symbols.Key}");
-
-                // nuget.org only serves a PDB to whoever knows its checksum.
-                if (symbols.Checksums is not null)
-                    request.Headers.Add("SymbolChecksum", symbols.Checksums);
-                using var response = await _http.SendAsync(request);
-                if (!response.IsSuccessStatusCode)
+                // A symbol store has the server's layout; a plain directory has the PDBs side by side.
+                var stored = new[] { Path.Combine(server, symbols.Key), Path.Combine(server, Path.GetFileName(symbols.Key)) }.FirstOrDefault(File.Exists);
+                try
+                {
+                    if (stored is null)
+                        continue;
+                    content = await File.ReadAllBytesAsync(stored);
+                }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+                {
+                    errors.Add($"{server}: {e.Message}");
                     continue;
-                content = await response.Content.ReadAsByteArrayAsync();
+                }
             }
-            catch (Exception e) when (e is HttpRequestException or TaskCanceledException)
+            else
             {
-                errors.Add($"{server}: {e.Message}");
-                continue;
+                try
+                {
+                    content = await DownloadAsync(server);
+                    if (content.Length == 0)
+                        continue;
+                }
+                catch (Exception e) when (e is HttpRequestException or TaskCanceledException)
+                {
+                    errors.Add($"{server}: {e.Message}");
+                    continue;
+                }
             }
 
             // The id ties a PDB to its assembly build.
@@ -411,6 +444,18 @@ public sealed class PdbService : IDisposable
         }
 
         return errors.Count == 0 ? false : throw new McpException($"Could not reach the symbol servers: {string.Join("; ", errors)}");
+
+        // Empty for a PDB the server does not have.
+        async Task<byte[]> DownloadAsync(string server)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, $"{server}/{symbols.Key}");
+
+            // nuget.org only serves a PDB to whoever knows its checksum.
+            if (symbols.Checksums is not null)
+                request.Headers.Add("SymbolChecksum", symbols.Checksums);
+            using var response = await _http.SendAsync(request);
+            return response.IsSuccessStatusCode ? await response.Content.ReadAsByteArrayAsync() : [];
+        }
     }
 
     private async Task<(string File, byte[] Content, bool Verified)> DownloadSourceAsync(

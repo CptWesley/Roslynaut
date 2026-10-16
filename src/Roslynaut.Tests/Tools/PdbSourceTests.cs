@@ -228,3 +228,38 @@ public class PdbSourceTests
         pdbs.FindPdb(buildalyzer).Should().BeSameAs(pdb);
     }
 }
+
+public class SymbolPathTests
+{
+    [Test]
+    public void SymbolServersOf_TakesServersAndDirectories_NotCaches()
+    {
+        PdbService.SymbolServersOf(@"srv*C:\Symbols*https://symbols.example.com;cache*C:\Cache;\share\symbols;SRV*https://other.example.com;symsrv*symsrv.dll*C:\S*https://third.example.com")
+            .Should().Equal("https://symbols.example.com", @"\share\symbols", "https://other.example.com", "https://third.example.com");
+    }
+
+    // An assembly without its PDB, which a directory of PDBs has, as a file share of symbols would.
+    [Test]
+    public async Task FindPdb_ComesFromSymbolDirectory()
+    {
+        var (assembly, store) = (Directory.CreateTempSubdirectory("roslynaut-nopdb-"), Directory.CreateTempSubdirectory("roslynaut-symbols-"));
+        try
+        {
+            File.Copy(Path.Combine(AppContext.BaseDirectory, "Roslynaut.JitHost.dll"), Path.Combine(assembly.FullName, "Roslynaut.JitHost.dll"));
+            File.Copy(Path.Combine(AppContext.BaseDirectory, "Roslynaut.JitHost.pdb"), Path.Combine(store.FullName, "Roslynaut.JitHost.pdb"));
+
+            // Downloads are cached by PDB id, so an earlier run must not answer for this one.
+            var cache = Path.Combine(Path.GetTempPath(), "Roslynaut");
+            foreach (var cached in Directory.Exists(cache) ? Directory.EnumerateFiles(cache, "Roslynaut.JitHost.pdb", SearchOption.AllDirectories) : [])
+                File.Delete(cached);
+
+            using var pdbs = new PdbService(symbolServers: [store.FullName]);
+            (await pdbs.FindPdbAsync(Path.Combine(assembly.FullName, "Roslynaut.JitHost.dll"), download: true, CancellationToken.None)).Should().NotBeNull();
+        }
+        finally
+        {
+            assembly.Delete(recursive: true);
+            store.Delete(recursive: true);
+        }
+    }
+}

@@ -8,6 +8,42 @@ namespace Roslynaut.Tools;
 internal static class DebugDefaults
 {
     public const string Wait = "How long to wait for the program to stop or exit; it keeps running after that, and the state says Running.";
+    public const string Breakpoints = "Breakpoints: in the file at filePath, the 1-based line, with an optional condition such as 'i == 3'.";
+    public const string AllExceptions = "Stop at every exception thrown, not only at unhandled ones.";
+}
+
+public sealed class DebugAttachTool(DebugService debugger) : IMcpTool
+{
+    public Delegate Handler => AttachAsync;
+
+    [McpServerTool(Name = "debug_attach", Destructive = true)]
+    [Description("Attaches the debugger to a running .NET process, such as a service that misbehaves, sets breakpoints, and waits until it stops "
+        + "or exits. Returns its state as debug_start does. debug_stop detaches and leaves the process running. Ends an earlier session.")]
+    private Task<DebugState> AttachAsync(
+        [Description("The process id, e.g. from dotnet_processes.")] int processId,
+        [Description(DebugDefaults.Breakpoints)] Breakpoint[]? breakpoints = null,
+        [Description(DebugDefaults.AllExceptions)] bool stopOnAllExceptions = false,
+        [Description(DebugDefaults.Wait)] int waitSeconds = 30,
+        CancellationToken cancellationToken = default) =>
+        debugger.AttachAsync(processId, breakpoints ?? [], stopOnAllExceptions, TimeSpan.FromSeconds(waitSeconds), cancellationToken);
+}
+
+public sealed class DebugTestTool(DebugService debugger) : IMcpTool
+{
+    public Delegate Handler => TestAsync;
+
+    [McpServerTool(Name = "debug_test", Destructive = true, OpenWorld = true)]
+    [Description("Debugs tests: builds and runs them with dotnet test, attaches the debugger to the test host, sets breakpoints, and waits until "
+        + "it stops or exits. Returns its state as debug_start does; once the test host exits, Output has the test results. Ends an earlier "
+        + "session; debug_stop ends the test run.")]
+    private Task<DebugState> TestAsync(
+        [Description("The test project (.csproj).")] string projectPath,
+        [Description("A dotnet test --filter expression for the tests to run, such as a Filter from find_tests; omit to run all of them.")] string? filter = null,
+        [Description(DebugDefaults.Breakpoints)] Breakpoint[]? breakpoints = null,
+        [Description(DebugDefaults.AllExceptions)] bool stopOnAllExceptions = false,
+        [Description(DebugDefaults.Wait + " The build comes first.")] int waitSeconds = 60,
+        CancellationToken cancellationToken = default) =>
+        debugger.TestAsync(projectPath, filter, breakpoints ?? [], stopOnAllExceptions, TimeSpan.FromSeconds(waitSeconds), cancellationToken);
 }
 
 public sealed class DebugStartTool(DebugService debugger) : IMcpTool
@@ -21,9 +57,9 @@ public sealed class DebugStartTool(DebugService debugger) : IMcpTool
     private Task<DebugState> StartAsync(
         [Description("The project (.csproj) to build and run, or a .dll to run.")] string program,
         [Description("Command-line arguments for the program.")] string[]? args = null,
-        [Description("Breakpoints: in the file at filePath, the 1-based line, with an optional condition such as 'i == 3'.")] Breakpoint[]? breakpoints = null,
+        [Description(DebugDefaults.Breakpoints)] Breakpoint[]? breakpoints = null,
         [Description("Stop at the first line of Main.")] bool stopAtEntry = false,
-        [Description("Stop at every exception thrown, not only at unhandled ones.")] bool stopOnAllExceptions = false,
+        [Description(DebugDefaults.AllExceptions)] bool stopOnAllExceptions = false,
         [Description(DebugDefaults.Wait)] int waitSeconds = 30,
         CancellationToken cancellationToken = default) =>
         debugger.StartAsync(program, args ?? [], breakpoints ?? [], stopAtEntry, stopOnAllExceptions, TimeSpan.FromSeconds(waitSeconds), cancellationToken);
