@@ -341,7 +341,7 @@ public sealed class WorkspaceService
     /// A reference with the documentation comments of the XML file next to its assembly, as NuGet packages and reference packs ship them;
     /// Buildalyzer creates references without, which leaves referenced symbols undocumented.
     /// </summary>
-    private static MetadataReference WithDocumentation(MetadataReference reference) =>
+    internal static MetadataReference WithDocumentation(MetadataReference reference) =>
         reference is PortableExecutableReference { FilePath: { } path } && Path.ChangeExtension(path, ".xml") is var xml && File.Exists(xml)
             ? MetadataReference.CreateFromFile(path, reference.Properties, XmlDocumentationProvider.CreateFromFile(xml))
             : reference;
