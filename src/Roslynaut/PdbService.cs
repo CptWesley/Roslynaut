@@ -190,16 +190,21 @@ public sealed class PdbService : IDisposable
     // ponytail: two fixed symbol servers; read _NT_SYMBOL_PATH if private ones are needed.
     private static readonly string[] SymbolServers = ["https://msdl.microsoft.com/download/symbols", "https://symbols.nuget.org/download/symbols"];
 
+    private readonly int _capacity;
     private readonly string _cache = Path.Combine(Path.GetTempPath(), "Roslynaut");
-
-    // ponytail: PDBs stay in memory per assembly path; evict them as AssemblyLoader does if sessions read many.
-    private readonly ConcurrentDictionary<string, (DateTime Timestamp, Pdb Pdb)> _pdbs = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, CachedPdb> _pdbs = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, Task<bool>> _downloads = new();
 
     // No credentials: the URLs come from assemblies, which need not be trusted. Private repositories stay out of reach.
     private readonly HttpClient _http = new(new SocketsHttpHandler { UseCookies = false }) { Timeout = TimeSpan.FromSeconds(30), MaxResponseContentBufferSize = 256 << 20 };
+    private long _clock;
 
-    public PdbService() => _http.DefaultRequestHeaders.UserAgent.ParseAdd("Roslynaut");
+    /// <param name="capacity">How many PDBs to keep in memory. Finding another one evicts the least recently used.</param>
+    public PdbService(int capacity = 32)
+    {
+        _capacity = capacity;
+        _http.DefaultRequestHeaders.UserAgent.ParseAdd("Roslynaut");
+    }
 
     /// <summary>
     /// The PDB of an assembly: next to it, embedded in it, or downloaded from a symbol server earlier; with download, also from a symbol server now.
@@ -212,8 +217,14 @@ public sealed class PdbService : IDisposable
             throw new McpException($"Assembly not found: {path}");
 
         var timestamp = File.GetLastWriteTimeUtc(path);
-        if (_pdbs.TryGetValue(path, out var cached) && cached.Timestamp == timestamp)
-            return cached.Pdb;
+        lock (_pdbs)
+        {
+            if (_pdbs.TryGetValue(path, out var cached) && cached.Timestamp == timestamp)
+            {
+                cached.LastUsed = ++_clock;
+                return cached.Pdb;
+            }
+        }
 
         var (pdb, symbols) = ReadLocal(path);
         if (pdb is null && symbols is not null)
@@ -223,8 +234,17 @@ public sealed class PdbService : IDisposable
                 pdb = new(MetadataReaderProvider.FromPortablePdbStream(File.OpenRead(file), MetadataStreamOptions.PrefetchMetadata), file);
         }
 
-        if (pdb is not null)
-            _pdbs[path] = (timestamp, pdb);
+        if (pdb is null)
+            return null;
+
+        // Found outside the lock, as downloads take a while; finding fails without evicting another.
+        lock (_pdbs)
+        {
+            if (!_pdbs.ContainsKey(path) && _pdbs.Count >= _capacity)
+                _pdbs.Remove(_pdbs.MinBy(entry => entry.Value.LastUsed).Key);
+            _pdbs[path] = new(timestamp, pdb) { LastUsed = ++_clock };
+        }
+
         return pdb;
     }
 
@@ -477,4 +497,9 @@ public sealed class PdbService : IDisposable
 
     /// <summary>How a symbol server knows a PDB: by file name and id; plus the checksums that nuget.org asks for.</summary>
     private sealed record SymbolKey(string Key, BlobContentId Id, string? Checksums);
+
+    private sealed record CachedPdb(DateTime Timestamp, Pdb Pdb)
+    {
+        public long LastUsed { get; set; }
+    }
 }

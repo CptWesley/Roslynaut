@@ -154,6 +154,37 @@ public class PdbSourceTests
     }
 
     [Test]
+    public async Task PdbService_WhenFull_EvictsLeastRecentlyUsedPdb()
+    {
+        var copies = Directory.CreateTempSubdirectory();
+        try
+        {
+            var (a, b, c) = (Copy("A"), Copy("B"), Copy("C"));
+            using var service = new PdbService(capacity: 2);
+            var (pdbA, pdbB) = (service.FindPdb(a), service.FindPdb(b));
+            service.FindPdb(a);
+            await service.FindPdbAsync(c, download: false, CancellationToken.None);
+
+            service.FindPdb(a).Should().NotBeNull().And.BeSameAs(pdbA);
+            service.FindPdb(b).Should().NotBeNull().And.NotBeSameAs(pdbB);
+        }
+        finally
+        {
+            copies.Delete(recursive: true);
+        }
+
+        // The PDB keeps its name, which the assembly records.
+        string Copy(string name)
+        {
+            var assembly = typeof(PdbSourceTests).Assembly.Location;
+            var folder = copies.CreateSubdirectory(name).FullName;
+            File.Copy(Path.ChangeExtension(assembly, ".pdb"), Path.Combine(folder, Path.GetFileName(Path.ChangeExtension(assembly, ".pdb"))));
+            File.Copy(assembly, Path.Combine(folder, Path.GetFileName(assembly)));
+            return Path.Combine(folder, Path.GetFileName(assembly));
+        }
+    }
+
+    [Test]
     public void Decompile_WithPdb_KeepsLocalNames()
     {
         var assembly = assemblies.Read(typeof(PdbSourceTests).Assembly.Location);
