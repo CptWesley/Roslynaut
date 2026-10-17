@@ -52,6 +52,9 @@ internal static class SymbolEdits
         if (declarations.Length == 0)
             throw new McpException($"{symbol.ToDisplayString()} is not declared in source.");
 
+        // Only the parts people wrote are deleted: a generator's part of a partial declaration goes once the generator no longer sees them.
+        var editable = await Task.WhenAll(EditableDeclarations(solution, symbol).Select(reference => reference.GetSyntaxAsync(cancellationToken)));
+
         // A primary constructor is declared by its type, which deleting its declaration would delete.
         if (symbol is IMethodSymbol { MethodKind: MethodKind.Constructor } && declarations.Any(declaration => declaration is TypeDeclarationSyntax))
             throw new McpException($"{symbol.ToDisplayString()} is the primary constructor of {symbol.ContainingType.ToDisplayString()}: edit the type's parameter list instead.");
@@ -75,9 +78,20 @@ internal static class SymbolEdits
             return (null, references);
 
         var editor = new SolutionEditor(solution);
-        foreach (var declaration in declarations)
+        foreach (var declaration in editable)
             (await editor.GetDocumentEditorAsync(solution.GetDocumentId(declaration.SyntaxTree)!, cancellationToken)).RemoveNode(declaration);
-        return (editor.GetChangedSolution(), []);
+
+        // A file that declared only a deleted type goes with it, unless it still says something, such as a global using.
+        var deleted = editor.GetChangedSolution();
+        foreach (var id in editable.Select(declaration => solution.GetDocumentId(declaration.SyntaxTree)!).Distinct())
+        {
+            if (await deleted.GetDocument(id)!.GetSyntaxRootAsync(cancellationToken) is CompilationUnitSyntax { AttributeLists.Count: 0 } root
+                && root.Usings.All(directive => directive.GlobalKeyword.IsKind(SyntaxKind.None))
+                && root.DescendantNodes().OfType<MemberDeclarationSyntax>().All(member => member is BaseNamespaceDeclarationSyntax))
+                deleted = deleted.RemoveDocument(id);
+        }
+
+        return (deleted, []);
     }
 
     /// <summary>The abstract member a member overrides, and the interface members it implements.</summary>
@@ -113,22 +127,32 @@ internal static class SymbolEdits
         if (symbols is not [var symbol])
             throw new McpException($"The symbol path matches {symbols.Count} symbols; pick one by adding a parameter list, or by position.");
 
-        var references = symbol.DeclaringSyntaxReferences;
-        if (references.Length > 1 && filePath is not null && line is { } at)
+        // A source generator's part of a partial declaration cannot be edited, so it needs no position to tell the parts apart.
+        var references = EditableDeclarations(solution, symbol);
+        var declared = references.Count;
+        if (declared > 1 && filePath is not null && line is { } at)
         {
             references = [.. references.Where(reference => reference.SyntaxTree.FilePath.Equals(Path.GetFullPath(filePath), StringComparison.OrdinalIgnoreCase)
                 && reference.SyntaxTree.GetLineSpan(reference.Span) is var span && span.StartLinePosition.Line < at && at <= span.EndLinePosition.Line + 1)];
         }
 
         if (references is not [var reference])
-            throw new McpException($"{symbol.ToDisplayString()} has {symbol.DeclaringSyntaxReferences.Length} declarations; edit one by a position in it.");
+            throw new McpException($"{symbol.ToDisplayString()} has {declared} declarations; edit one by a position in it.");
 
         var node = await reference.GetSyntaxAsync(cancellationToken);
 
         // A field or event declares its symbols in variable declarators; edit the whole declaration.
         if (node is VariableDeclaratorSyntax { Parent.Parent: BaseFieldDeclarationSyntax field })
             node = field;
-        return (solution.GetDocument(node.SyntaxTree) ?? throw new McpException("The declaration is generated code."), node);
+        return (solution.GetDocument(node.SyntaxTree)!, node);
+    }
+
+    /// <summary>The declarations of a symbol outside the output of source generators, which cannot be edited.</summary>
+    private static List<SyntaxReference> EditableDeclarations(Solution solution, ISymbol symbol)
+    {
+        var declarations = symbol.DeclaringSyntaxReferences.Where(reference => solution.GetDocument(reference.SyntaxTree) is { } document and not SourceGeneratedDocument).ToList();
+        return declarations.Count > 0 || symbol.DeclaringSyntaxReferences.IsEmpty ? declarations
+            : throw new McpException($"{symbol.ToDisplayString()} is declared only in the output of a source generator, which cannot be edited.");
     }
 
     /// <summary>Where a declaration starts with its documentation and other comments.</summary>
@@ -209,7 +233,7 @@ public sealed class SafeDeleteSymbolTool(WorkspaceService workspace) : IMcpTool
 
     [McpServerTool(Name = "safe_delete_symbol", Destructive = true)]
     [Description("Deletes a symbol's declaration, but only if nothing else references it; otherwise deletes nothing and returns the references. "
-        + "Writes the changed files to disk.")]
+        + "Writes the changed files to disk, and deletes a file that declared nothing but a deleted type.")]
     private async Task<SafeDeleteResult> DeleteAsync(
         [Description(ToolDefaults.ProjectPath)] string projectPath,
         [Description(ToolDefaults.Target)] string? symbol = null,

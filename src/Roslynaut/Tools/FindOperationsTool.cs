@@ -57,7 +57,7 @@ public sealed class FindOperationsTool(WorkspaceService workspace, ResultCache c
                 if (target is not null && (targetName is null || !target.IsMatch(targetName)))
                     continue;
 
-                var container = model.GetEnclosingSymbol(operation.Syntax.SpanStart, cancellationToken);
+                var container = ReferencesTool.EnclosingMemberOf(model, operation.Syntax.SpanStart, cancellationToken);
                 found.Add(new(SourceLocation.From(operation.Syntax.GetLocation()), container?.ToDisplayString(), targetName, operation.IsImplicit));
             }
         }

@@ -7,6 +7,10 @@ using Microsoft.CodeAnalysis.CodeActions;
 using Microsoft.CodeAnalysis.CodeRefactorings;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Editing;
+using Microsoft.CodeAnalysis.FindSymbols;
+using Microsoft.CodeAnalysis.Formatting;
+using Microsoft.CodeAnalysis.Simplification;
 using Microsoft.CodeAnalysis.Text;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
@@ -162,7 +166,11 @@ internal static class DialogRefactorings
             .MakeGenericMethod(serviceType).Invoke(document.Project.Services, null) ?? throw new McpException("Roslyn has no Move to namespace for this language.");
         var analysis = await ResultOfAsync(serviceType.GetMethod("AnalyzeTypeAtPositionAsync")!.Invoke(service, [document, location.SourceSpan.Start, cancellationToken])!);
         if (!(bool)Property(analysis, "CanPerform"))
-            throw new McpException($"Roslyn cannot move {symbol.ToDisplayString()}: point at a type, or a namespace declaration, in a namespace.");
+        {
+            throw new McpException(symbol is INamedTypeSymbol { DeclaringSyntaxReferences.Length: > 1 and var parts }
+                ? $"Roslyn cannot move {symbol.ToDisplayString()}: it is partial, with {parts} declarations, and Roslyn only moves a type declared once."
+                : $"Roslyn cannot move {symbol.ToDisplayString()}: point at a type, or a namespace declaration, in a namespace.");
+        }
 
         var result = await ResultOfAsync(serviceType.GetMethod("MoveToNamespaceAsync")!.Invoke(service, [analysis, targetNamespace, cancellationToken])!);
         if (!(bool)Property(result, "Succeeded"))
@@ -177,13 +185,63 @@ internal static class DialogRefactorings
                 moved = moved.WithDocumentText(changed, await project.NewProject.GetDocument(changed)!.GetTextAsync(cancellationToken));
         }
 
-        return moved;
+        return await QualifyConstructorUsesAsync(solution, moved, symbol, location, targetNamespace, cancellationToken);
 
         static async Task<object> ResultOfAsync(object task)
         {
             await (Task)task;
             return task.GetType().GetProperty(nameof(Task<int>.Result))!.GetValue(task)!;
         }
+    }
+
+    /// <summary>
+    /// Roslyn fixes the uses of a moved type that its references search finds as references to the type, but not those it finds as references to
+    /// the type's constructors only, such as new Order() or an attribute; out of the moved type's namespace, those no longer bind. They get the
+    /// type qualified, which the simplifier then turns into a using, as Roslyn does for the others.
+    /// </summary>
+    private static async Task<Solution> QualifyConstructorUsesAsync(
+        Solution solution, Solution moved, ISymbol symbol, Location location, string targetNamespace, CancellationToken cancellationToken)
+    {
+        if (targetNamespace.Length == 0)
+            return moved;
+
+        var span = (await location.SourceTree!.GetRootAsync(cancellationToken)).FindNode(location.SourceSpan).FirstAncestorOrSelf<BaseNamespaceDeclarationSyntax>()?.Span;
+        IReadOnlyList<INamedTypeSymbol> types = symbol is INamedTypeSymbol type ? [type]
+            : [.. ((INamespaceSymbol)symbol).GetTypeMembers().Where(member => member.Locations.Any(at => at.SourceTree == location.SourceTree && span?.Contains(at.SourceSpan) == true))];
+        // An attribute goes by its name without the suffix too.
+        var names = types.SelectMany(type => new[] { type.Name, type.Name.EndsWith("Attribute") ? type.Name[..^"Attribute".Length] : type.Name }).ToHashSet();
+
+        var documents = new HashSet<DocumentId>();
+        foreach (var constructor in types.SelectMany(type => type.InstanceConstructors))
+        {
+            foreach (var reference in await SymbolFinder.FindReferencesAsync(constructor, solution, cancellationToken))
+                documents.UnionWith(reference.Locations.Select(at => at.Document.Id));
+        }
+
+        foreach (var id in documents)
+        {
+            if (moved.GetDocument(id) is not { } document)
+                continue;
+
+            var model = (await document.GetSemanticModelAsync(cancellationToken))!;
+            var root = await document.GetSyntaxRootAsync(cancellationToken);
+            var unbound = root!.DescendantNodes().OfType<SimpleNameSyntax>()
+                .Where(name => names.Contains(name.Identifier.ValueText) && !IsQualified(name) && model.GetSymbolInfo(name, cancellationToken) is { Symbol: null, CandidateSymbols.IsEmpty: true })
+                .ToList();
+            if (unbound.Count == 0)
+                continue;
+
+            var qualified = document.WithSyntaxRoot(root.ReplaceNodes(unbound, (name, _) => SyntaxFactory.QualifiedName(SyntaxFactory.ParseName(targetNamespace), name.WithoutTrivia())
+                .WithTriviaFrom(name).WithAdditionalAnnotations(Simplifier.Annotation, Simplifier.AddImportsAnnotation)));
+            var imported = await ImportAdder.AddImportsAsync(qualified, Simplifier.AddImportsAnnotation, cancellationToken: cancellationToken);
+            var simplified = await Formatter.FormatAsync(await Simplifier.ReduceAsync(imported, Simplifier.Annotation, cancellationToken: cancellationToken), Formatter.Annotation, cancellationToken: cancellationToken);
+            moved = simplified.Project.Solution;
+        }
+
+        return moved;
+
+        static bool IsQualified(SimpleNameSyntax name) =>
+            name.Parent is QualifiedNameSyntax qualified && qualified.Right == name || name.Parent is MemberAccessExpressionSyntax access && access.Name == name;
     }
 
     /// <summary>The first field or property of a type, such as the members an action offers, which it may keep in a field its primary constructor made.</summary>

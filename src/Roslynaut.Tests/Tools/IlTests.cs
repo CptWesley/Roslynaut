@@ -115,6 +115,17 @@ public class IlTests
             "System.Void Calc.Calculator/Nested::.ctor()");
     }
 
+    // Top-level statements compile into a method with a compiler's name, which names leave out but documentation IDs reach.
+    [Test]
+    public async Task SymbolIl_TopLevelStatements_AreTheEntryPoint()
+    {
+        var program = TestSolution.Create("System.Func<int> one = () => 1;\nreturn one();\n").Projects.Single()
+            .WithCompilationOptions(new Microsoft.CodeAnalysis.CSharp.CSharpCompilationOptions(OutputKind.ConsoleApplication)).Solution;
+
+        (await SymbolIlAsync("Program.<Main>$", program)).Select(method => method.Method)
+            .Should().Contain("System.Int32 Program::<Main>$(System.String[])").And.Contain(name => name.Contains("::<<Main>$>b__"));
+    }
+
     [Test]
     public async Task SymbolIl_SymbolWithoutIL_Throws()
     {

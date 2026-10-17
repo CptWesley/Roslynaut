@@ -52,6 +52,15 @@ public class NavigationTests : EndToEndTest
         types.Items.Should().Equal(rectangle);
     }
 
+    // A file of top-level statements declares their entry point, a member of a synthesized Program.
+    [Test]
+    public async Task DocumentSymbols_OfTopLevelStatements_OutlineTheirEntryPoint()
+    {
+        var outline = await Server.CallAsync<PagedResult<SymbolEntry>>("document_symbols", new() { ["projectPath"] = Sample.Solution, ["filePath"] = Sample.ProgramFile });
+
+        outline.Items.Should().Equal(new SymbolEntry("<Main>$", "Method", "<top-level-statements-entry-point>", "Program", Sample.Location(Sample.ProgramFile, "using Roslynaut")));
+    }
+
     // The namespace is declared in all three projects; each of its types and namespaces comes once, from the project that declares it.
     [Test]
     public async Task ListSymbols_OfANamespaceOfSeveralProjects_ListsEachMemberOnce()
@@ -316,6 +325,68 @@ public class NavigationTests : EndToEndTest
                 Entry("Radius", "Property", "Shapes.Circle.Radius", "Shapes.Circle", Sample.CircleFile, "Radius {"),
                 [Sample.Location(Sample.CircleFile, "Radius *"), Sample.Location(Sample.CircleFile, "Radius;")]),
         ]);
+    }
+
+    // Results name top-level statements <Main>$ in Program, so that path finds them again, and their locals below them.
+    [Test]
+    public async Task SymbolPaths_ReachTopLevelStatements_AndTheirLocals()
+    {
+        var callers = await Server.CallAsync<PagedResult<CallersTool.Caller>>("callers", new() { ["projectPath"] = Sample.Solution, ["symbol"] = "ShapeMath.TotalArea" });
+        var entryPoint = callers.Items.Select(caller => caller.Symbol).Single(caller => caller.Container == "Program");
+        var path = $"{entryPoint.Container}.{entryPoint.Name}";
+
+        var members = await Server.CallAsync<PagedResult<SymbolEntry>>("list_symbols", new() { ["projectPath"] = Sample.Solution, ["symbol"] = "Program" });
+        var locals = await Server.CallAsync<PagedResult<SymbolEntry>>("list_symbols", new() { ["projectPath"] = Sample.Solution, ["symbol"] = path });
+        var references = await Server.CallAsync<PagedResult<ReferencesTool.ReferenceEntry>>("references", new() { ["projectPath"] = Sample.Solution, ["symbol"] = $"{path}.shapes" });
+
+        members.Items.Should().Equal(entryPoint);
+        locals.Items.Should().Equal(
+            Entry("shapes", "Local", "Shapes.IShape[] shapes", "<top-level-statements-entry-point>", Sample.ProgramFile, "shapes ="),
+            Entry("total", "Local", "double total", "<top-level-statements-entry-point>", Sample.ProgramFile, "total ="));
+
+        // A lambda has no name to show, so a reference in one is in the member the lambda is written in.
+        references.Items.Should().Equal(
+            new ReferencesTool.ReferenceEntry(Sample.Location(Sample.ProgramFile, "shapes);"), "<top-level-statements-entry-point>", "Read"),
+            new ReferencesTool.ReferenceEntry(Sample.Location(Sample.ProgramFile, "shapes))"), "<top-level-statements-entry-point>", "Read"));
+    }
+
+    // A position on a declaration or on a use targets what the symbol's path does: the interface in a base list, a base type, a call.
+    [Test]
+    public async Task Positions_OfDeclarationsAndUses_TargetWhatTheirPathsDo()
+    {
+        var cases = new (string Tool, string File, string Text, string Symbol)[]
+        {
+            ("implementations", Sample.ShapeFile, "IShape", "Shapes.IShape"),
+            ("type_hierarchy", Sample.CircleFile, "Shape\n", "Shapes.Shape"),
+            ("callers", Sample.ProgramFile, "TotalArea(", "ShapeMath.TotalArea"),
+            ("callees", Sample.ShapeMathFile, "Largest(", "ShapeMath.Largest"),
+            ("find_tests", Sample.ShapeMathFile, "Classify(", "ShapeMath.Classify"),
+            ("references", Sample.CircleFile, "Radius *", "Circle.Radius"),
+        };
+
+        foreach (var (tool, file, text, symbol) in cases)
+        {
+            var (line, column) = Sample.Find(file, text);
+            Dictionary<string, object?> Target(params (string Name, object? Value)[] target)
+            {
+                var arguments = new Dictionary<string, object?> { ["projectPath"] = Sample.Solution };
+                if (tool == "type_hierarchy")
+                    arguments["direction"] = "Subtypes";
+                foreach (var (name, value) in target)
+                    arguments[name] = value;
+                return arguments;
+            }
+
+            var byPath = Items(await Server.CallAsync(tool, Target(("symbol", symbol))));
+            var byPosition = Items(await Server.CallAsync(tool, Target(("filePath", file), ("line", line), ("column", column))));
+
+            // In the order Roslyn finds them, which can start from another project.
+            byPath.Should().NotBeEmpty(tool);
+            byPosition.Should().BeEquivalentTo(byPath, $"{tool} at {text}");
+        }
+
+        static List<string> Items(System.Text.Json.JsonElement result) =>
+            [.. (result.ValueKind == System.Text.Json.JsonValueKind.Array ? result : result.GetProperty("items")).EnumerateArray().Select(item => item.GetRawText())];
     }
 
     // Results name a constructor .ctor, so a result's Container plus '.' plus its Name finds it again; code names it after its type.

@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.FindSymbols;
 using ModelContextProtocol;
 
@@ -17,9 +18,12 @@ internal static class SymbolTree
     {
         var segments = Split(path);
         var own = (await GetRootNamespacesAsync(solution, cancellationToken)).Select(root => root.ContainingAssembly).ToHashSet<IAssemblySymbol>(ReferenceEqualityComparer.Instance);
+        // The Program of top-level statements has no declaration of its own to find.
         IEnumerable<ISymbol> symbols = (await SymbolFinder.FindSourceDeclarationsAsync(solution, NameOf(segments[0]), ignoreCase: true, cancellationToken))
             .SelectMany(symbol => OwnParts(symbol, own))
-            .Where(symbol => Matches(symbol, segments[0]));
+            .Concat(own.SelectMany(assembly => assembly.GlobalNamespace.GetTypeMembers(WellKnownMemberNames.TopLevelStatementsEntryPointTypeName)))
+            .Where(symbol => Matches(symbol, segments[0]))
+            .Distinct(SymbolEqualityComparer.Default);
         foreach (var segment in segments.Skip(1))
         {
             var children = new List<ISymbol>();
@@ -102,7 +106,9 @@ internal static class SymbolTree
         // Namespaces also hold every referenced assembly's types; keep the ones from source.
         INamespaceSymbol ns => ns.GetMembers().Where(member => member.Locations.Any(location => location.IsInSource)),
         ITypeSymbol type => type.GetMembers().Where(IsDeclared),
-        _ => await GetDeclaredInAsync(solution, await Task.WhenAll(symbol.DeclaringSyntaxReferences.Select(reference => reference.GetSyntaxAsync(cancellationToken))), cancellationToken),
+        // The entry point of top-level statements is declared by their files, which can declare types too.
+        _ => await GetDeclaredInAsync(solution, (await Task.WhenAll(symbol.DeclaringSyntaxReferences.Select(reference => reference.GetSyntaxAsync(cancellationToken))))
+            .SelectMany(node => node is CompilationUnitSyntax file ? file.Members.OfType<GlobalStatementSyntax>() : (IEnumerable<SyntaxNode>)[node]), cancellationToken),
     };
 
     /// <summary>Excludes compiler-generated symbols and property/event accessors.</summary>
@@ -127,7 +133,8 @@ internal static class SymbolTree
         return segments;
     }
 
-    private static string NameOf(string segment) => segment.Split('(', '<')[0].Trim();
+    // A compiler's name can start with '<', as <Main>$ does.
+    private static string NameOf(string segment) => segment.IndexOfAny(['(', '<'], Math.Min(1, segment.Length)) is var end and >= 0 ? segment[..end].Trim() : segment.Trim();
 
     // Types by their names only, as code usually writes them: Classify(IShape) for Classify(Shapes.IShape).
     private static readonly SymbolDisplayFormat ShortFormat = new(

@@ -62,6 +62,19 @@ public class AssemblyTests : EndToEndTest
             .Should().Be("An error occurred invoking 'symbol_il': 'ShapeMath.TotalArea.total' has no IL: pick a type, method, property or event declared in the project.");
     }
 
+    // Top-level statements compile into Program.<Main>$, as stack traces name it too, with the lambda they start a thread with.
+    [Test]
+    public async Task Il_OfTopLevelStatements()
+    {
+        var methods = await Server.CallAsync<PagedResult<MethodIL>>("symbol_il", new() { ["projectPath"] = Sample.Solution, ["symbol"] = "Program.<Main>$" });
+
+        methods.Items.Should().HaveCount(2);
+        var main = methods.Items.First();
+        main.Method.Should().Be("System.Void Program::<Main>$(System.String[])");
+        main.IL.Should().Contain($"// Program.cs:{Sample.LineOf(Sample.ProgramFile, "Console.ReadLine();")}\n").And.Contain("call System.String System.Console::ReadLine()");
+        methods.Items.Last().Method.Should().MatchRegex(@"^System\.Void Program/<>c__DisplayClass\w+::<<Main>\$>b__\w+\(\)$");
+    }
+
     // The build output is a debug build, which the JIT does not optimize; symbol_asm compiles a release build, which inlines the getters.
     [Test]
     public async Task Asm_OfTheBuildOutput_AndOfTheSource()

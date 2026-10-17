@@ -620,6 +620,96 @@ public class EditingTests : EndToEndTest
         Read(file).Should().Be(shapes);
     }
 
+    // A type alone in its file takes the file along; a file with another type, or a global using, stays.
+    [Test]
+    public async Task SafeDeleteSymbol_OfATypeAloneInItsFile_DeletesTheFile()
+    {
+        var project = Sample.NewProject("SafeDeleteFiles",
+            ("Lonely.cs", "namespace Edits;\n\n/// <summary>Alone.</summary>\npublic class Lonely\n{\n}\n"),
+            ("Pair.cs", "namespace Edits;\n\npublic class Kept\n{\n}\n\npublic class Gone\n{\n}\n"),
+            ("Global.cs", "global using System.Text;\n\nnamespace Edits;\n\npublic class Global\n{\n}\n"));
+        async Task<SafeDeleteSymbolTool.SafeDeleteResult> DeleteAsync(string symbol) =>
+            await Server.CallAsync<SafeDeleteSymbolTool.SafeDeleteResult>("safe_delete_symbol", new() { ["projectPath"] = project, ["symbol"] = symbol });
+
+        (await DeleteAsync("Edits.Lonely")).Should().BeEquivalentTo(new SafeDeleteSymbolTool.SafeDeleteResult(true, [FileOf(project, "Lonely.cs")], []));
+        (await DeleteAsync("Edits.Gone")).Should().BeEquivalentTo(new SafeDeleteSymbolTool.SafeDeleteResult(true, [FileOf(project, "Pair.cs")], []));
+        (await DeleteAsync("Edits.Global")).Should().BeEquivalentTo(new SafeDeleteSymbolTool.SafeDeleteResult(true, [FileOf(project, "Global.cs")], []));
+
+        File.Exists(FileOf(project, "Lonely.cs")).Should().BeFalse();
+        Read(FileOf(project, "Pair.cs")).Should().Be("namespace Edits;\n\npublic class Kept\n{\n}\n");
+        Read(FileOf(project, "Global.cs")).Should().Be("global using System.Text;\n\nnamespace Edits;\n");
+    }
+
+    // The regex generator writes a part of each partial type with a [GeneratedRegex] method. That part cannot be edited, so edits go to the part
+    // people wrote without a position to pick it; and deleting that part takes the generator's along.
+    [Test]
+    public async Task SymbolEdits_OfAPartialTypeWithAGeneratedPart_EditThePartPeopleWrote()
+    {
+        const string pattern = "using System.Text.RegularExpressions;\n\nnamespace Edits;\n\npublic static partial class Pattern\n{\n"
+            + "    public static bool Check(string text) => Digits().IsMatch(text);\n\n    [GeneratedRegex(\"[0-9]+\")]\n    private static partial Regex Digits();\n}\n";
+        const string letters = "using System.Text.RegularExpressions;\n\nnamespace Edits;\n\ninternal static partial class Letters\n{\n    [GeneratedRegex(\"[a-z]+\")]\n    private static partial Regex Word();\n}\n";
+        var project = Sample.NewProject("GeneratedParts", ("Pattern.cs", pattern), ("Letters.cs", letters));
+
+        var moved = await Server.CallFailingAsync("move_to_namespace", new() { ["projectPath"] = project, ["symbol"] = "Edits.Pattern", ["targetNamespace"] = "Edits.Moved" });
+        var inserted = await Server.CallAsync<EditResult>("insert_after_symbol", new() { ["projectPath"] = project, ["symbol"] = "Edits.Pattern", ["code"] = "\npublic static class After\n{\n}" });
+        var deleted = await Server.CallAsync<SafeDeleteSymbolTool.SafeDeleteResult>("safe_delete_symbol", new() { ["projectPath"] = project, ["symbol"] = "Edits.Letters" });
+
+        inserted.ChangedFiles.Should().Equal(FileOf(project, "Pattern.cs"));
+        Read(FileOf(project, "Pattern.cs")).Should().Be(pattern + "\npublic static class After\n{\n}\n");
+        moved.Should().Be("An error occurred invoking 'move_to_namespace': Roslyn cannot move Edits.Pattern: it is partial, with 2 declarations, and Roslyn only moves a type declared once.");
+        deleted.Should().BeEquivalentTo(new SafeDeleteSymbolTool.SafeDeleteResult(true, [FileOf(project, "Letters.cs")], []));
+        await EventuallyAsync(async () =>
+            !(await Server.CallAsync<PagedResult<SymbolEntry>>("workspace_symbols", new() { ["projectPath"] = project, ["query"] = "Letters" })).Items.Any(),
+            "the generator should no longer write a part of Letters");
+    }
+
+    // A type that only a source generator declares cannot be edited; a position in the generator's file, as its locations give, finds it.
+    [Test]
+    public async Task SymbolEdits_OfATypeOnlyAGeneratorDeclares_ChangeNothing()
+    {
+        var generated = (await Server.CallAsync<PagedResult<GeneratedSourcesTool.GeneratedSource>>("generated_sources", new() { ["projectPath"] = Sample.Solution, ["name"] = "RegexGenerator" }))
+            .Items.Single();
+        var lines = generated.Source!.Split('\n');
+        var line = Array.FindIndex(lines, text => text.Contains(" class Description_0")) + 1;
+        var target = new Dictionary<string, object?>
+        {
+            ["projectPath"] = Sample.Solution, ["filePath"] = generated.FilePath, ["line"] = line, ["column"] = lines[line - 1].IndexOf("Description_0") + 1,
+        };
+
+        (await Server.CallFailingAsync("replace_symbol_body", new(target) { ["code"] = "class Description_0 { }" })).Should().Be("An error occurred invoking 'replace_symbol_body': "
+            + "System.Text.RegularExpressions.Generated.Description_0 is declared only in the output of a source generator, which cannot be edited.");
+        (await Server.CallFailingAsync("safe_delete_symbol", target)).Should().Be("An error occurred invoking 'safe_delete_symbol': "
+            + "System.Text.RegularExpressions.Generated.Description_0 is declared only in the output of a source generator, which cannot be edited.");
+    }
+
+    // Each edit by a position in the name of what it edits, as editors give one, instead of a symbol path.
+    [Test]
+    public async Task SymbolEdits_ByPosition()
+    {
+        const string gadget = "namespace Edits;\n\npublic class Gadget\n{\n    public int Speed { get; set; }\n\n    public void Spin(int times, string label) { }\n\n    public void Stop() { }\n}\n";
+        const string use = "namespace Edits;\n\npublic static class Use\n{\n    public static void Run(Gadget gadget) => gadget.Spin(1, \"a\");\n}\n";
+        var project = Sample.NewProject("EditsByPosition", ("Gadget.cs", gadget), ("Use.cs", use));
+        var file = FileOf(project, "Gadget.cs");
+        Dictionary<string, object?> At(string text, params (string Name, object Value)[] more)
+        {
+            var (line, column) = Sample.Find(file, text);
+            var arguments = new Dictionary<string, object?> { ["projectPath"] = project, ["filePath"] = file, ["line"] = line, ["column"] = column };
+            foreach (var (name, value) in more)
+                arguments[name] = value;
+            return arguments;
+        }
+
+        await Server.CallAsync<SafeDeleteSymbolTool.SafeDeleteResult>("safe_delete_symbol", At("Stop"));
+        await Server.CallAsync<EditResult>("replace_symbol_body", At("Speed", ("code", "    public int Speed { get; private set; }")));
+        await Server.CallAsync<EditResult>("insert_before_symbol", At("Speed", ("code", "    public int Weight { get; set; }\n")));
+        await Server.CallAsync<ChangedFiles>("change_signature", At("Spin", ("parameters", new[] { new { name = "label" }, new { name = "times" } })));
+        await Server.CallAsync<ChangedFiles>("move_to_namespace", At("Gadget", ("targetNamespace", "Edits.Moved")));
+
+        Read(file).Should().Be("namespace Edits.Moved;\n\npublic class Gadget\n{\n    public int Weight { get; set; }\n    public int Speed { get; private set; }\n\n"
+            + "    public void Spin(string label, int times) { }\n}\n");
+        Read(FileOf(project, "Use.cs")).Should().Be("using Edits.Moved;\n\n" + use.Replace("Spin(1, \"a\")", "Spin(\"a\", 1)"));
+    }
+
     // A solution in a folder of its own, beside its projects; the library's interface method is renamed with its implementation and their uses.
     [Test]
     public async Task RenameSymbol_OfAnInterfaceMember_AcrossTheProjectsOfASolution()
@@ -725,6 +815,23 @@ public class EditingTests : EndToEndTest
         result.Files.Should().BeEquivalentTo(FileOf(project, "Order.cs"), FileOf(project, "Shop.cs"));
         Read(FileOf(project, "Order.cs")).Should().Be("namespace Edits.Orders;\n\npublic class Order\n{\n}\n");
         Read(FileOf(project, "Shop.cs")).Should().Be("using Edits.Orders;\n\nnamespace Edits;\n\npublic static class Shop\n{\n    public static Order Create() => new();\n}\n");
+    }
+
+    // Roslyn's move finds new Order() and [Tag] as uses of the types' constructors, not of the types, and leaves them; they get a using too.
+    [Test]
+    public async Task MoveToNamespace_UpdatesUsesThatOnlyCallAConstructor()
+    {
+        var project = Sample.NewProject("MoveToNamespaceConstructors",
+            ("Order.cs", "namespace Edits;\n\npublic class Order\n{\n}\n"),
+            ("TagAttribute.cs", "namespace Edits;\n\npublic class TagAttribute : System.Attribute\n{\n}\n"),
+            ("Shop.cs", "namespace Edits;\n\n[Tag]\npublic static class Shop\n{\n    public static object Create() => new Order();\n}\n"));
+
+        var order = await Server.CallAsync<ChangedFiles>("move_to_namespace", new() { ["projectPath"] = project, ["symbol"] = "Edits.Order", ["targetNamespace"] = "Edits.Orders" });
+        var tag = await Server.CallAsync<ChangedFiles>("move_to_namespace", new() { ["projectPath"] = project, ["symbol"] = "Edits.TagAttribute", ["targetNamespace"] = "Edits.Tags" });
+
+        order.Files.Should().BeEquivalentTo(FileOf(project, "Order.cs"), FileOf(project, "Shop.cs"));
+        tag.Files.Should().BeEquivalentTo(FileOf(project, "TagAttribute.cs"), FileOf(project, "Shop.cs"));
+        Read(FileOf(project, "Shop.cs")).Should().Be("using Edits.Orders;\nusing Edits.Tags;\n\nnamespace Edits;\n\n[Tag]\npublic static class Shop\n{\n    public static object Create() => new Order();\n}\n");
     }
 
     // Out of Edits, the moved type no longer sees its types without a using: it keeps one where it needs them, if only in a documentation comment.

@@ -61,9 +61,18 @@ public sealed class ReferencesTool(WorkspaceService workspace, ResultCache cache
     {
         var node = model.SyntaxTree.GetRoot(cancellationToken).FindNode(span, getInnermostNodeForTie: true);
         if (node.FirstAncestorOrSelf<BaseListSyntax>()?.Parent is not TypeDeclarationSyntax declaration || model.GetDeclaredSymbol(declaration, cancellationToken) is not INamedTypeSymbol type)
-            return model.GetEnclosingSymbol(span.Start, cancellationToken);
+            return EnclosingMemberOf(model, span.Start, cancellationToken);
 
         return definition is IMethodSymbol { MethodKind: MethodKind.Constructor } ? PrimaryConstructorOf(type, declaration) ?? (ISymbol)type : type;
+    }
+
+    /// <summary>The symbol code at a position is in; for a lambda, which has no name to show, the member it is written in.</summary>
+    internal static ISymbol? EnclosingMemberOf(SemanticModel model, int position, CancellationToken cancellationToken)
+    {
+        var symbol = model.GetEnclosingSymbol(position, cancellationToken);
+        while (symbol is IMethodSymbol { MethodKind: MethodKind.AnonymousFunction })
+            symbol = symbol.ContainingSymbol;
+        return symbol;
     }
 
     /// <summary>The primary constructor a type declaration declares, if any.</summary>

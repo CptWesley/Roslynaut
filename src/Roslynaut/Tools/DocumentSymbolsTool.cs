@@ -30,9 +30,9 @@ public sealed class DocumentSymbolsTool(WorkspaceService workspace, ResultCache 
         var model = (await document.GetSemanticModelAsync(cancellationToken))!;
         var root = await model.SyntaxTree.GetRootAsync(cancellationToken);
 
-        // Only walk declaration containers; member bodies hold nothing worth outlining.
+        // Only walk declaration containers; member bodies hold nothing worth outlining. A file declares the entry point of its top-level statements.
         return root
-            .DescendantNodes(node => node is CompilationUnitSyntax or BaseNamespaceDeclarationSyntax or BaseTypeDeclarationSyntax
+            .DescendantNodesAndSelf(node => node is CompilationUnitSyntax or BaseNamespaceDeclarationSyntax or BaseTypeDeclarationSyntax
                 or BaseFieldDeclarationSyntax or VariableDeclarationSyntax)
             .Select(node => model.GetDeclaredSymbol(node, cancellationToken))
             .Where(symbol => symbol is INamedTypeSymbol or IMethodSymbol or IPropertySymbol or IFieldSymbol or IEventSymbol && (depth is null || DepthOf(symbol) <= depth))

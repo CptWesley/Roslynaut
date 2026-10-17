@@ -54,6 +54,23 @@ public class SymbolSearchTests
         children.Distinct().Select(TestSolution.PathOf).Should().BeEquivalentTo("Shapes.Circle", "Shapes.Internal", "Shapes.App");
     }
 
+    // Top-level statements compile into Program.<Main>$, as results name them; their locals are its own, not those of the types beside them.
+    [Test]
+    public async Task ResolveSymbolPath_ReachesTopLevelStatements()
+    {
+        var solution = TestSolution.Create("var count = 1;\nSystem.Console.WriteLine(Twice(count));\n\nstatic int Twice(int x) => x * 2;\n\nclass Helper { int size; }\n")
+            .Projects.Single().WithCompilationOptions(new Microsoft.CodeAnalysis.CSharp.CSharpCompilationOptions(OutputKind.ConsoleApplication)).Solution;
+        async Task<ISymbol> ResolveAsync(string path) => (await SymbolTree.ResolveAsync(solution, path, CancellationToken.None)).Single();
+
+        var entryPoint = await ResolveAsync("Program.<Main>$");
+
+        (await ResolveAsync("program")).Should().Be(entryPoint.ContainingType);
+        entryPoint.Name.Should().Be("<Main>$");
+        (await ResolveAsync("Program.<Main>$.count")).Should().BeAssignableTo<ILocalSymbol>();
+        (await ResolveAsync("Program.<Main>$.Twice.x")).Should().BeAssignableTo<IParameterSymbol>();
+        (await SymbolTree.GetChildrenAsync(solution, entryPoint, CancellationToken.None)).Select(symbol => symbol.Name).Should().Equal("count", "Twice", "x");
+    }
+
     [TestCase("Some.Foo.Package.Foo.Bar", new[] { Bar, Barrier })]
     [TestCase("Some.Foo.Package.Foo.Bar$", new[] { Bar })]
     [TestCase(@"Foo\.Bar", new[] { Bar, Barrier })]

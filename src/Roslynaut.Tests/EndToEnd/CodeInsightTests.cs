@@ -406,7 +406,8 @@ public class CodeInsightTests : EndToEndTest
         ]);
     }
 
-    // Generated code counts too: the regex generator's code creates no shapes but throws none either.
+    // Generated code counts too: the regex generator's code creates no shapes but throws none either. A lambda has no name to show, so code in one
+    // is in the member the lambda is written in, such as the field it initializes.
     [Test]
     public async Task FindOperations_ByKindAndTarget()
     {
@@ -418,7 +419,7 @@ public class CodeInsightTests : EndToEndTest
 
         creations.Items.Should().BeEquivalentTo(
         [
-            new FindOperationsTool.OperationEntry(Sample.Location(Sample.RegistryFile, "new Circle(size)"), "lambda expression", "Shapes.Circle", false),
+            new FindOperationsTool.OperationEntry(Sample.Location(Sample.RegistryFile, "new Circle(size)"), "Shapes.Internal.Registry.Factories", "Shapes.Circle", false),
             new FindOperationsTool.OperationEntry(Sample.Location(Sample.ProgramFile, "new Circle(1)"), "<top-level-statements-entry-point>", "Shapes.Circle", false),
             new FindOperationsTool.OperationEntry(Sample.Location(Sample.TestsFile, "new Circle(2)"), "Shapes.Tests.ShapeTests.Circle_Area_IsPiTimesRadiusSquared()", "Shapes.Circle", false),
         ]);
@@ -741,5 +742,22 @@ public class CodeInsightTests : EndToEndTest
 
         actions.Items.Should().ContainSingle().Which.Should().Match<CodeActionEntry>(action =>
             action.Title == "Remove unused variable" && action.Kind == "Fix" && action.DiagnosticId == "CS0168" && action.Id.Length > 0);
+    }
+
+    // A selection that ends at a column, rather than a line, can be just an expression: what takes an expression out applies to it.
+    [Test]
+    public async Task CodeActions_OfASelectedExpression_OfferToTakeItOut()
+    {
+        var (line, column) = Sample.Find(Sample.CircleFile, "Math.PI");
+        var end = Sample.Find(Sample.CircleFile, "Radius;").Column + "Radius".Length;
+
+        var actions = await Server.CallAsync<PagedResult<CodeActionEntry>>("code_actions", new()
+        {
+            ["projectPath"] = Sample.Solution, ["filePath"] = Sample.CircleFile, ["line"] = line, ["column"] = column, ["endLine"] = line, ["endColumn"] = end,
+        });
+
+        actions.Items.Should().OnlyContain(action => action.Kind == "Refactoring").And.Contain(action => action.Title == "Extract method");
+        actions.Items.Select(action => action.Title).Should().Contain(
+            "Introduce local: Introduce local for 'Math.PI * Radius * Radius'", "Introduce parameter for 'Math.PI * Radius * Radius': into new overload");
     }
 }

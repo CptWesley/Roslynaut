@@ -105,7 +105,8 @@ internal static class IlDisassembler
             }
 
             IEnumerable<IMemberDefinition> members = [.. type.Methods, .. type.Properties, .. type.Events, .. type.Fields];
-            foreach (var member in members.Where(member => !IsGenerated(member) && Matches(member, typeName)))
+            // A documentation ID names one member exactly, such as the <Main>$ of top-level statements, which has a compiler's name.
+            foreach (var member in members.Where(member => (isDocId || !IsGenerated(member)) && Matches(member, typeName)))
                 yield return member;
         }
     }
