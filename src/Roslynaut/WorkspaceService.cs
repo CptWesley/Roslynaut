@@ -232,8 +232,15 @@ public sealed class WorkspaceService
     public static async Task<ISymbol> GetSymbolAtAsync(Document document, int line, int column, CancellationToken cancellationToken)
     {
         var position = PositionOf(await document.GetTextAsync(cancellationToken), line, column, document.FilePath);
-        return await SymbolFinder.FindSymbolAtPositionAsync(document, position, cancellationToken)
+        var symbol = await SymbolFinder.FindSymbolAtPositionAsync(document, position, cancellationToken)
             ?? throw new McpException($"No symbol found at {document.FilePath}:{line}:{column}.");
+
+        // A name in a tuple, as in (a, b) = (b, a), also declares the tuple's element of that name; what it refers to is meant.
+        if (symbol is IFieldSymbol { ContainingType.IsTupleType: true }
+            && (await document.GetSyntaxRootAsync(cancellationToken))!.FindToken(position).Parent is Microsoft.CodeAnalysis.CSharp.Syntax.IdentifierNameSyntax { Parent: Microsoft.CodeAnalysis.CSharp.Syntax.ArgumentSyntax } name
+            && (await document.GetSemanticModelAsync(cancellationToken))!.GetSymbolInfo(name, cancellationToken).Symbol is { } referenced)
+            return referenced;
+        return symbol;
     }
 
     /// <summary>The offset of a 1-based line and column in a text.</summary>
@@ -248,8 +255,10 @@ public sealed class WorkspaceService
     /// <summary>The span from the start of one 1-based line to the end of another.</summary>
     public static TextSpan LinesOf(SourceText text, int startLine, int endLine, string? filePath)
     {
-        if (startLine < 1 || endLine < startLine || endLine > text.Lines.Count)
-            throw new McpException($"Lines {startLine} to {endLine} are outside '{filePath}'.");
+        if (endLine < startLine)
+            throw new McpException($"The last line, {endLine}, comes before the first, {startLine}.");
+        if (startLine < 1 || endLine > text.Lines.Count)
+            throw new McpException($"Lines {startLine} to {endLine} are outside '{filePath}', which has {text.Lines.Count} lines.");
 
         return TextSpan.FromBounds(text.Lines[startLine - 1].Start, text.Lines[endLine - 1].End);
     }

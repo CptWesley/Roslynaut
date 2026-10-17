@@ -31,7 +31,7 @@ public sealed class CalleesTool(WorkspaceService workspace, ResultCache cache) :
     internal static async Task<IEnumerable<CallersTool.Caller>> FindAsync(Solution solution, IReadOnlyList<ISymbol> symbols, CancellationToken cancellationToken)
     {
         var calls = new Dictionary<ISymbol, List<SourceLocation>>(SymbolEqualityComparer.Default);
-        foreach (var reference in symbols.SelectMany(symbol => symbol.DeclaringSyntaxReferences))
+        foreach (var reference in symbols.SelectMany(SymbolTree.DeclarationsOf))
         {
             var node = await reference.GetSyntaxAsync(cancellationToken);
             if (solution.GetDocument(node.SyntaxTree) is not { } document)

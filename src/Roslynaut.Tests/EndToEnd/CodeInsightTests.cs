@@ -47,6 +47,24 @@ public class CodeInsightTests : EndToEndTest
         ], options => options.WithStrictOrdering());
     }
 
+    // largest starts out null and may stay so; ?? throw makes the result not null.
+    [Test]
+    public async Task ExpressionInfo_GivesTheNullState()
+    {
+        var expressions = await Server.CallAsync<List<ExpressionInfoTool.ExpressionInfo>>("expression_info", At(Sample.ShapeMathFile, "largest ?? throw"));
+
+        expressions.Select(expression => (expression.Type, expression.NullState)).Should().Equal(("Shapes.IShape?", "MaybeNull"), ("Shapes.IShape", "NotNull"));
+    }
+
+    [Test]
+    public async Task SignatureHelp_OfAnIndexer_PicksItsOverload()
+    {
+        var signatures = await Server.CallAsync<List<SignatureHelpTool.Signature>>("signature_help", At(Sample.RegistryFile, "\"size\"]"));
+
+        signatures.Select(signature => (signature.Display, signature.Chosen)).Should().Equal(
+            ("System.Text.RegularExpressions.GroupCollection.this[int]", false), ("System.Text.RegularExpressions.GroupCollection.this[string]", true));
+    }
+
     // The documentation of a package's method comes from the XML file next to its assembly.
     [Test]
     public async Task SignatureHelp_OfAConstructor_AndOfAPackagesMethod()
@@ -634,6 +652,17 @@ public class CodeInsightTests : EndToEndTest
             "public static string Shapes.ShapeMath.Classify(Shapes.IShape shape)",
             "public virtual string Shapes.Shape.Name { get; }",
             "string Shapes.IShape.Name { get; }");
+    }
+
+    // In a solution, the project to compare goes by its name. Shapes.dll is the build of the current source, so nothing differs.
+    [Test]
+    public async Task ApiDiff_InASolution_OfTheProjectNamed()
+    {
+        var unnamed = await Server.CallFailingAsync("api_diff", new() { ["projectPath"] = Sample.Solution, ["baseline"] = Sample.ShapesAssembly });
+        var diff = await Server.CallAsync<ApiDiffTool.ApiDiff>("api_diff", new() { ["projectPath"] = Sample.Solution, ["project"] = "Shapes", ["baseline"] = Sample.ShapesAssembly });
+
+        unnamed.Should().StartWith("An error occurred invoking 'api_diff': Pass the project's name: one of ").And.Contain("Shapes.App").And.Contain("Shapes.Tests");
+        diff.Should().BeEquivalentTo(new ApiDiffTool.ApiDiff([], []));
     }
 
     // Nothing is written: the file keeps its error.

@@ -19,6 +19,17 @@ public class EditToolsTests
         (await TextOf((await OrganizeUsingsTool.OrganizeAsync(DocumentOf(solution), removeUnused, CancellationToken.None)).Project.Solution)).Should().Be(expected);
     }
 
+    // The blank line after the usings goes with them; a comment above them stays, with one blank line after it.
+    [TestCase("using System;\n\nnamespace N;\n\nclass C { }\n", "namespace N;\n\nclass C { }\n")]
+    [TestCase("// Header\n\nusing System;\nusing System.Text;\n\nnamespace N;\n", "// Header\n\nnamespace N;\n")]
+    [TestCase("#nullable enable\n\nusing System;\n\nclass C { }\n", "#nullable enable\n\nclass C { }\n")]
+    public async Task OrganizeUsings_RemovingThemAll_LeavesNoBlankLinesBehind(string code, string expected)
+    {
+        var solution = TestSolution.Create(code);
+
+        (await TextOf((await OrganizeUsingsTool.OrganizeAsync(DocumentOf(solution), true, CancellationToken.None)).Project.Solution)).Should().Be(expected);
+    }
+
     // A line's indentation comes before it, so it changes too; the lines around keep theirs.
     [Test]
     public async Task Format_Lines_IndentsThemToo()

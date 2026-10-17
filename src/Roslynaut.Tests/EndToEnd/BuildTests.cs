@@ -55,6 +55,36 @@ public class BuildTests : EndToEndTest
         problems.Should().BeEquivalentTo(new BuildProblemsTool.BuildProblems([], [], []));
     }
 
+    // Two files copy to one place in the output: the last copy wins.
+    [Test]
+    public async Task BuildProblems_FindADoubleWrite_AndBuildFileOriginBothCopies()
+    {
+        var project = Sample.NewProject("DoubleWrite", ("DoubleWrite.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <TargetFramework>net10.0</TargetFramework>
+              </PropertyGroup>
+              <ItemGroup>
+                <None Include="a/data.txt" Link="data.txt" CopyToOutputDirectory="PreserveNewest" />
+                <None Include="b/data.txt" Link="data.txt" CopyToOutputDirectory="PreserveNewest" />
+              </ItemGroup>
+            </Project>
+            """), ("a/data.txt", "a"), ("b/data.txt", "b"));
+        var directory = Path.GetDirectoryName(project)!;
+        var binlog = Path.Combine(directory, "build.binlog");
+        (await Server.CallAsync<BuildTool.BuildResult>("build", new() { ["projectPath"] = project, ["binlogPath"] = binlog })).Succeeded.Should().BeTrue();
+
+        var (output, a, b) = (Path.Combine(directory, "bin", "Debug", "net10.0", "data.txt"), Path.Combine(directory, "a", "data.txt"), Path.Combine(directory, "b", "data.txt"));
+        var problems = await Server.CallAsync<BuildProblemsTool.BuildProblems>("build_problems", new() { ["binlogPath"] = binlog });
+        var writes = await Server.CallAsync<List<BuildFileOriginTool.FileWrite>>("build_file_origin", new() { ["binlogPath"] = binlog, ["filePath"] = output });
+
+        problems.Should().BeEquivalentTo(new BuildProblemsTool.BuildProblems([new BuildProblemsTool.DoubleWrite(output, [a, b])], [], []));
+        writes.Should().Equal(
+            new BuildFileOriginTool.FileWrite(output, a, "DoubleWrite.csproj (net10.0)", "_CopyOutOfDateSourceItemsToOutputDirectory", "Copy", true),
+            new BuildFileOriginTool.FileWrite(output, b, "DoubleWrite.csproj (net10.0)", "_CopyOutOfDateSourceItemsToOutputDirectory", "Copy", true));
+        File.ReadAllText(output).Should().Be("b");
+    }
+
     [Test]
     public async Task BuildIncrementality_FindsTheTargetThatAlwaysRuns()
     {
@@ -131,6 +161,17 @@ public class BuildTests : EndToEndTest
         targets.Should().Equal(new BuildLogSearchTool.LogMatch("Target", "Target Name=WriteBuildInfo Project=Shapes.App.csproj", "Shapes.App.csproj (net10.0)", "WriteBuildInfo", null));
         // The log names a Message task after its text.
         messages.Should().Equal(new BuildLogSearchTool.LogMatch("Message", "Flavor plain;built", "Shapes.App.csproj (net10.0)", "WriteBuildInfo", "Message: Flavor plain;built"));
+    }
+
+    // project() keeps the matches in one project; under() also those in the projects it built, which the solution builds all of.
+    [Test]
+    public async Task BuildLogSearch_InAProject_OrUnderOne()
+    {
+        var app = await Server.CallAsync<List<BuildLogSearchTool.LogMatch>>("build_log_search", new() { ["binlogPath"] = BuildLog, ["query"] = "project(Shapes.App) $task Csc" });
+        var all = await Server.CallAsync<List<BuildLogSearchTool.LogMatch>>("build_log_search", new() { ["binlogPath"] = BuildLog, ["query"] = "under($project Shapes.slnx) $task Csc" });
+
+        app.Should().Equal(new BuildLogSearchTool.LogMatch("Task", "Csc", "Shapes.App.csproj (net10.0)", "CoreCompile", "Csc"));
+        all.Select(match => match.Project).Should().BeEquivalentTo("Shapes.csproj (net10.0)", "Shapes.App.csproj (net10.0)", "Shapes.Tests.csproj (net10.0)");
     }
 
     [Test]

@@ -120,6 +120,18 @@ public class EditingTests : EndToEndTest
         Read(FileOf(project, "Counter.cs")).Should().Be(Counter.ReplaceLineEndings("\n"));
     }
 
+    // A keyword as a name needs an @ in code, which the rename adds; a name given with its @ is the same name.
+    [Test]
+    public async Task RenameSymbol_ToKeywords_EscapesThem()
+    {
+        var project = Sample.NewProject("RenameKeywords", ("Greeter.cs", "namespace Edits;\n\npublic static class Greeter\n{\n    public static string Greet(string name, string kind) => kind + name;\n}\n"));
+
+        await Server.CallAsync<RenameSymbolTool.RenameResult>("rename_symbol", new() { ["projectPath"] = project, ["symbol"] = "Greeter.Greet.name", ["newName"] = "class" });
+        await Server.CallAsync<RenameSymbolTool.RenameResult>("rename_symbol", new() { ["projectPath"] = project, ["symbol"] = "Greeter.Greet.kind", ["newName"] = "@event" });
+
+        Read(FileOf(project, "Greeter.cs")).Should().Contain("public static string Greet(string @class, string @event) => @event + @class;");
+    }
+
     // Roslyn would rename Width over Height, which Box already has, and leave two properties of one name.
     [Test]
     public async Task RenameSymbol_ToANameThatConflicts_ChangesNothing()
@@ -448,6 +460,17 @@ public class EditingTests : EndToEndTest
             """.ReplaceLineEndings("\n"));
     }
 
+    // The blank line after the usings goes with them, so the file does not start with one.
+    [Test]
+    public async Task OrganizeUsings_RemovingEveryUsing_LeavesNoBlankLineFirst()
+    {
+        var project = Sample.NewProject("OrganizeNoUsings", ("Plain.cs", "using System;\nusing System.Text;\n\nnamespace Edits;\n\npublic class Plain\n{\n}\n"));
+
+        await Server.CallAsync<EditResult>("organize_usings", new() { ["projectPath"] = project, ["filePath"] = FileOf(project, "Plain.cs") });
+
+        Read(FileOf(project, "Plain.cs")).Should().Be("namespace Edits;\n\npublic class Plain\n{\n}\n");
+    }
+
     private const string Widget = """
         namespace Edits;
 
@@ -618,6 +641,68 @@ public class EditingTests : EndToEndTest
         refused.Should().BeEquivalentTo(new SafeDeleteSymbolTool.SafeDeleteResult(false, [], [Sample.Location(file, "Shape(\"dot\")")]));
         primary.Should().Be("An error occurred invoking 'safe_delete_symbol': Edits.Dot.Dot() is the primary constructor of Edits.Dot: edit the type's parameter list instead.");
         Read(file).Should().Be(shapes);
+    }
+
+    // Calls pass an argument for a parameter, and uses name a type argument for a type parameter, without referencing either: deleting one breaks them.
+    [Test]
+    public async Task SafeDeleteSymbol_OfParameters_RefusesEvenWhenUnused()
+    {
+        const string calc = "namespace Edits;\n\npublic static class Calc\n{\n    public static int Inc(int a, int unused) => a + 1;\n\n    public static T First<T, TUnused>(T a) => a;\n}\n";
+        var project = Sample.NewProject("SafeDeleteParameters", ("Calc.cs", calc),
+            ("Use.cs", "namespace Edits;\n\npublic static class Use\n{\n    public static int Run() => Calc.Inc(1, 2) + Calc.First<int, string>(3);\n}\n"));
+
+        var parameter = await Server.CallFailingAsync("safe_delete_symbol", new() { ["projectPath"] = project, ["symbol"] = "Calc.Inc.unused" });
+        var typeParameter = await Server.CallFailingAsync("safe_delete_symbol", new() { ["projectPath"] = project, ["symbol"] = "Calc.First.TUnused" });
+
+        parameter.Should().Be("An error occurred invoking 'safe_delete_symbol': unused is a parameter, which the calls of Edits.Calc.Inc(int, int) pass: "
+            + "remove it with change_signature, which updates them.");
+        typeParameter.Should().Be("An error occurred invoking 'safe_delete_symbol': TUnused is a type parameter, which the uses of Edits.Calc.First<T, TUnused>(T) name: "
+            + "edit its declaration and uses instead.");
+        Read(FileOf(project, "Calc.cs")).Should().Be(calc);
+    }
+
+    // A partial method's definition and implementation are symbols of their own, each declaring only itself, and its path names the definition:
+    // the tools take both parts, so that the code, which is in the implementation, is there to see and edit.
+    [Test]
+    public async Task SymbolTools_OfAPartialMethod_TakeBothParts()
+    {
+        const string job = "namespace Edits;\n\npublic partial class Job\n{\n    public void Run() => Log(\"run\");\n\n    partial void Log(string message);\n\n    partial void Skip();\n}\n";
+        const string log = "namespace Edits;\n\npublic partial class Job\n{\n    partial void Log(string message)\n    {\n        var line = message.Trim();\n"
+            + "        System.Console.WriteLine(line);\n    }\n\n    partial void Skip() { }\n}\n";
+        var project = Sample.NewProject("PartialMethods", ("Job.cs", job), ("Job.Log.cs", log));
+        var (jobFile, logFile) = (FileOf(project, "Job.cs"), FileOf(project, "Job.Log.cs"));
+        Dictionary<string, object?> Log(params (string Name, object Value)[] more)
+        {
+            var arguments = new Dictionary<string, object?> { ["projectPath"] = project, ["symbol"] = "Job.Log" };
+            foreach (var (name, value) in more)
+                arguments[name] = value;
+            return arguments;
+        }
+
+        var sources = await Server.CallAsync<List<SymbolSourceTool.SymbolSource>>("symbol_source", Log());
+        var definitions = await Server.CallAsync<List<DefinitionTool.Definition>>("definition", Log());
+        var callees = await Server.CallAsync<PagedResult<CallersTool.Caller>>("callees", Log());
+        var variables = await Server.CallAsync<PagedResult<SymbolEntry>>("list_symbols", Log());
+        var matches = await Server.CallAsync<PagedResult<SearchPatternTool.TextMatch>>("search_pattern", new() { ["projectPath"] = project, ["pattern"] = "Trim", ["scope"] = "Job.Log" });
+        var unpicked = await Server.CallFailingAsync("replace_symbol_body", Log(("code", "    partial void Log(string message) { }")));
+
+        sources.Select(source => source.Location).Should().Equal(Sample.Location(jobFile, "partial void Log"), Sample.Location(logFile, "partial void Log"));
+        definitions.Should().ContainSingle().Which.Locations.Should().Equal(Sample.Location(jobFile, "Log(string"), Sample.Location(logFile, "Log(string"));
+        callees.Items.Select(callee => callee.Symbol.Signature).Should().BeEquivalentTo("string.Trim()", "System.Console.WriteLine(string?)");
+        variables.Items.Select(variable => (variable.Name, variable.Kind)).Should().Equal(("message", "Parameter"), ("line", "Local"));
+        matches.Items.Select(match => (match.FilePath, match.Line)).Should().Equal((logFile, Sample.LineOf(logFile, "Trim")));
+        unpicked.Should().Be("An error occurred invoking 'replace_symbol_body': Edits.Job.Log(string) has 2 declarations; edit one by a position in it.");
+
+        var (line, column) = Sample.Find(logFile, "Log(string");
+        await Server.CallAsync<EditResult>("replace_symbol_body", new()
+        {
+            ["projectPath"] = project, ["filePath"] = logFile, ["line"] = line, ["column"] = column, ["code"] = "    partial void Log(string message) => System.Console.WriteLine(message);",
+        });
+        var skipped = await Server.CallAsync<SafeDeleteSymbolTool.SafeDeleteResult>("safe_delete_symbol", new() { ["projectPath"] = project, ["symbol"] = "Job.Skip" });
+
+        skipped.Should().BeEquivalentTo(new SafeDeleteSymbolTool.SafeDeleteResult(true, [jobFile, logFile], []));
+        Read(jobFile).Should().Be(job.Replace("\n\n    partial void Skip();", ""));
+        Read(logFile).Should().Be("namespace Edits;\n\npublic partial class Job\n{\n    partial void Log(string message) => System.Console.WriteLine(message);\n}\n");
     }
 
     // A type alone in its file takes the file along; a file with another type, or a global using, stays.

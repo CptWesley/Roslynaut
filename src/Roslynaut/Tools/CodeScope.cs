@@ -29,7 +29,7 @@ internal static class CodeScope
         }
 
         var declarations = new List<(Document, TextSpan?)>();
-        foreach (var reference in (await SymbolTree.ResolveAsync(solution, scope, cancellationToken)).SelectMany(symbol => symbol.DeclaringSyntaxReferences))
+        foreach (var reference in (await SymbolTree.ResolveAsync(solution, scope, cancellationToken)).SelectMany(SymbolTree.DeclarationsOf))
         {
             if (solution.GetDocument(reference.SyntaxTree) is { } document)
                 declarations.Add((document, (await reference.GetSyntaxAsync(cancellationToken)).FullSpan));

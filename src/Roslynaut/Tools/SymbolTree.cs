@@ -1,7 +1,6 @@
 using System.Runtime.CompilerServices;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
-using Microsoft.CodeAnalysis.FindSymbols;
 using ModelContextProtocol;
 
 namespace Roslynaut.Tools;
@@ -17,9 +16,13 @@ internal static class SymbolTree
     public static async Task<IReadOnlyList<ISymbol>> ResolveAsync(Solution solution, string path, CancellationToken cancellationToken)
     {
         var segments = Split(path);
-        var own = (await GetRootNamespacesAsync(solution, cancellationToken)).Select(root => root.ContainingAssembly).ToHashSet<IAssemblySymbol>(ReferenceEqualityComparer.Instance);
-        // The Program of top-level statements has no declaration of its own to find.
-        IEnumerable<ISymbol> symbols = (await SymbolFinder.FindSourceDeclarationsAsync(solution, NameOf(segments[0]), ignoreCase: true, cancellationToken))
+        var compilations = (await Task.WhenAll(solution.Projects.Select(project => project.GetCompilationAsync(cancellationToken)))).OfType<Compilation>().ToList();
+        var own = compilations.Select(compilation => compilation.Assembly).ToHashSet<IAssemblySymbol>(ReferenceEqualityComparer.Instance);
+        var name = NameOf(segments[0]);
+        // The compilations' declarations, unlike SymbolFinder's index, include what source generators declare. The Program of top-level
+        // statements has no declaration of its own to find.
+        IEnumerable<ISymbol> symbols = compilations
+            .SelectMany(compilation => compilation.GetSymbolsWithName(candidate => candidate.Equals(name, StringComparison.OrdinalIgnoreCase), SymbolFilter.All, cancellationToken))
             .SelectMany(symbol => OwnParts(symbol, own))
             .Concat(own.SelectMany(assembly => assembly.GlobalNamespace.GetTypeMembers(WellKnownMemberNames.TopLevelStatementsEntryPointTypeName)))
             .Where(symbol => Matches(symbol, segments[0]))
@@ -28,7 +31,13 @@ internal static class SymbolTree
         {
             var children = new List<ISymbol>();
             foreach (var symbol in symbols)
+            {
                 children.AddRange((await GetChildrenAsync(solution, symbol, cancellationToken)).Where(child => Matches(child, segment)));
+                // What the initializer of a field, property or local declares, such as a lambda's parameters, is in it too.
+                if (symbol is IFieldSymbol or IPropertySymbol { IsIndexer: false } or ILocalSymbol)
+                    children.AddRange((await GetDeclaredChildrenAsync(solution, symbol, cancellationToken)).Where(child => Matches(child, segment)));
+            }
+
             symbols = children;
         }
 
@@ -44,9 +53,9 @@ internal static class SymbolTree
     private static IEnumerable<ISymbol> OwnParts(ISymbol symbol, HashSet<IAssemblySymbol> own) =>
         symbol is INamespaceSymbol ns ? ns.ConstituentNamespaces.Where(part => own.Contains(part.ContainingAssembly)) : [symbol];
 
-    /// <summary>The symbols declared in a symbol; for a variable, field, property or event the members of its type.</summary>
+    /// <summary>The symbols declared in a symbol; for a variable, field, property or event the members of its type, but an indexer's parameters.</summary>
     public static Task<IEnumerable<ISymbol>> GetChildrenAsync(Solution solution, ISymbol symbol, CancellationToken cancellationToken) =>
-        GetDeclaredChildrenAsync(solution, TypeOrSelf(symbol), cancellationToken);
+        GetDeclaredChildrenAsync(solution, symbol is IPropertySymbol { IsIndexer: true } ? symbol : TypeOrSelf(symbol), cancellationToken);
 
     /// <summary>All symbols declared inside the roots, breadth first. Without locals, members are not looked into.</summary>
     public static async IAsyncEnumerable<ISymbol> GetDescendantsAsync(
@@ -91,6 +100,24 @@ internal static class SymbolTree
         return symbols;
     }
 
+    /// <summary>
+    /// A symbol, or both parts of a partial method, property or event: each part is a symbol of its own that declares only itself, and a path
+    /// or a reference gives the definition part, without the code.
+    /// </summary>
+    public static IEnumerable<ISymbol> PartsOf(ISymbol symbol) => symbol switch
+    {
+        IMethodSymbol { PartialDefinitionPart: { } definition } => [definition, symbol],
+        IMethodSymbol { PartialImplementationPart: { } implementation } => [symbol, implementation],
+        IPropertySymbol { PartialDefinitionPart: { } definition } => [definition, symbol],
+        IPropertySymbol { PartialImplementationPart: { } implementation } => [symbol, implementation],
+        IEventSymbol { PartialDefinitionPart: { } definition } => [definition, symbol],
+        IEventSymbol { PartialImplementationPart: { } implementation } => [symbol, implementation],
+        _ => [symbol],
+    };
+
+    /// <summary>The declarations of a symbol, with both parts of a partial member.</summary>
+    public static IEnumerable<SyntaxReference> DeclarationsOf(ISymbol symbol) => PartsOf(symbol).SelectMany(part => part.DeclaringSyntaxReferences);
+
     public static ISymbol TypeOrSelf(ISymbol symbol) => symbol switch
     {
         ILocalSymbol local => local.Type,
@@ -106,8 +133,9 @@ internal static class SymbolTree
         // Namespaces also hold every referenced assembly's types; keep the ones from source.
         INamespaceSymbol ns => ns.GetMembers().Where(member => member.Locations.Any(location => location.IsInSource)),
         ITypeSymbol type => type.GetMembers().Where(IsDeclared),
-        // The entry point of top-level statements is declared by their files, which can declare types too.
-        _ => await GetDeclaredInAsync(solution, (await Task.WhenAll(symbol.DeclaringSyntaxReferences.Select(reference => reference.GetSyntaxAsync(cancellationToken))))
+        // The entry point of top-level statements is declared by their files, which can declare types too. Of a partial member, the
+        // implementation, its last part, declares the locals; both parts declare the parameters.
+        _ => await GetDeclaredInAsync(solution, (await Task.WhenAll(PartsOf(symbol).Last().DeclaringSyntaxReferences.Select(reference => reference.GetSyntaxAsync(cancellationToken))))
             .SelectMany(node => node is CompilationUnitSyntax file ? file.Members.OfType<GlobalStatementSyntax>() : (IEnumerable<SyntaxNode>)[node]), cancellationToken),
     };
 
@@ -150,6 +178,13 @@ internal static class SymbolTree
     /// </summary>
     private static bool Matches(ISymbol symbol, string segment)
     {
+        // An indexer is this[] by name, or this[string] with its parameter types.
+        if (symbol is IPropertySymbol { IsIndexer: true } && segment.StartsWith("this[", StringComparison.OrdinalIgnoreCase))
+        {
+            return Compact(segment).Equals("this[]", StringComparison.OrdinalIgnoreCase) || new[] { symbol.ToDisplayString(), symbol.ToDisplayString(ShortFormat) }
+                .Any(display => Compact(display).EndsWith(Compact(segment), StringComparison.OrdinalIgnoreCase));
+        }
+
         var name = NameOf(segment);
         var named = symbol.Name.Equals(name, StringComparison.OrdinalIgnoreCase)
             || symbol is IMethodSymbol { MethodKind: MethodKind.Constructor or MethodKind.StaticConstructor } && symbol.ContainingType.Name.Equals(name, StringComparison.OrdinalIgnoreCase);

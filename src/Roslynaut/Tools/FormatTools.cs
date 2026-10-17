@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Formatting;
 using Microsoft.CodeAnalysis.Text;
@@ -78,6 +79,48 @@ public sealed class OrganizeUsingsTool(WorkspaceService workspace) : IMcpTool
             .ToList();
 
         var usings = root.DescendantNodes().OfType<UsingDirectiveSyntax>().Where(directive => unneeded.Any(span => span.Contains(directive.Span))).ToList();
-        return usings.Count == 0 ? document : document.WithSyntaxRoot(root.RemoveNodes(usings, SyntaxRemoveOptions.KeepLeadingTrivia)!);
+        if (usings.Count == 0)
+            return document;
+
+        // Without any usings, the file would start with the blank line that followed them, or have two after a comment above them.
+        var removed = root.RemoveNodes(usings, SyntaxRemoveOptions.KeepLeadingTrivia)!;
+        if (removed is CompilationUnitSyntax { Usings.Count: 0, Externs.Count: 0 } && root is CompilationUnitSyntax { Usings.Count: > 0 })
+        {
+            var first = removed.GetFirstToken(includeZeroWidth: true);
+            removed = removed.ReplaceToken(first, first.WithLeadingTrivia(WithoutExtraBlankLines(first.LeadingTrivia)));
+        }
+
+        return document.WithSyntaxRoot(removed);
+    }
+
+    /// <summary>The trivia at the start of a file without blank lines first, and with at most one in a row between comments.</summary>
+    private static List<SyntaxTrivia> WithoutExtraBlankLines(SyntaxTriviaList leading)
+    {
+        var kept = new List<SyntaxTrivia>();
+        var (lineStart, afterBlankLine) = (0, true);
+        foreach (var trivia in leading)
+        {
+            if (trivia.IsKind(SyntaxKind.EndOfLineTrivia) && kept.Skip(lineStart).All(item => item.IsKind(SyntaxKind.WhitespaceTrivia)))
+            {
+                if (afterBlankLine)
+                {
+                    kept.RemoveRange(lineStart, kept.Count - lineStart);
+                    continue;
+                }
+
+                afterBlankLine = true;
+            }
+            else if (!trivia.IsKind(SyntaxKind.WhitespaceTrivia) && !trivia.IsKind(SyntaxKind.EndOfLineTrivia))
+            {
+                afterBlankLine = false;
+            }
+
+            kept.Add(trivia);
+            // Directives and documentation comments end their lines themselves.
+            if (trivia.IsKind(SyntaxKind.EndOfLineTrivia) || trivia.HasStructure)
+                lineStart = kept.Count;
+        }
+
+        return kept;
     }
 }

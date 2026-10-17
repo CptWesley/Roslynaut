@@ -26,7 +26,7 @@ public sealed class DocumentHighlightTool(WorkspaceService workspace) : IMcpTool
     internal static async Task<IEnumerable<ReferencesTool.ReferenceEntry>> HighlightAsync(Document document, ISymbol symbol, CancellationToken cancellationToken)
     {
         var tree = await document.GetSyntaxTreeAsync(cancellationToken);
-        var entries = symbol.Locations.Where(location => location.SourceTree == tree)
+        var entries = SymbolTree.PartsOf(symbol).SelectMany(part => part.Locations).Where(location => location.SourceTree == tree)
             .Select(location => new ReferencesTool.ReferenceEntry(SourceLocation.From(location), symbol.ContainingSymbol?.ToDisplayString(), "Declaration"))
             .ToList();
         foreach (var reference in await SymbolFinder.FindReferencesAsync(symbol, document.Project.Solution, ImmutableHashSet.Create(document), cancellationToken))

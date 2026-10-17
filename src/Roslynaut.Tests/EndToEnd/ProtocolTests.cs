@@ -123,7 +123,9 @@ public class ProtocolTests : EndToEndTest
         (await Server.CallFailingAsync("rename_symbol", new() { ["projectPath"] = Sample.Solution, ["symbol"] = "Rectangle.Scale", ["newName"] = "Resize" }))
             .Should().Be("An error occurred invoking 'rename_symbol': The symbol path matches 2 symbols; pick one by adding a parameter list, or by position.");
         (await Server.CallFailingAsync("format", new() { ["projectPath"] = Sample.Solution, ["filePath"] = Sample.CircleFile, ["startLine"] = 5, ["endLine"] = 2 }))
-            .Should().Be($"An error occurred invoking 'format': Lines 5 to 2 are outside '{Sample.CircleFile}'.");
+            .Should().Be("An error occurred invoking 'format': The last line, 2, comes before the first, 5.");
+        (await Server.CallFailingAsync("inlay_hints", new() { ["projectPath"] = Sample.Solution, ["filePath"] = Sample.CircleFile, ["startLine"] = 1, ["endLine"] = 1000 }))
+            .Should().Be($"An error occurred invoking 'inlay_hints': Lines 1 to 1000 are outside '{Sample.CircleFile}', which has {File.ReadAllText(Sample.CircleFile).Split('\n').Length} lines.");
     }
 
     // Clients spell paths their own way, such as with forward slashes, or on Windows with a lower case drive letter as VS Code does.

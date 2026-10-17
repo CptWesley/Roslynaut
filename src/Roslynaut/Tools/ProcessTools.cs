@@ -445,7 +445,8 @@ public sealed class ProcessRootsTool : IMcpTool
 
     [McpServerTool(Name = "process_roots", ReadOnly = true)]
     [Description("Explains why an object in a running .NET process or a dump stays alive, as gcroot does: the chains of references from roots, "
-        + "such as locals, static fields and handles, to the object. For memory leaks, after process_heap and process_objects. Slow on big heaps.")]
+        + "such as locals, static fields and handles, to the object. For memory leaks, after process_heap and process_objects. Slow on big heaps. "
+        + "Finding locals needs the code the JIT compiled, which only a full dump has: in other dumps, chains from locals can be missing.")]
     private static Task<IReadOnlyList<ProcessInspection.RootPath>> GetRootsAsync(
         [Description("The address of the object, e.g. from process_objects.")] string address,
         [Description(ProcessDefaults.ProcessId)] int? processId = null,

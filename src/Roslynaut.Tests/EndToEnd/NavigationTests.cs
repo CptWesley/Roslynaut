@@ -327,7 +327,7 @@ public class NavigationTests : EndToEndTest
         ]);
     }
 
-    // Results name top-level statements <Main>$ in Program, so that path finds them again, and their locals below them.
+    // Results name top-level statements <Main>$ in Program, so that path finds them again, and their locals below them, with it as their container.
     [Test]
     public async Task SymbolPaths_ReachTopLevelStatements_AndTheirLocals()
     {
@@ -341,8 +341,8 @@ public class NavigationTests : EndToEndTest
 
         members.Items.Should().Equal(entryPoint);
         locals.Items.Should().Equal(
-            Entry("shapes", "Local", "Shapes.IShape[] shapes", "<top-level-statements-entry-point>", Sample.ProgramFile, "shapes ="),
-            Entry("total", "Local", "double total", "<top-level-statements-entry-point>", Sample.ProgramFile, "total ="));
+            Entry("shapes", "Local", "Shapes.IShape[] shapes", path, Sample.ProgramFile, "shapes ="),
+            Entry("total", "Local", "double total", path, Sample.ProgramFile, "total ="));
 
         // A lambda has no name to show, so a reference in one is in the member the lambda is written in.
         references.Items.Should().Equal(
@@ -479,5 +479,65 @@ public class NavigationTests : EndToEndTest
             new ReferencesTool.ReferenceEntry(Sample.Location(Sample.ShapeMathFile, "total = 0.0"), method, "Declaration"),
             new ReferencesTool.ReferenceEntry(Sample.Location(Sample.ShapeMathFile, "total += area"), method, "Write"),
             new ReferencesTool.ReferenceEntry(Sample.Location(Sample.ShapeMathFile, "total;"), method, "Read"));
+    }
+
+    // As the tools' descriptions say, a result's Container plus '.' plus its Name is a path to it, or its Name alone at the top. That holds for
+    // what the regex generator declares, the locals of top-level statements, and the parameters of lambdas, also those in a field's initializer.
+    [Test]
+    public async Task SymbolPaths_OfEveryResult_FindIt()
+    {
+        var all = await Server.CallAsync<PagedResult<SymbolEntry>>("find_symbols", new() { ["projectPath"] = Sample.Solution, ["pageSize"] = 1000 });
+
+        all.HasMore.Should().BeFalse();
+        all.Items.Should().Contain(entry => entry.Container == "Program.<Main>$").And.Contain(entry => entry.Container == "Shapes.Internal.Registry.Factories")
+            .And.Contain(entry => entry.Container == "System.Text.RegularExpressions.Generated.Description_0");
+        foreach (var entry in all.Items)
+        {
+            var path = entry.Container is null ? entry.Name : $"{entry.Container}.{entry.Name}";
+            var definitions = await Server.CallAsync<List<DefinitionTool.Definition>>("definition", new() { ["projectPath"] = Sample.Solution, ["symbol"] = path });
+            definitions.Should().Contain(definition => definition.Locations.Contains(entry.Location), path);
+        }
+    }
+
+    // An indexer's parameter list picks it among others, and leads to its parameters.
+    [Test]
+    public async Task SymbolPaths_ReachIndexers()
+    {
+        const string table = "namespace Edits;\n\npublic class Table\n{\n    public int this[int row] => row;\n\n    public string this[string column] => column;\n}\n";
+        var project = Sample.NewProject("Indexers", ("Table.cs", table));
+        var file = Sample.In("edits", "Indexers", "Table.cs");
+        async Task<IEnumerable<SourceLocation>> DefineAsync(string symbol) =>
+            (await Server.CallAsync<List<DefinitionTool.Definition>>("definition", new() { ["projectPath"] = project, ["symbol"] = symbol })).SelectMany(definition => definition.Locations);
+
+        (await DefineAsync("Table.this[]")).Should().Equal(Sample.Location(file, "this[int"), Sample.Location(file, "this[string"));
+        (await DefineAsync("Table.this[string]")).Should().Equal(Sample.Location(file, "this[string"));
+        (await DefineAsync("Edits.Table.this[int].row")).Should().Equal(Sample.Location(file, "row]"));
+    }
+
+    // The fields on the left of a deconstruction are written. A name in a tuple also declares the tuple's element of that name, but a position
+    // on it means the field.
+    [Test]
+    public async Task DeconstructionTargets_AreWrites_AndTheirPositionsTargetWhatTheyAssign()
+    {
+        const string pair = "namespace Edits;\n\npublic class Pair\n{\n    private int _first, _second;\n\n    public void Swap() => (_first, _second) = (_second, _first);\n\n"
+            + "    public int Sum() => _first + _second;\n}\n";
+        var project = Sample.NewProject("Deconstruction", ("Pair.cs", pair));
+        var file = Sample.In("edits", "Deconstruction", "Pair.cs");
+        var (line, column) = Sample.Find(file, "_first, _second) =");
+
+        var references = await Server.CallAsync<PagedResult<ReferencesTool.ReferenceEntry>>("references", new() { ["projectPath"] = project, ["symbol"] = "Pair._first" });
+        var highlights = await Server.CallAsync<List<ReferencesTool.ReferenceEntry>>("document_highlight", new()
+        {
+            ["projectPath"] = project, ["filePath"] = file, ["line"] = line, ["column"] = column,
+        });
+
+        ReferencesTool.ReferenceEntry[] uses =
+        [
+            new(Sample.Location(file, "_first, _second) ="), "Edits.Pair.Swap()", "Write"),
+            new(Sample.Location(file, "_first);"), "Edits.Pair.Swap()", "Read"),
+            new(Sample.Location(file, "_first + "), "Edits.Pair.Sum()", "Read"),
+        ];
+        references.Items.Should().BeEquivalentTo(uses);
+        highlights.Should().Equal([new(Sample.Location(file, "_first, _second;"), "Edits.Pair", "Declaration"), .. uses]);
     }
 }

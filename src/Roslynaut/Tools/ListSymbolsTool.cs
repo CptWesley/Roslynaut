@@ -8,8 +8,8 @@ public sealed class ListSymbolsTool(WorkspaceService workspace, ResultCache cach
     public Delegate Handler => ListSymbolsAsync;
 
     [McpServerTool(Name = "list_symbols", ReadOnly = true)]
-    [Description("Lists the symbols declared in a symbol: a namespace's namespaces and types, a type's members, a method's parameters and locals. "
-        + "For a variable, field or property it lists the members of its type. Paged.")]
+    [Description("Lists the symbols declared in a symbol: a namespace's namespaces and types, a type's members, a method's or indexer's parameters "
+        + "and locals. For a variable, field or other property it lists the members of its type. Paged.")]
     private async Task<PagedResult<SymbolEntry>> ListSymbolsAsync(
         [Description(ToolDefaults.ProjectPath)] string projectPath,
         [Description(ToolDefaults.SymbolPath)] string symbol,

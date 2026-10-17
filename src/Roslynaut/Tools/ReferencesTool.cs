@@ -85,6 +85,10 @@ public sealed class ReferencesTool(WorkspaceService workspace, ResultCache cache
 
         // A name in a member access has no operation of its own; the member access has.
         var operation = model.GetOperation(node, cancellationToken) ?? model.GetOperation(node.Parent!, cancellationToken);
+
+        // A deconstruction assigns to the elements of the tuple, maybe nested, on its left: (a, (b, c)) = ...
+        while (operation?.Parent is ITupleOperation tuple)
+            operation = tuple;
         return operation?.Parent switch
         {
             IAssignmentOperation assignment => assignment.Target == operation,

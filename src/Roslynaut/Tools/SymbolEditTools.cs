@@ -48,7 +48,13 @@ internal static class SymbolEdits
         if (symbols is not [var symbol])
             throw new McpException($"The symbol path matches {symbols.Count} symbols; pick one by adding a parameter list, or by position.");
 
-        var declarations = await Task.WhenAll(symbol.DeclaringSyntaxReferences.Select(reference => reference.GetSyntaxAsync(cancellationToken)));
+        // Calls pass an argument for a parameter and uses name a type argument for a type parameter, which are no references to them.
+        if (symbol is IParameterSymbol)
+            throw new McpException($"{symbol.Name} is a parameter, which the calls of {symbol.ContainingSymbol.ToDisplayString()} pass: remove it with change_signature, which updates them.");
+        if (symbol is ITypeParameterSymbol)
+            throw new McpException($"{symbol.Name} is a type parameter, which the uses of {symbol.ContainingSymbol.ToDisplayString()} name: edit its declaration and uses instead.");
+
+        var declarations = await Task.WhenAll(SymbolTree.DeclarationsOf(symbol).Select(reference => reference.GetSyntaxAsync(cancellationToken)));
         if (declarations.Length == 0)
             throw new McpException($"{symbol.ToDisplayString()} is not declared in source.");
 
@@ -150,8 +156,8 @@ internal static class SymbolEdits
     /// <summary>The declarations of a symbol outside the output of source generators, which cannot be edited.</summary>
     private static List<SyntaxReference> EditableDeclarations(Solution solution, ISymbol symbol)
     {
-        var declarations = symbol.DeclaringSyntaxReferences.Where(reference => solution.GetDocument(reference.SyntaxTree) is { } document and not SourceGeneratedDocument).ToList();
-        return declarations.Count > 0 || symbol.DeclaringSyntaxReferences.IsEmpty ? declarations
+        var declarations = SymbolTree.DeclarationsOf(symbol).Where(reference => solution.GetDocument(reference.SyntaxTree) is { } document and not SourceGeneratedDocument).ToList();
+        return declarations.Count > 0 || !SymbolTree.DeclarationsOf(symbol).Any() ? declarations
             : throw new McpException($"{symbol.ToDisplayString()} is declared only in the output of a source generator, which cannot be edited.");
     }
 

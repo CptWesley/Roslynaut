@@ -115,7 +115,8 @@ public class ProcessTests : EndToEndTest
     }
 
     // A dump with the heap reads as the process does. It leaves out the code the JIT compiled, which maps a frame to its IL offset, so frames
-    // whose start is not near the stack have no source line; a full dump has them.
+    // whose start is not near the stack have no source line; a full dump has them. That code also says where a frame keeps references, so
+    // the stack roots of the shapes, the only roots they have, are there only in some dumps.
     [Test]
     public async Task Dump_WithTheHeap_HasTheThreadsObjectsAndRoots()
     {
@@ -136,7 +137,7 @@ public class ProcessTests : EndToEndTest
             new ProcessInspection.TypeStats("Shapes.Square", 1, 32),
         ]);
         square.Fields.Select(field => field.Value).Should().Equal("4", "4");
-        roots.Should().NotBeEmpty().And.OnlyContain(root => root.Chain.Last() == $"Shapes.Square @{square.Address}");
+        roots.Should().OnlyContain(root => root.Kind == "Stack" && root.Chain.Last() == $"Shapes.Square @{square.Address}");
     }
 
     // A minidump has the threads' stacks but not the heap.

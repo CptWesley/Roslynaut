@@ -52,13 +52,8 @@ public sealed class CodeMetricsTool(WorkspaceService workspace, ResultCache cach
         // The declarations that count: a partial type, method or property can have some in generated code.
         bool Counts(SyntaxReference reference) => includeGenerated || WorkspaceService.IsWrittenCode(solution, reference.SyntaxTree);
 
-        // The declarations with the code: those of a partial type, but only the implementation of a partial method or property.
-        IEnumerable<SyntaxReference> CodeOf(ISymbol symbol) => (symbol switch
-        {
-            IMethodSymbol { PartialImplementationPart: { } implementation } => implementation.DeclaringSyntaxReferences,
-            IPropertySymbol { PartialImplementationPart: { } implementation } => implementation.DeclaringSyntaxReferences,
-            _ => symbol.DeclaringSyntaxReferences,
-        }).Where(Counts);
+        // The declarations with the code: those of a partial type, but only the implementation of a partial member, its last part.
+        IEnumerable<SyntaxReference> CodeOf(ISymbol symbol) => SymbolTree.PartsOf(symbol).Last().DeclaringSyntaxReferences.Where(Counts);
 
         var members = new Dictionary<ISymbol, Metrics>(SymbolEqualityComparer.Default);
         foreach (var member in symbols.Where(symbol => symbol is IMethodSymbol or IPropertySymbol or IEventSymbol).Distinct(SymbolEqualityComparer.Default))

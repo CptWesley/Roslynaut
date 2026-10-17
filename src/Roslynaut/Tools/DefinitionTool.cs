@@ -35,7 +35,7 @@ public sealed class DefinitionTool(WorkspaceService workspace, AssemblyLoader as
         var definitions = new List<Definition>();
         foreach (var target in symbols)
         {
-            var locations = target.Locations.Where(location => location.IsInSource).Select(SourceLocation.From).ToList();
+            var locations = SymbolTree.PartsOf(target).SelectMany(part => part.Locations).Where(location => location.IsInSource).Select(SourceLocation.From).ToList();
             var assemblyPath = locations.Count == 0 && target.ContainingAssembly is { } assembly ? await AssemblyLoader.FindFileAsync(solution, assembly, cancellationToken) : null;
             List<SymbolSourceTool.SymbolSource> sources = [];
             if (assemblyPath is not null)

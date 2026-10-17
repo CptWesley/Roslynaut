@@ -127,6 +127,31 @@ public class PackageTests : EndToEndTest
         direct.Paths.Should().Equal(new DependencyPath("Shapes.App.csproj", "net10.0", $"{Greetings} 1.0.0"));
     }
 
+    // Base is a direct dependency too, so two chains lead to it; maxPaths keeps the first.
+    [Test]
+    public async Task PackageWhy_OfAPackageReachedTwice_UpToMaxPaths()
+    {
+        var project = Sample.NewProject("TwoChains", ("TwoChains.csproj", $$"""
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <TargetFramework>net10.0</TargetFramework>
+              </PropertyGroup>
+              <ItemGroup>
+                <PackageReference Include="{{Greetings}}" Version="1.0.0" />
+                <PackageReference Include="{{Base}}" Version="1.0.0" />
+              </ItemGroup>
+            </Project>
+            """));
+        await Sample.DotnetAsync("restore", project);
+
+        var all = await Server.CallAsync<PackageWhy>("package_why", new() { ["projectPath"] = project, ["id"] = Base });
+        var first = await Server.CallAsync<PackageWhy>("package_why", new() { ["projectPath"] = project, ["id"] = Base, ["maxPaths"] = 1 });
+
+        DependencyPath[] chains = [new("TwoChains.csproj", "net10.0", $"{Base} 1.0.0"), new("TwoChains.csproj", "net10.0", $"{Greetings} 1.0.0 > {Base} 1.0.0")];
+        all.Should().BeEquivalentTo(new PackageWhy([], chains, false), options => options.WithStrictOrdering());
+        first.Should().BeEquivalentTo(new PackageWhy([], chains[..1], true));
+    }
+
     [Test]
     public async Task PackageLicenses_OfEveryPackageResolved()
     {

@@ -19,7 +19,8 @@ internal static class ToolDefaults
     public const string Column = "1-based column number of the symbol.";
     public const string SymbolPath = "Symbol path: a dotted name, optionally partially qualified, with a parameter list to pick an overload, "
         + "e.g. 'Roslynaut.Tools', 'WorkspaceService', 'WorkspaceService.GetAsync(string)' or 'WorkspaceService.GetAsync.path'; "
-        + "a constructor is 'WorkspaceService..ctor' or 'WorkspaceService.WorkspaceService'. A result's Container plus '.' plus its Name is a valid path.";
+        + "a constructor is 'WorkspaceService..ctor' or 'WorkspaceService.WorkspaceService', an indexer 'Type.this[]' or 'Type.this[int]'. "
+        + "A result's Container plus '.' plus its Name is a valid path.";
     public const string Target = "The symbol, by symbol path; or leave this out and point at it with filePath, line and column. " + SymbolPath;
     public const string TargetFilePath = "With line and column, instead of a symbol path: the C# file that contains the symbol.";
     public const string Page ="0-based page number; hasMore in the result tells whether a next page exists.";
@@ -46,8 +47,20 @@ public sealed record SymbolEntry(string Name, string Kind, string Signature, str
         symbol.Name,
         KindOf(symbol),
         symbol.ToDisplayString(Format),
-        symbol.ContainingSymbol is { } container and not INamespaceSymbol { IsGlobalNamespace: true } ? container.ToDisplayString() : null,
+        symbol.ContainingSymbol is { } container and not INamespaceSymbol { IsGlobalNamespace: true } ? PathOf(container) : null,
         (location ?? symbol.Locations.FirstOrDefault(l => l.IsInSource)) is { } source ? SourceLocation.From(source) : null);
+
+    /// <summary>
+    /// A container as a symbol path names it, so that the path plus a name is one: a lambda by the member it is in, a local function within
+    /// its member, and top-level statements as Program.&lt;Main&gt;$.
+    /// </summary>
+    private static string PathOf(ISymbol container) => container switch
+    {
+        IMethodSymbol { MethodKind: MethodKind.AnonymousFunction } lambda => PathOf(lambda.ContainingSymbol),
+        IMethodSymbol { MethodKind: MethodKind.LocalFunction } function => $"{PathOf(function.ContainingSymbol)}.{function.ToDisplayString()}",
+        IMethodSymbol { Name: WellKnownMemberNames.TopLevelStatementsEntryPointMethodName } main => $"{main.ContainingType.ToDisplayString()}.{main.Name}",
+        _ => container.ToDisplayString(),
+    };
 
     public static string KindOf(ISymbol symbol) => symbol is INamedTypeSymbol type ? type.TypeKind.ToString() : symbol.Kind.ToString();
 }

@@ -52,7 +52,7 @@ public sealed class SymbolSourceTool(WorkspaceService workspace, AssemblyLoader 
         var sources = new List<SymbolSource>();
         foreach (var symbol in symbols)
         {
-            foreach (var reference in symbol.DeclaringSyntaxReferences)
+            foreach (var reference in SymbolTree.DeclarationsOf(symbol))
             {
                 var node = await reference.GetSyntaxAsync(cancellationToken);
 

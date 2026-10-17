@@ -37,6 +37,8 @@ public sealed class RenameSymbolTool(WorkspaceService workspace) : IMcpTool
             throw new McpException($"The symbol path matches {symbols.Count} symbols; pick one by adding a parameter list, or by position.");
         if (!symbols[0].Locations.Any(location => location.IsInSource))
             throw new McpException($"{symbols[0].ToDisplayString()} is not declared in source, so it cannot be renamed.");
+        // @ only escapes a name, such as @class for a keyword, which the rename does where the name needs it.
+        newName = newName.StartsWith('@') ? newName[1..] : newName;
         if (!SyntaxFacts.IsValidIdentifier(newName))
             throw new McpException($"'{newName}' is not a valid C# identifier.");
 
