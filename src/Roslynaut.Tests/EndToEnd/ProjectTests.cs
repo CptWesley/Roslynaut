@@ -163,6 +163,16 @@ public class ProjectTests : EndToEndTest
         (await NameAsync()).Should().Be(before);
     }
 
+    // Else each project would load with its first framework, as if none was asked for.
+    [Test]
+    public async Task WorkspaceOptions_RefuseAFrameworkNoProjectTargets()
+    {
+        (await Server.CallFailingAsync("workspace_options", new() { ["projectPath"] = Sample.TargetsProject, ["targetFramework"] = "net48" }))
+            .Should().Be("An error occurred invoking 'workspace_options': No project targets net48; they target net10.0, netstandard2.0.");
+        (await Server.CallFailingAsync("workspace_options", new() { ["projectPath"] = Sample.Solution, ["targetFramework"] = "netstandard2.0" }))
+            .Should().Be("An error occurred invoking 'workspace_options': No project targets netstandard2.0; they target net10.0.");
+    }
+
     [Test]
     public async Task NuGetConfig_OfTheSample()
     {

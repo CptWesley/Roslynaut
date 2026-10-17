@@ -296,18 +296,20 @@ public sealed class WorkspaceService
 
             var loaded = Load(path, _settings);
             var previous = _watchers;
-            _watchers = [.. GetRoots(loaded.Solution).Select(Watch)];
+            var roots = GetRoots(loaded.Solution);
+            _watchers = [.. roots.Select(root => Watch(root)), .. BuildFilesOutside(loaded, roots).Select(file => Watch(Path.GetDirectoryName(file)!, Path.GetFileName(file)))];
             foreach (var watcher in previous)
                 watcher.Dispose();
 
             return _loaded = loaded;
         }
 
-        private FileSystemWatcher Watch(string root)
+        /// <summary>Watches a directory with its subdirectories, or one file in it.</summary>
+        private FileSystemWatcher Watch(string root, string? file = null)
         {
-            var watcher = new FileSystemWatcher(root)
+            var watcher = new FileSystemWatcher(root, file ?? "*")
             {
-                IncludeSubdirectories = true,
+                IncludeSubdirectories = file is null,
                 InternalBufferSize = 64 * 1024,
                 NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.LastWrite,
             };
@@ -395,6 +397,18 @@ public sealed class WorkspaceService
             return [.. directories.Where(directory => !directories.Any(other => IsUnder(directory, other)))];
         }
 
+        /// <summary>
+        /// The build files the projects read from outside the watched directories, usually above them: Directory.Build.props and .targets,
+        /// Directory.Packages.props, and analyzer configuration such as a repository's .editorconfig.
+        /// ponytail: only those that exist when the workspace loads; one created later above the projects needs another reload to count.
+        /// </summary>
+        private static IEnumerable<string> BuildFilesOutside(LoadedWorkspace loaded, string[] roots) =>
+            loaded.Results.SelectMany(result => new[] { "DirectoryBuildPropsPath", "DirectoryBuildTargetsPath", "DirectoryPackagesPropsPath" }.Select(result.GetProperty))
+                .Concat(loaded.Solution.Projects.SelectMany(project => project.AnalyzerConfigDocuments.Select(document => document.FilePath)))
+                .OfType<string>()
+                .Where(file => file.Length > 0 && File.Exists(file) && !roots.Any(root => IsUnder(file, root)))
+                .Distinct(StringComparer.OrdinalIgnoreCase);
+
         private static IEnumerable<string> Enumerate(string directory) =>
             new FileSystemEnumerable<string>(directory, (ref FileSystemEntry entry) => entry.ToFullPath(), new() { RecurseSubdirectories = true, IgnoreInaccessible = true })
             {
@@ -459,7 +473,8 @@ public sealed class WorkspaceService
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var results = new List<IAnalyzerResult>();
         var errors = new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase);
-        var pending = (isSolution ? manager.Projects.Keys : [path]).Where(seen.Add).ToList();
+        // A .slnx gives paths as written, such as dir/../Lib/Lib.csproj, which a build of it does not report results for.
+        var pending = (isSolution ? manager.Projects.Keys.Select(Path.GetFullPath) : [path]).Where(seen.Add).ToList();
         while (pending.Count > 0)
         {
             var built = pending.AsParallel()

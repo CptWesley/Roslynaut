@@ -108,7 +108,7 @@ internal static class SymbolTree
     /// <summary>Excludes compiler-generated symbols and property/event accessors.</summary>
     private static bool IsDeclared(ISymbol symbol) => !symbol.IsImplicitlyDeclared && symbol is not IMethodSymbol { AssociatedSymbol: not null };
 
-    /// <summary>Splits on dots outside parameter and type argument lists.</summary>
+    /// <summary>Splits on dots outside parameter and type argument lists; a constructor's name keeps its dot, as in "Point..ctor(int)".</summary>
     private static List<string> Split(string path)
     {
         var segments = new List<string>();
@@ -116,7 +116,7 @@ internal static class SymbolTree
         for (var i = 0; i < path.Length; i++)
         {
             depth += path[i] switch { '(' or '<' or '[' => 1, ')' or '>' or ']' => -1, _ => 0 };
-            if (path[i] == '.' && depth == 0)
+            if (path[i] == '.' && depth == 0 && i > start)
             {
                 segments.Add(path[start..i].Trim());
                 start = i + 1;
@@ -137,13 +137,17 @@ internal static class SymbolTree
         parameterOptions: SymbolDisplayParameterOptions.IncludeType | SymbolDisplayParameterOptions.IncludeParamsRefOut,
         miscellaneousOptions: SymbolDisplayMiscellaneousOptions.UseSpecialTypes | SymbolDisplayMiscellaneousOptions.IncludeNullableReferenceTypeModifier);
 
-    /// <summary>Whether a symbol has a segment's name, and its parameter or type argument list if any, with types qualified fully or not at all.</summary>
+    /// <summary>
+    /// Whether a symbol has a segment's name, and its parameter or type argument list if any, with types qualified fully or not at all.
+    /// A constructor goes by its metadata name, as results give it (.ctor), or by its type's, as code writes it.
+    /// </summary>
     private static bool Matches(ISymbol symbol, string segment)
     {
         var name = NameOf(segment);
-        return symbol.Name.Equals(name, StringComparison.OrdinalIgnoreCase)
-            && (name.Length == segment.Length || new[] { symbol.ToDisplayString(), symbol.ToDisplayString(ShortFormat) }
-                .Any(display => Compact(display).EndsWith(Compact(segment), StringComparison.OrdinalIgnoreCase)));
+        var named = symbol.Name.Equals(name, StringComparison.OrdinalIgnoreCase)
+            || symbol is IMethodSymbol { MethodKind: MethodKind.Constructor or MethodKind.StaticConstructor } && symbol.ContainingType.Name.Equals(name, StringComparison.OrdinalIgnoreCase);
+        return named && (name.Length == segment.Length || new[] { symbol.ToDisplayString(), symbol.ToDisplayString(ShortFormat) }
+            .Any(display => Compact(display).EndsWith(Compact(segment[name.Length..]), StringComparison.OrdinalIgnoreCase)));
     }
 
     private static string Compact(string text) => string.Concat(text.Where(c => !char.IsWhiteSpace(c)));

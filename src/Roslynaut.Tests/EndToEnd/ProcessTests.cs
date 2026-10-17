@@ -171,6 +171,16 @@ public class ProcessTests : EndToEndTest
     }
 
     [Test]
+    public async Task ProcessTools_TakeTheirLimits()
+    {
+        var threads = await Server.CallAsync<List<ProcessInspection.ThreadEntry>>("process_threads", Process(("maxFrames", 1)));
+        var heap = await Server.CallAsync<ProcessInspection.HeapSummary>("process_heap", Process(("type", @"^Shapes\."), ("top", 1)));
+
+        threads.Should().NotBeEmpty().And.OnlyContain(thread => thread.Stack.Count <= 1).And.Contain(thread => thread.Stack.Count == 1);
+        heap.Types.Should().Equal(new ProcessInspection.TypeStats("Shapes.IShape[]", 1, 48));
+    }
+
+    [Test]
     public async Task ProcessCounters_IncludeCpuAndMemory()
     {
         var counters = await Server.CallAsync<List<ProcessTracing.CounterValue>>("process_counters", new() { ["processId"] = app.Id, ["seconds"] = 3 });

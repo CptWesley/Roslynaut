@@ -34,6 +34,23 @@ public class TestRunnerTests : EndToEndTest
         tests.Items.Should().BeEquivalentTo([Test("Square_Area_IsSideSquared"), Test("TotalArea_AddsTheAreas"), Test("Classify_UnitSquare_IsSmall")]);
     }
 
+    // Code uses a type through its members, here its constructor: these tests construct squares.
+    [Test]
+    public async Task FindTests_ThatUseAType_ThroughItsMembers()
+    {
+        var tests = await Server.CallAsync<PagedResult<FindTestsTool.TestEntry>>("find_tests", new() { ["projectPath"] = Sample.Solution, ["symbol"] = "Shapes.Square" });
+
+        tests.Items.Should().BeEquivalentTo([Test("Square_Area_IsSideSquared"), Test("TotalArea_AddsTheAreas"), Test("Classify_UnitSquare_IsSmall")]);
+    }
+
+    [Test]
+    public async Task RunTests_OfTheSolution_RunItsTestProject()
+    {
+        var run = await Server.CallAsync<RunTestsTool.TestRun>("run_tests", new() { ["projectPath"] = Sample.Solution, ["filter"] = "FullyQualifiedName~Shapes.Tests.ShapeTests.Square_Area_IsSideSquared" });
+
+        (run.Succeeded, run.Total, run.Passed, run.Failures.Count, run.BuildErrors.Count).Should().Be((true, 1, 1, 0, 0));
+    }
+
     [Test]
     public async Task RunTests_All_ReportsTheFailure()
     {

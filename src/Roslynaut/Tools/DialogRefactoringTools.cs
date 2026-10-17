@@ -6,6 +6,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CodeActions;
 using Microsoft.CodeAnalysis.CodeRefactorings;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
@@ -139,6 +140,15 @@ internal static class DialogRefactorings
         var location = symbol.Locations.FirstOrDefault(location => location.IsInSource)
             ?? throw new McpException($"{symbol.ToDisplayString()} is not declared in source.");
         var id = solution.GetDocumentId(location.SourceTree) ?? throw new McpException($"{symbol.ToDisplayString()} is not in the loaded solution.");
+
+        // Roslyn moves a type out of a namespace declaration that has other members into a namespace block beside it, which next to a
+        // file-scoped namespace does not compile.
+        if (symbol is INamedTypeSymbol && (await location.SourceTree!.GetRootAsync(cancellationToken)).FindNode(location.SourceSpan)
+            .FirstAncestorOrSelf<MemberDeclarationSyntax>()?.Parent is FileScopedNamespaceDeclarationSyntax { Members.Count: > 1 })
+        {
+            throw new McpException($"{symbol.ToDisplayString()} shares its file-scoped namespace with other declarations; move it to a file of its own "
+                + $"first, with the code action 'Move type to {symbol.Name}.cs'.");
+        }
 
         // Roslyn removes the usings it adds that the code does not need, as the compiler reports them; it only does when it parses documentation
         // comments with their diagnostics, since crefs can need usings too. So move it in a copy parsed so, and take over the text it changes.

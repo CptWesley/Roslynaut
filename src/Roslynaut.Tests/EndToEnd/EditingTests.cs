@@ -516,6 +516,75 @@ public class EditingTests : EndToEndTest
         Read(file).Should().Be(Widget.Replace("\n\n    public int Faster() => Speed + 1;", "").ReplaceLineEndings("\n"));
     }
 
+    // Nothing calls these members, but overrides, explicit implementations and the types that implement abstract or interface members need them.
+    // An override of a virtual member is not needed: the base member takes its place.
+    [Test]
+    public async Task SafeDeleteSymbol_KeepsWhatOverridesAndImplementationsNeed()
+    {
+        const string animals = """
+            namespace Edits;
+
+            public abstract class Animal
+            {
+                public abstract string Sound();
+
+                public virtual string Name() => "animal";
+            }
+
+            public class Dog : Animal
+            {
+                public override string Sound() => "Woof";
+
+                public override string Name() => "dog";
+            }
+
+            public interface IWalker
+            {
+                void Walk();
+            }
+
+            public class Cat : IWalker
+            {
+                public void Walk() { }
+            }
+
+            public class Robot : IWalker
+            {
+                void IWalker.Walk() { }
+            }
+            """;
+        var project = Sample.NewProject("SafeDeleteOverrides", ("Animals.cs", animals));
+        var file = FileOf(project, "Animals.cs");
+        async Task<SafeDeleteSymbolTool.SafeDeleteResult> DeleteAsync(string symbol) =>
+            await Server.CallAsync<SafeDeleteSymbolTool.SafeDeleteResult>("safe_delete_symbol", new() { ["projectPath"] = project, ["symbol"] = symbol });
+
+        (await DeleteAsync("Animal.Sound")).Should().BeEquivalentTo(new SafeDeleteSymbolTool.SafeDeleteResult(false, [], [Sample.Location(file, "Sound() => \"Woof\"")]));
+        (await DeleteAsync("Dog.Sound")).Should().BeEquivalentTo(new SafeDeleteSymbolTool.SafeDeleteResult(false, [], [Sample.Location(file, "Sound();")]));
+        (await DeleteAsync("Cat.Walk")).Should().BeEquivalentTo(new SafeDeleteSymbolTool.SafeDeleteResult(false, [], [Sample.Location(file, "Walk();")]));
+        (await DeleteAsync("IWalker.Walk")).Should().BeEquivalentTo(new SafeDeleteSymbolTool.SafeDeleteResult(false, [], [Sample.Location(file, "Walk() { }", 2)]));
+        Read(file).Should().Be(animals.ReplaceLineEndings("\n"));
+
+        (await DeleteAsync("Dog.Name")).Should().BeEquivalentTo(new SafeDeleteSymbolTool.SafeDeleteResult(true, [file], []));
+        Read(file).Should().Be(animals.Replace("\n\n    public override string Name() => \"dog\";", "").ReplaceLineEndings("\n"));
+    }
+
+    // A solution in a folder of its own, beside its projects; the library's interface method is renamed with its implementation and their uses.
+    [Test]
+    public async Task RenameSymbol_OfAnInterfaceMember_AcrossTheProjectsOfASolution()
+    {
+        var calc = Sample.Write("edits/RenameLib/Calc.cs", "namespace Lib;\n\npublic interface ICalc\n{\n    int Add(int a, int b);\n}\n\npublic class Calc : ICalc\n{\n    public int Add(int a, int b) => a + b;\n}\n");
+        Sample.Write("edits/RenameLib/RenameLib.csproj", File.ReadAllText(Sample.ProblemsProject));
+        var use = Sample.Write("edits/RenameUse/Use.cs", "namespace Use;\n\npublic static class Sums\n{\n    public static int Run(Lib.ICalc calc) => calc.Add(1, 2) + new Lib.Calc().Add(3, 4);\n}\n");
+        Sample.Write("edits/RenameUse/RenameUse.csproj", File.ReadAllText(Sample.ProblemsProject).Replace("</Project>", "  <ItemGroup>\n    <ProjectReference Include=\"..\\RenameLib\\RenameLib.csproj\" />\n  </ItemGroup>\n</Project>"));
+        var solution = Sample.Write("edits/RenameSolution/Rename.slnx", "<Solution>\n  <Project Path=\"../RenameLib/RenameLib.csproj\" />\n  <Project Path=\"../RenameUse/RenameUse.csproj\" />\n</Solution>\n");
+
+        var result = await Server.CallAsync<RenameSymbolTool.RenameResult>("rename_symbol", new() { ["projectPath"] = solution, ["symbol"] = "Lib.ICalc.Add", ["newName"] = "Plus" });
+
+        result.ChangedFiles.Should().BeEquivalentTo(calc, use);
+        Read(calc).Should().Be("namespace Lib;\n\npublic interface ICalc\n{\n    int Plus(int a, int b);\n}\n\npublic class Calc : ICalc\n{\n    public int Plus(int a, int b) => a + b;\n}\n");
+        Read(use).Should().Be("namespace Use;\n\npublic static class Sums\n{\n    public static int Run(Lib.ICalc calc) => calc.Plus(1, 2) + new Lib.Calc().Plus(3, 4);\n}\n");
+    }
+
     [Test]
     public async Task ExtractInterface_IntoAFileOfItsOwn()
     {
@@ -625,6 +694,18 @@ public class EditingTests : EndToEndTest
         order.Files.Should().BeEquivalentTo(FileOf(cref, "Order.cs"), FileOf(cref, "Shop.cs"));
         Read(FileOf(cref, "Order.cs")).Should().Be("using Edits;\n\nnamespace Sales;\n\n/// <summary>Made by <see cref=\"Shop\"/>.</summary>\npublic class Order\n{\n}\n");
         Read(FileOf(cref, "Shop.cs")).Should().Be("using Sales;\n\nnamespace Edits;\n\npublic static class Shop\n{\n    public static Order Create() => new();\n}\n");
+    }
+
+    // Roslyn would put Line in a namespace block beside the file-scoped namespace, which does not compile.
+    [Test]
+    public async Task MoveToNamespace_OfATypeBesideOthersInAFileScopedNamespace_ChangesNothing()
+    {
+        const string types = "namespace Edits;\n\npublic class Order\n{\n}\n\npublic class Line\n{\n    public Order? Order { get; set; }\n}\n";
+        var project = Sample.NewProject("MoveToNamespaceShared", ("Types.cs", types));
+
+        (await Server.CallFailingAsync("move_to_namespace", new() { ["projectPath"] = project, ["symbol"] = "Edits.Line", ["targetNamespace"] = "Edits.Lines" })).Should().Be(
+            "An error occurred invoking 'move_to_namespace': Edits.Line shares its file-scoped namespace with other declarations; move it to a file of its own first, with the code action 'Move type to Line.cs'.");
+        Read(FileOf(project, "Types.cs")).Should().Be(types);
     }
 
     // The build output is the earlier version; then a method is renamed in source.

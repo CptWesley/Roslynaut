@@ -22,7 +22,7 @@ public sealed class TypeHierarchyTool(WorkspaceService workspace, ResultCache ca
 
     [McpServerTool(Name = "type_hierarchy", ReadOnly = true)]
     [Description("Lists the supertypes (base types, then all implemented interfaces) or the subtypes (all derived types, and for an interface its "
-        + "derived interfaces and implementing types) of a type. For a variable, field or property, of its type. Paged.")]
+        + "derived interfaces and implementing types) of a type. For a variable, field or property, of its type; for a constructor, of the type it constructs. Paged.")]
     private async Task<PagedResult<SymbolEntry>> GetHierarchyAsync(
         [Description(ToolDefaults.ProjectPath)] string projectPath,
         [Description("Supertypes or Subtypes.")] HierarchyDirection direction,
@@ -43,7 +43,8 @@ public sealed class TypeHierarchyTool(WorkspaceService workspace, ResultCache ca
         Solution solution, IReadOnlyList<ISymbol> symbols, HierarchyDirection direction, CancellationToken cancellationToken)
     {
         var found = new List<INamedTypeSymbol>();
-        foreach (var type in symbols.Select(SymbolTree.TypeOrSelf).OfType<INamedTypeSymbol>())
+        // A constructor stands for its type, as at "new Circle(1)".
+        foreach (var type in symbols.Select(symbol => symbol is IMethodSymbol { MethodKind: MethodKind.Constructor } constructor ? constructor.ContainingType : SymbolTree.TypeOrSelf(symbol)).OfType<INamedTypeSymbol>())
         {
             if (direction == HierarchyDirection.Supertypes)
             {

@@ -288,6 +288,61 @@ public class NavigationTests : EndToEndTest
         ]);
     }
 
+    // Results name a constructor .ctor, so a result's Container plus '.' plus its Name finds it again; code names it after its type.
+    [Test]
+    public async Task SymbolPaths_ReachConstructors()
+    {
+        async Task<IEnumerable<string>> CallersAsync(string symbol) =>
+            (await Server.CallAsync<PagedResult<CallersTool.Caller>>("callers", new() { ["projectPath"] = Sample.Solution, ["symbol"] = symbol })).Items.Select(caller => caller.Symbol.Signature);
+        var callees = await Server.CallAsync<PagedResult<CallersTool.Caller>>("callees", new() { ["projectPath"] = Sample.Solution, ["symbol"] = "Registry.Factories" });
+        var callee = callees.Items.Select(callee => callee.Symbol).Single(callee => callee.Container == "Shapes.Circle");
+
+        (callee.Name, callee.Signature).Should().Be((".ctor", "Shapes.Circle.Circle(double)"));
+        var callers = await CallersAsync($"{callee.Container}.{callee.Name}");
+        callers.Should().BeEquivalentTo("Shapes.Internal.Registry.Factories", "<top-level-statements-entry-point>", "Shapes.Tests.ShapeTests.Circle_Area_IsPiTimesRadiusSquared()");
+        (await CallersAsync("Circle.Circle(double)")).Should().BeEquivalentTo(callers);
+        (await CallersAsync("Shapes.Circle..ctor(Double)")).Should().BeEquivalentTo(callers);
+    }
+
+    // At new Circle(1) the symbol is the constructor, which stands for the type it constructs.
+    [Test]
+    public async Task AConstructorCall_LeadsToTheHierarchyAndDefinitionOfItsType()
+    {
+        var (line, column) = Sample.Find(Sample.ProgramFile, "Circle(1)");
+        Dictionary<string, object?> At(string name, object value) => new()
+        {
+            ["projectPath"] = Sample.Solution, ["filePath"] = Sample.ProgramFile, ["line"] = line, ["column"] = column, [name] = value,
+        };
+
+        var supertypes = await Server.CallAsync<PagedResult<SymbolEntry>>("type_hierarchy", At("direction", "Supertypes"));
+        var type = await Server.CallAsync<List<DefinitionTool.Definition>>("definition", At("type", true));
+
+        supertypes.Items.Select(supertype => supertype.Signature).Should().Equal("Shapes.Shape", "object", "Shapes.IShape");
+        type.Should().ContainSingle().Which.Locations.Should().Equal(Sample.Location(Sample.CircleFile, "Circle("));
+    }
+
+    [Test]
+    public async Task Implementations_OfAVirtualMember_AreItsOverrides()
+    {
+        var implementations = await Server.CallAsync<PagedResult<SymbolEntry>>("implementations", new() { ["projectPath"] = Sample.Solution, ["symbol"] = "Shape.Name" });
+
+        implementations.Items.Should().Equal(Entry("Name", "Property", "Shapes.Square.Name", "Shapes.Square", Sample.SquareFile, "Name =>"));
+    }
+
+    [Test]
+    public async Task References_ByPosition_OfAProperty()
+    {
+        var (line, column) = Sample.Find(Sample.CircleFile, "Radius *");
+        var references = await Server.CallAsync<PagedResult<ReferencesTool.ReferenceEntry>>("references", new()
+        {
+            ["projectPath"] = Sample.Solution, ["filePath"] = Sample.CircleFile, ["line"] = line, ["column"] = column,
+        });
+
+        references.Items.Should().Equal(
+            new ReferencesTool.ReferenceEntry(Sample.Location(Sample.CircleFile, "Radius *"), "Shapes.Circle.Area()", "Read"),
+            new ReferencesTool.ReferenceEntry(Sample.Location(Sample.CircleFile, "Radius;"), "Shapes.Circle.Area()", "Read"));
+    }
+
     [Test]
     public async Task DocumentHighlight_ListsTheDeclarationAndEachUse_InOrder()
     {

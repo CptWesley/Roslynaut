@@ -51,10 +51,18 @@ internal static class SymbolEdits
         if (declarations.Length == 0)
             throw new McpException($"{symbol.ToDisplayString()} is not declared in source.");
 
+        // Overrides and explicit implementations of it, and the interface or abstract members it implements, need it as much as references do:
+        // without it, they do not compile.
+        var overrides = await SymbolFinder.FindOverridesAsync(symbol, solution, cancellationToken: cancellationToken);
+        var explicitImplementations = (await SymbolFinder.FindImplementationsAsync(symbol, solution, cancellationToken: cancellationToken))
+            .Where(implementation => ExplicitlyImplemented(implementation).Contains(symbol, SymbolEqualityComparer.Default));
+        var dependents = overrides.Concat(explicitImplementations).Concat(Implemented(symbol))
+            .Select(member => member.Locations.FirstOrDefault(location => location.IsInSource) ?? symbol.ContainingType.Locations.First(location => location.IsInSource));
         var references = (await SymbolFinder.FindReferencesAsync(symbol, solution, cancellationToken))
             .SelectMany(reference => reference.Locations)
             .Select(location => location.Location)
             .Where(location => !declarations.Any(declaration => declaration.SyntaxTree == location.SourceTree && declaration.FullSpan.Contains(location.SourceSpan)))
+            .Concat(dependents)
             .Select(SourceLocation.From)
             .ToList();
         if (references.Count > 0)
@@ -65,6 +73,32 @@ internal static class SymbolEdits
             (await editor.GetDocumentEditorAsync(solution.GetDocumentId(declaration.SyntaxTree)!, cancellationToken)).RemoveNode(declaration);
         return (editor.GetChangedSolution(), []);
     }
+
+    /// <summary>The abstract member a member overrides, and the interface members it implements.</summary>
+    private static IEnumerable<ISymbol> Implemented(ISymbol symbol)
+    {
+        if (symbol.ContainingType is not { } type || symbol is ITypeSymbol)
+            return [];
+
+        var overridden = symbol switch
+        {
+            IMethodSymbol method => method.OverriddenMethod,
+            IPropertySymbol property => property.OverriddenProperty,
+            IEventSymbol @event => @event.OverriddenEvent,
+            _ => (ISymbol?)null,
+        };
+        return type.AllInterfaces.SelectMany(face => face.GetMembers())
+            .Where(member => SymbolEqualityComparer.Default.Equals(type.FindImplementationForInterfaceMember(member), symbol))
+            .Concat(overridden is { IsAbstract: true } ? [overridden] : []);
+    }
+
+    private static IEnumerable<ISymbol> ExplicitlyImplemented(ISymbol symbol) => symbol switch
+    {
+        IMethodSymbol method => method.ExplicitInterfaceImplementations,
+        IPropertySymbol property => property.ExplicitInterfaceImplementations,
+        IEventSymbol @event => @event.ExplicitInterfaceImplementations,
+        _ => [],
+    };
 
     private static async Task<(Document Document, SyntaxNode Node)> DeclarationAsync(Solution solution, IReadOnlyList<ISymbol> symbols, CancellationToken cancellationToken)
     {

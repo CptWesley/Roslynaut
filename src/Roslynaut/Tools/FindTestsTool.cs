@@ -25,7 +25,7 @@ public sealed class FindTestsTool(WorkspaceService workspace, ResultCache cache)
     public Delegate Handler => FindTestsAsync;
 
     [McpServerTool(Name = "find_tests", ReadOnly = true)]
-    [Description("Finds NUnit, xUnit, MSTest and TUnit test methods: all of them, or those that use a symbol, directly or through up to 3 calls in between. "
+    [Description("Finds NUnit, xUnit, MSTest and TUnit test methods: all of them, or those that use a symbol (for a type, any of its members), directly or through up to 3 calls in between. "
         + "Each comes with its project and a Filter for run_tests. Paged.")]
     private async Task<PagedResult<TestEntry>> FindTestsAsync(
         [Description(ToolDefaults.ProjectPath)] string projectPath,
@@ -56,10 +56,11 @@ public sealed class FindTestsTool(WorkspaceService workspace, ResultCache cache)
         }
         else
         {
-            // Walk up the callers, breadth first, collecting the tests among them.
-            var seen = new HashSet<ISymbol>(symbols, SymbolEqualityComparer.Default);
-            tests.AddRange(symbols.OfType<IMethodSymbol>().Where(IsTest));
-            IReadOnlyList<ISymbol> frontier = symbols;
+            // Walk up the callers, breadth first, collecting the tests among them. A type has no callers of its own: code uses it through its
+            // members, constructors included.
+            IReadOnlyList<ISymbol> frontier = [.. symbols.SelectMany(symbol => symbol is INamedTypeSymbol type ? type.GetMembers().Where(member => member is not (ITypeSymbol or IMethodSymbol { AssociatedSymbol: not null })) : [symbol])];
+            var seen = new HashSet<ISymbol>(frontier, SymbolEqualityComparer.Default);
+            tests.AddRange(frontier.OfType<IMethodSymbol>().Where(IsTest));
             for (var depth = 0; depth < CallDepth && frontier.Count > 0; depth++)
             {
                 var next = new List<ISymbol>();

@@ -34,6 +34,39 @@ public class CodeInsightTests : EndToEndTest
             expression.Expression == "0.0" && expression.Type == "double" && expression.ConstantValue == "0");
     }
 
+    // An element of a collection expression converts to the element type of the array.
+    [Test]
+    public async Task ExpressionInfo_GivesTheTypeAnExpressionConvertsTo()
+    {
+        var expressions = await Server.CallAsync<List<ExpressionInfoTool.ExpressionInfo>>("expression_info", At(Sample.ProgramFile, "new Circle(1)"));
+
+        expressions.Should().BeEquivalentTo(
+        [
+            new ExpressionInfoTool.ExpressionInfo("new Circle(1)", "Shapes.Circle", "Shapes.IShape", "Implicit reference", null, "NotNull", "Shapes.Circle.Circle(double)", [], null),
+            new ExpressionInfoTool.ExpressionInfo("[new Circle(1), new Rectangle(2, 3), new Square(4)]", null, "Shapes.IShape[]", "Implicit conversion", null, "NotNull", null, [], null),
+        ], options => options.WithStrictOrdering());
+    }
+
+    // The documentation of a package's method comes from the XML file next to its assembly.
+    [Test]
+    public async Task SignatureHelp_OfAConstructor_AndOfAPackagesMethod()
+    {
+        var circle = await Server.CallAsync<List<SignatureHelpTool.Signature>>("signature_help", At(Sample.ProgramFile, "1), new Rectangle"));
+        var hello = await Server.CallAsync<List<SignatureHelpTool.Signature>>("signature_help", At(Sample.ProgramFile, "\"shapes\"));\nConsole.WriteLine(Greeter.Bye"));
+
+        circle.Should().BeEquivalentTo([new SignatureHelpTool.Signature("Shapes.Circle.Circle(double)", "A circle around the origin.", [new SignatureHelpTool.Parameter("radius", "double", null, false)], 0, true)]);
+        hello.Should().BeEquivalentTo([new SignatureHelpTool.Signature("Roslynaut.E2E.Greetings.Greeter.Hello(string)", "Says hello to someone.",
+            [new SignatureHelpTool.Parameter("name", "string", "Who to greet.", false)], 0, true)]);
+    }
+
+    [Test]
+    public async Task Completion_ListsTheMembersOfAPackagesType()
+    {
+        var members = await Server.CallAsync<PagedResult<CompletionTool.CompletionEntry>>("completion", At(Sample.ProgramFile, "Hello(\"shapes\")"));
+
+        members.Items.Select(item => (item.Text, item.Kind)).Should().BeEquivalentTo([("Bye", "Method"), ("Equals", "Method"), ("Hello", "Method"), ("ReferenceEquals", "Method")]);
+    }
+
     [Test]
     public async Task DataFlow_OfALoop_AsForExtractingAMethod()
     {
@@ -297,6 +330,21 @@ public class CodeInsightTests : EndToEndTest
         (await LinesAsync(true)).Should().Equal(Line("var total"), Line("total +="), Line("return total"));
     }
 
+    // $ matches at the end of each line of a file with CRLF line ends too; a line that matches twice comes once.
+    [Test]
+    public async Task SearchPattern_InAFileWithCrlfLineEnds_AndEachLineOnce()
+    {
+        var project = Sample.NewProject("SearchCrlf");
+        var file = Path.Combine(Path.GetDirectoryName(project)!, "Lists.cs");
+        File.WriteAllText(file, "using System;\n\nnamespace Edits;\n\npublic static class Lists\n{\n    public static int Parse(string text) => Int32.Parse(text);\n\n    public static int Twice(int x) => x * 2;\n}\n".ReplaceLineEndings("\r\n"));
+        async Task<List<SearchPatternTool.TextMatch>> SearchAsync(string pattern) =>
+            [.. (await Server.CallAsync<PagedResult<SearchPatternTool.TextMatch>>("search_pattern", new() { ["projectPath"] = project, ["pattern"] = pattern, ["scope"] = file })).Items];
+
+        (await SearchAsync(";$")).Select(match => match.Line).Should().Equal(1, 3, 7, 9);
+        (await SearchAsync("^}$")).Select(match => match.Line).Should().Equal(10);
+        (await SearchAsync("Parse")).Should().Equal(new SearchPatternTool.TextMatch(file, 7, "7:     public static int Parse(string text) => Int32.Parse(text);\n"));
+    }
+
     [Test]
     public async Task GeneratedSources_ListsTheRegexGeneratorsOutput()
     {
@@ -436,6 +484,45 @@ public class CodeInsightTests : EndToEndTest
         {
             ["projectPath"] = project, ["edits"] = new object[] { new { filePath = file, oldText = "balance", newText = "total" } },
         })).Should().Be($"An error occurred invoking 'preview_edit': oldText must occur exactly once in {file}: it occurs more than once.");
+    }
+
+    // Renaming a library's method breaks the app and the tests that call it; the projects that depend on the library are checked too.
+    [Test]
+    public async Task PreviewEdit_OfALibrary_GivesWhatBreaksInTheProjectsThatUseIt()
+    {
+        var before = File.ReadAllText(Sample.ShapeMathFile);
+        var preview = await Server.CallAsync<PreviewEditTool.Preview>("preview_edit", new()
+        {
+            ["projectPath"] = Sample.Solution,
+            ["edits"] = new object[] { new { filePath = Sample.ShapeMathFile, oldText = "static double TotalArea(", newText = "static double SumArea(" } },
+        });
+
+        const string message = "'ShapeMath' does not contain a definition for 'TotalArea'";
+        preview.Introduced.Should().BeEquivalentTo(
+        [
+            new DiagnosticsTool.DiagnosticEntry("CS0117", "Error", message, Sample.Location(Sample.ProgramFile, "TotalArea(shapes)")),
+            new DiagnosticsTool.DiagnosticEntry("CS0117", "Error", message, Sample.Location(Sample.TestsFile, "TotalArea([")),
+        ]);
+        preview.Resolved.Should().BeEmpty();
+        File.ReadAllText(Sample.ShapeMathFile).Should().Be(before);
+    }
+
+    // The project's .editorconfig sets the severities, as for the build; a change to it applies at once.
+    [Test]
+    public async Task Diagnostics_TakeTheirSeveritiesFromEditorConfig()
+    {
+        var project = Sample.NewProject("Severities", ("Code.cs", "namespace Edits;\n\npublic static class Code\n{\n    public static void Run()\n    {\n        int unused;\n    }\n}\n"));
+        var file = Path.Combine(Path.GetDirectoryName(project)!, "Code.cs");
+        async Task<IEnumerable<DiagnosticsTool.DiagnosticEntry>> DiagnoseAsync() =>
+            (await Server.CallAsync<PagedResult<DiagnosticsTool.DiagnosticEntry>>("diagnostics", new() { ["projectPath"] = project, ["analyzers"] = false })).Items;
+        DiagnosticsTool.DiagnosticEntry Unused(string severity) => new("CS0168", severity, "The variable 'unused' is declared but never used", Sample.Location(file, "unused"));
+        (await DiagnoseAsync()).Should().Equal(Unused("Warning"));
+
+        Sample.Write("edits/Severities/.editorconfig", "root = true\n\n[*.cs]\ndotnet_diagnostic.CS0168.severity = error\n");
+
+        await EventuallyAsync(async () => (await DiagnoseAsync()).SequenceEqual([Unused("Error")]), "the server should load the project with the .editorconfig");
+        var build = await Server.CallAsync<BuildTool.BuildResult>("build", new() { ["projectPath"] = project });
+        (build.Succeeded, build.Messages.Single().Severity).Should().Be((false, "Error"));
     }
 
     [Test]

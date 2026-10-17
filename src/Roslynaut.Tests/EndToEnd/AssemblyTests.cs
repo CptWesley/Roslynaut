@@ -45,6 +45,23 @@ public class AssemblyTests : EndToEndTest
             "Shapes.Rectangle Shapes.Rectangle::Scale(System.Double,System.Double)");
     }
 
+    // A name without parameters takes every overload; a property stands for its accessors; a type for its methods, its constructor included.
+    [Test]
+    public async Task Il_OfOverloads_OfAProperty_AndOfAType()
+    {
+        async Task<IEnumerable<string>> BuiltAsync(string name) =>
+            (await Server.CallAsync<PagedResult<MethodIL>>("assembly_il", new() { ["assemblyPath"] = Sample.ShapesAssembly, ["name"] = name })).Items.Select(method => method.Method);
+        async Task<IEnumerable<string>> CompiledAsync(string symbol) =>
+            (await Server.CallAsync<PagedResult<MethodIL>>("symbol_il", new() { ["projectPath"] = Sample.Solution, ["symbol"] = symbol })).Items.Select(method => method.Method);
+
+        (await BuiltAsync("Rectangle.Scale")).Should().Equal("Shapes.Rectangle Shapes.Rectangle::Scale(System.Double)", "Shapes.Rectangle Shapes.Rectangle::Scale(System.Double,System.Double)");
+        (await CompiledAsync("Rectangle.Scale(double)")).Should().Equal("Shapes.Rectangle Shapes.Rectangle::Scale(System.Double)");
+        (await BuiltAsync("Circle.Radius")).Should().Equal("System.Double Shapes.Circle::get_Radius()");
+        (await CompiledAsync("Shapes.Square")).Should().Equal("System.Void Shapes.Square::.ctor(System.Double)", "System.String Shapes.Square::get_Name()");
+        (await Server.CallFailingAsync("symbol_il", new() { ["projectPath"] = Sample.Solution, ["symbol"] = "ShapeMath.TotalArea.total" }))
+            .Should().Be("An error occurred invoking 'symbol_il': 'ShapeMath.TotalArea.total' has no IL: pick a type, method, property or event declared in the project.");
+    }
+
     // The build output is a debug build, which the JIT does not optimize; symbol_asm compiles a release build, which inlines the getters.
     [Test]
     public async Task Asm_OfTheBuildOutput_AndOfTheSource()
@@ -126,6 +143,18 @@ public class AssemblyTests : EndToEndTest
 
         evaluation.Should().Be(new EvaluateTool.Evaluation($"Square{Environment.NewLine}", "14", "System.Double", null));
         failure.Error.Should().Contain("System.FormatException").And.Contain("Unknown shape: triangle 1");
+    }
+
+    // The app's package comes along with its project, and code can await.
+    [Test]
+    public async Task Evaluate_UsesThePackagesOfTheProjects_AndAwaits()
+    {
+        var evaluation = await Server.CallAsync<EvaluateTool.Evaluation>("evaluate", new()
+        {
+            ["projectPath"] = Sample.Solution, ["code"] = "await System.Threading.Tasks.Task.Yield(); Roslynaut.E2E.Greetings.Greeter.Hello(\"you\")",
+        });
+
+        evaluation.Should().Be(new EvaluateTool.Evaluation("", "\"Hello, you!\"", "System.String", null));
     }
 
     [Test]

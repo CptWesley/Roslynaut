@@ -75,6 +75,36 @@ public class WorkspaceSyncTests : EndToEndTest
         await EventuallyAsync(async () => await SayAsync() == "    public static string Say() => \"HI\";", "the server should load the project again");
     }
 
+    // A project added to the solution file loads with it, though it is in no folder the server watched.
+    [Test]
+    public async Task ProjectsAddedToTheSolution_Load()
+    {
+        var first = Sample.NewProject("SolutionFirst", ("Order.cs", Order));
+        var solution = Sample.Write("edits/Growing/Growing.slnx", "<Solution>\n  <Project Path=\"../SolutionFirst/SolutionFirst.csproj\" />\n</Solution>\n");
+        (await TypesAsync(solution)).Should().Equal(("Edits.Order", Path.Combine(Path.GetDirectoryName(first)!, "Order.cs")));
+
+        var second = Sample.NewProject("SolutionSecond", ("Line.cs", "namespace Edits;\n\npublic class Line\n{\n}\n"));
+        File.WriteAllText(solution, File.ReadAllText(solution).Replace("</Solution>", "  <Project Path=\"../SolutionSecond/SolutionSecond.csproj\" />\n</Solution>"));
+
+        await SeesAsync(solution, ("Edits.Order", Path.Combine(Path.GetDirectoryName(first)!, "Order.cs")), ("Edits.Line", Path.Combine(Path.GetDirectoryName(second)!, "Line.cs")));
+    }
+
+    // Directory.Build.props usually sits above the project, outside the folders the server watches for code.
+    [Test]
+    public async Task DirectoryBuildPropsAboveTheProject_ReloadsTheProjectWhenItChanges()
+    {
+        var props = Sample.Write("edits/Above/Directory.Build.props", "<Project>\n  <PropertyGroup>\n    <DefineConstants>$(DefineConstants);SHOUT</DefineConstants>\n  </PropertyGroup>\n</Project>\n");
+        var project = Sample.Write("edits/Above/Inner/Inner.csproj", File.ReadAllText(Sample.ProblemsProject));
+        Sample.Write("edits/Above/Inner/Flag.cs", "namespace Edits;\n\npublic static class Flag\n{\n#if SHOUT\n    public static string Say() => \"HI\";\n#else\n    public static string Say() => \"hi\";\n#endif\n}\n");
+        async Task<string> SayAsync() =>
+            (await Server.CallAsync<List<SymbolSourceTool.SymbolSource>>("symbol_source", new() { ["projectPath"] = project, ["symbol"] = "Flag.Say" })).Single().Source;
+        (await SayAsync()).Should().Be("    public static string Say() => \"HI\";");
+
+        File.WriteAllText(props, File.ReadAllText(props).Replace(";SHOUT", ""));
+
+        await EventuallyAsync(async () => await SayAsync() == "    public static string Say() => \"hi\";", "the server should load the project again");
+    }
+
     // An editor that saves through a temporary file renames it over the original.
     [Test]
     public async Task FilesReplacedByARename_ShowTheirNewText()

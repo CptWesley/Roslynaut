@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Text;
 using System.Text.RegularExpressions;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.Text;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
 
@@ -13,7 +14,7 @@ public sealed class SearchPatternTool(WorkspaceService workspace, ResultCache ca
 
     [McpServerTool(Name = "search_pattern", ReadOnly = true)]
     [Description("Searches the text of the solution's C# files, including generated ones that are not on disk, with a regular expression; "
-        + "within a file, a project or a symbol's declaration if asked. Returns each match with its lines and context lines, numbered. Paged.")]
+        + "within a file, a project or a symbol's declaration if asked. Returns each match, once per line it starts on, with its lines and context lines, numbered. Paged.")]
     private async Task<PagedResult<TextMatch>> SearchPatternAsync(
         [Description(ToolDefaults.ProjectPath)] string projectPath,
         [Description("A .NET regular expression; ^ and $ match at line ends, and it can span lines, e.g. 'async void' or 'catch\\s*\\{\\s*\\}'.")] string pattern,
@@ -44,11 +45,20 @@ public sealed class SearchPatternTool(WorkspaceService workspace, ResultCache ca
         var matches = new List<TextMatch>();
         foreach (var (document, span) in await CodeScope.ResolveAsync(solution, scope, cancellationToken))
         {
-            var text = await document.GetTextAsync(cancellationToken);
-            var start = span?.Start ?? 0;
-            foreach (Match match in regex.Matches(text.ToString(span ?? new(0, text.Length))))
+            // ^ and $ only match at \n, so search the text with \n line ends, which has the same lines.
+            var original = await document.GetTextAsync(cancellationToken);
+            var content = original.ToString();
+            var text = content.Contains('\r') ? SourceText.From(content.Replace("\r\n", "\n")) : original;
+            int Position(int position) => text.Lines.GetPosition(original.Lines.GetLinePosition(position));
+            var searched = span is { } scoped ? TextSpan.FromBounds(Position(scoped.Start), Position(scoped.End)) : new(0, text.Length);
+            var start = searched.Start;
+            foreach (Match match in regex.Matches(text.ToString(searched)))
             {
                 var first = text.Lines.GetLineFromPosition(start + match.Index).LineNumber;
+
+                // Each line once, however often it matches.
+                if (matches is [.., var previous] && previous.Line == first + 1 && previous.FilePath == (document.FilePath ?? document.Name))
+                    continue;
                 var last = text.Lines.GetLineFromPosition(start + match.Index + Math.Max(match.Length - 1, 0)).LineNumber;
                 var lines = new StringBuilder();
                 for (var line = Math.Max(first - context, 0); line <= Math.Min(last + context, text.Lines.Count - 1); line++)

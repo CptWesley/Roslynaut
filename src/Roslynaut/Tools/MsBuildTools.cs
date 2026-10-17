@@ -128,8 +128,15 @@ public sealed class WorkspaceOptionsTool(WorkspaceService workspace) : IMcpTool
     private async Task<IEnumerable<LoadedProject>> ConfigureAsync(
         [Description(ToolDefaults.ProjectPath)] string projectPath,
         [Description("The target framework, such as net48 or net10.0, for the projects that have it; the others keep their first.")] string? targetFramework = null,
-        [Description("The configuration, such as Release.")] string? configuration = null) =>
-        Describe(await workspace.ConfigureAsync(projectPath, new(targetFramework, configuration)));
+        [Description("The configuration, such as Release.")] string? configuration = null)
+    {
+        // A framework no project has would load each with its first, as if none was asked for.
+        var frameworks = Describe(await workspace.GetAsync(projectPath)).SelectMany(project => project.TargetFrameworks).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (targetFramework is not null && !frameworks.Contains(targetFramework, StringComparer.OrdinalIgnoreCase))
+            throw new McpException($"No project targets {targetFramework}; they target {string.Join(", ", frameworks)}.");
+
+        return Describe(await workspace.ConfigureAsync(projectPath, new(targetFramework, configuration)));
+    }
 
     internal static IEnumerable<LoadedProject> Describe(LoadedWorkspace loaded) =>
         loaded.Results.Select(result => new LoadedProject(
