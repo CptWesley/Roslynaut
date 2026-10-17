@@ -568,6 +568,22 @@ public class EditingTests : EndToEndTest
         Read(file).Should().Be(animals.Replace("\n\n    public override string Name() => \"dog\";", "").ReplaceLineEndings("\n"));
     }
 
+    // Dot's primary constructor calls Shape's in its base list; and deleting Dot's would delete Dot, which declares it.
+    [Test]
+    public async Task SafeDeleteSymbol_OfConstructors_KeepsABaseOneAndRefusesAPrimaryOne()
+    {
+        const string shapes = "namespace Edits;\n\npublic class Shape\n{\n    public Shape(string name) { }\n}\n\npublic class Dot() : Shape(\"dot\");\n";
+        var project = Sample.NewProject("SafeDeleteConstructors", ("Shapes.cs", shapes));
+        var file = FileOf(project, "Shapes.cs");
+
+        var refused = await Server.CallAsync<SafeDeleteSymbolTool.SafeDeleteResult>("safe_delete_symbol", new() { ["projectPath"] = project, ["symbol"] = "Shape..ctor" });
+        var primary = await Server.CallFailingAsync("safe_delete_symbol", new() { ["projectPath"] = project, ["symbol"] = "Dot..ctor" });
+
+        refused.Should().BeEquivalentTo(new SafeDeleteSymbolTool.SafeDeleteResult(false, [], [Sample.Location(file, "Shape(\"dot\")")]));
+        primary.Should().Be("An error occurred invoking 'safe_delete_symbol': Edits.Dot.Dot() is the primary constructor of Edits.Dot: edit the type's parameter list instead.");
+        Read(file).Should().Be(shapes);
+    }
+
     // A solution in a folder of its own, beside its projects; the library's interface method is renamed with its implementation and their uses.
     [Test]
     public async Task RenameSymbol_OfAnInterfaceMember_AcrossTheProjectsOfASolution()

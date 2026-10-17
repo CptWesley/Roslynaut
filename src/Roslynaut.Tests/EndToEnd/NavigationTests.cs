@@ -304,6 +304,27 @@ public class NavigationTests : EndToEndTest
         (await CallersAsync("Shapes.Circle..ctor(Double)")).Should().BeEquivalentTo(callers);
     }
 
+    // Square's primary constructor calls Rectangle's in its base list: Roslyn's callers leave that call out, and its references put it in the namespace.
+    [Test]
+    public async Task Callers_AndReferences_OfABaseConstructor_IncludeTheBaseListOfADerivedPrimaryConstructor()
+    {
+        var callers = await Server.CallAsync<PagedResult<CallersTool.Caller>>("callers", new() { ["projectPath"] = Sample.Solution, ["symbol"] = "Shapes.Rectangle..ctor" });
+        var references = await Server.CallAsync<PagedResult<ReferencesTool.ReferenceEntry>>("references", new() { ["projectPath"] = Sample.Solution, ["symbol"] = "Rectangle.Rectangle" });
+        var (line, column) = Sample.Find(Sample.SquareFile, "Rectangle(side");
+        var highlights = await Server.CallAsync<List<ReferencesTool.ReferenceEntry>>("document_highlight", new()
+        {
+            ["projectPath"] = Sample.Solution, ["filePath"] = Sample.SquareFile, ["line"] = line, ["column"] = column,
+        });
+
+        var square = Entry(".ctor", "Method", "Shapes.Square.Square(double)", "Shapes.Square", Sample.SquareFile, "Square(");
+        var call = new ReferencesTool.ReferenceEntry(Sample.Location(Sample.SquareFile, "Rectangle(side"), "Shapes.Square.Square(double)", "Call");
+        callers.Items.Should().ContainEquivalentOf(new CallersTool.Caller(square, [call.Location]));
+        callers.Items.Select(caller => caller.Symbol.Signature).Should().BeEquivalentTo(
+            "Shapes.Square.Square(double)", "Shapes.Rectangle.Scale(double, double)", "<top-level-statements-entry-point>", "Shapes.Tests.ShapeTests.TotalArea_AddsTheAreas()");
+        references.Items.Should().ContainEquivalentOf(call).And.HaveCount(4);
+        highlights.Should().Equal(call);
+    }
+
     // At new Circle(1) the symbol is the constructor, which stands for the type it constructs.
     [Test]
     public async Task AConstructorCall_LeadsToTheHierarchyAndDefinitionOfItsType()

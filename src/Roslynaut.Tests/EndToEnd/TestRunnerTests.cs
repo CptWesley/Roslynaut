@@ -43,6 +43,15 @@ public class TestRunnerTests : EndToEndTest
         tests.Items.Should().BeEquivalentTo([Test("Square_Area_IsSideSquared"), Test("TotalArea_AddsTheAreas"), Test("Classify_UnitSquare_IsSmall")]);
     }
 
+    // TotalArea_AddsTheAreas constructs a rectangle; the tests that construct squares call Rectangle's constructor through Square's.
+    [Test]
+    public async Task FindTests_ThatUseABaseConstructor_ThroughADerivedPrimaryConstructor()
+    {
+        var tests = await Server.CallAsync<PagedResult<FindTestsTool.TestEntry>>("find_tests", new() { ["projectPath"] = Sample.Solution, ["symbol"] = "Shapes.Rectangle..ctor" });
+
+        tests.Items.Should().BeEquivalentTo([Test("Square_Area_IsSideSquared"), Test("TotalArea_AddsTheAreas"), Test("Classify_UnitSquare_IsSmall")]);
+    }
+
     [Test]
     public async Task RunTests_OfTheSolution_RunItsTestProject()
     {

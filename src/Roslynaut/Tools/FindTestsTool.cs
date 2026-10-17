@@ -66,14 +66,16 @@ public sealed class FindTestsTool(WorkspaceService workspace, ResultCache cache)
                 var next = new List<ISymbol>();
                 foreach (var symbol in frontier)
                 {
-                    foreach (var caller in await SymbolFinder.FindCallersAsync(symbol, solution, cancellationToken))
+                    var callers = (await SymbolFinder.FindCallersAsync(symbol, solution, cancellationToken)).Select(caller => caller.CallingSymbol)
+                        .Concat((await CallersTool.BaseConstructorCallsAsync(symbol, solution, cancellationToken)).Select(call => call.Caller));
+                    foreach (var caller in callers)
                     {
-                        if (!seen.Add(caller.CallingSymbol))
+                        if (!seen.Add(caller))
                             continue;
-                        if (caller.CallingSymbol is IMethodSymbol method && IsTest(method))
+                        if (caller is IMethodSymbol method && IsTest(method))
                             tests.Add(method);
                         else
-                            next.Add(caller.CallingSymbol);
+                            next.Add(caller);
                     }
                 }
 

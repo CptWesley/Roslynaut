@@ -1,7 +1,9 @@
 using System.ComponentModel;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.FindSymbols;
 using Microsoft.CodeAnalysis.Operations;
+using Microsoft.CodeAnalysis.Text;
 using ModelContextProtocol.Server;
 
 namespace Roslynaut.Tools;
@@ -46,10 +48,27 @@ public sealed class ReferencesTool(WorkspaceService workspace, ResultCache cache
     internal static async Task<ReferenceEntry> EntryOfAsync(ReferenceLocation location, ISymbol definition, CancellationToken cancellationToken)
     {
         var model = (await location.Document.GetSemanticModelAsync(cancellationToken))!;
-        var container = model.GetEnclosingSymbol(location.Location.SourceSpan.Start, cancellationToken);
+        var container = ContainerOf(model, location.Location.SourceSpan, definition, cancellationToken);
         var access = IsWrite(model, location.Location, cancellationToken) ? "Write" : definition is IMethodSymbol ? "Call" : "Read";
         return new(SourceLocation.From(location.Location), container?.ToDisplayString(), access);
     }
+
+    /// <summary>
+    /// The member or type code is in. In a type's base list, where the semantic model gives the namespace, that is the type; or its primary
+    /// constructor for a call of a base constructor, as in "class Square(double side) : Rectangle(side, side)", which runs in it.
+    /// </summary>
+    internal static ISymbol? ContainerOf(SemanticModel model, TextSpan span, ISymbol definition, CancellationToken cancellationToken)
+    {
+        var node = model.SyntaxTree.GetRoot(cancellationToken).FindNode(span, getInnermostNodeForTie: true);
+        if (node.FirstAncestorOrSelf<BaseListSyntax>()?.Parent is not TypeDeclarationSyntax declaration || model.GetDeclaredSymbol(declaration, cancellationToken) is not INamedTypeSymbol type)
+            return model.GetEnclosingSymbol(span.Start, cancellationToken);
+
+        return definition is IMethodSymbol { MethodKind: MethodKind.Constructor } ? PrimaryConstructorOf(type, declaration) ?? (ISymbol)type : type;
+    }
+
+    /// <summary>The primary constructor a type declaration declares, if any.</summary>
+    internal static IMethodSymbol? PrimaryConstructorOf(INamedTypeSymbol type, TypeDeclarationSyntax declaration) =>
+        type.InstanceConstructors.FirstOrDefault(constructor => constructor.DeclaringSyntaxReferences.Any(reference => reference.SyntaxTree == declaration.SyntaxTree && reference.Span == declaration.Span));
 
     private static bool IsWrite(SemanticModel model, Location location, CancellationToken cancellationToken)
     {

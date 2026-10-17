@@ -51,6 +51,10 @@ internal static class SymbolEdits
         if (declarations.Length == 0)
             throw new McpException($"{symbol.ToDisplayString()} is not declared in source.");
 
+        // A primary constructor is declared by its type, which deleting its declaration would delete.
+        if (symbol is IMethodSymbol { MethodKind: MethodKind.Constructor } && declarations.Any(declaration => declaration is TypeDeclarationSyntax))
+            throw new McpException($"{symbol.ToDisplayString()} is the primary constructor of {symbol.ContainingType.ToDisplayString()}: edit the type's parameter list instead.");
+
         // Overrides and explicit implementations of it, and the interface or abstract members it implements, need it as much as references do:
         // without it, they do not compile.
         var overrides = await SymbolFinder.FindOverridesAsync(symbol, solution, cancellationToken: cancellationToken);
@@ -64,6 +68,7 @@ internal static class SymbolEdits
             .Where(location => !declarations.Any(declaration => declaration.SyntaxTree == location.SourceTree && declaration.FullSpan.Contains(location.SourceSpan)))
             .Concat(dependents)
             .Select(SourceLocation.From)
+            .Distinct()
             .ToList();
         if (references.Count > 0)
             return (null, references);
