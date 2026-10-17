@@ -94,6 +94,7 @@ public class BuildTests : EndToEndTest
             "CoreBuild (in DependsOnTargets of Build)",
             "Build (DefaultTargets)");
         info.Should().ContainSingle().Which.Should().Match<BuildTargetWhyTool.TargetRun>(target => target.Project == "Shapes.App.csproj (net10.0)" && target.Skipped == null);
+        info[0].Chain.Should().Equal("WriteBuildInfo (AfterTargets of a target the build started with)");
         info[0].Messages.Should().Equal(
             "Building target \"WriteBuildInfo\" completely.",
             $"Output file \"{Path.Combine("obj", "Debug", "net10.0", "buildinfo.txt")}\" does not exist.");

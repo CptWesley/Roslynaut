@@ -115,14 +115,11 @@ internal sealed class SampleSolution
     /// </summary>
     public string NewProject(string name, params (string Name, string Text)[] files)
     {
-        // With documentation comments parsed, the compiler reports unneeded usings, which Roslyn's refactorings remove after them.
         var project = Write($"edits/{name}/{name}.csproj", """
             <Project Sdk="Microsoft.NET.Sdk">
               <PropertyGroup>
                 <TargetFramework>net10.0</TargetFramework>
                 <Nullable>enable</Nullable>
-                <GenerateDocumentationFile>true</GenerateDocumentationFile>
-                <NoWarn>$(NoWarn);CS1591</NoWarn>
               </PropertyGroup>
             </Project>
             """);

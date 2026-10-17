@@ -48,8 +48,15 @@ public class ProcessTests : EndToEndTest
             .And.Contain(frame => frame.StartsWith("System.Console.ReadLine()"));
         (main.Exception, main.HeldLocks).Should().BeEquivalentTo(((string?)null, Array.Empty<string>()));
 
-        var loop = Enumerable.Range(Sample.LineOf(Sample.SpinnerFile, "while (true)"), 4).Select(line => $"Shapes.App.Spinner.Spin(Shapes.IShape[]) in {Sample.SpinnerFile}:line {line}");
-        threads.Should().ContainSingle(thread => thread.Stack.Any(frame => loop.Contains(frame)));
+        // A snapshot can catch the spinning thread in a stub of an interface call, which the runtime cannot walk the stack from; so take a few.
+        var loop = Enumerable.Range(Sample.LineOf(Sample.SpinnerFile, "while (true)"), 4).Select(line => $"Shapes.App.Spinner.Spin(Shapes.IShape[]) in {Sample.SpinnerFile}:line {line}").ToList();
+        for (var attempt = 1; !threads.Any(thread => thread.Stack.Any(loop.Contains)); attempt++)
+        {
+            attempt.Should().BeLessThan(20, string.Join("\n\n", threads.Select(thread => string.Join("\n", thread.Stack))));
+            threads = await Server.CallAsync<List<ProcessInspection.ThreadEntry>>("process_threads", Process());
+        }
+
+        threads.Should().ContainSingle(thread => thread.Stack.Any(loop.Contains));
     }
 
     // Each shape once, and the array that holds them. Sizes are those of a 64-bit process: a header and a method table pointer, then the

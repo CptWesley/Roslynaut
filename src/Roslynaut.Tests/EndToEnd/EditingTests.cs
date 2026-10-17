@@ -436,6 +436,27 @@ public class EditingTests : EndToEndTest
         Read(FileOf(project, "Shop.cs")).Should().Be("using Edits.Orders;\n\nnamespace Edits;\n\npublic static class Shop\n{\n    public static Order Create() => new();\n}\n");
     }
 
+    // Out of Edits, the moved type no longer sees its types without a using: it keeps one where it needs them, if only in a documentation comment.
+    [Test]
+    public async Task MoveToNamespace_KeepsTheUsingsThatAreNeeded()
+    {
+        var code = Sample.NewProject("MoveToNamespaceCode",
+            ("Order.cs", "namespace Edits;\n\npublic class Order\n{\n}\n"),
+            ("Line.cs", "namespace Edits;\n\npublic class Line\n{\n    public Order? Order { get; set; }\n}\n"));
+        var cref = Sample.NewProject("MoveToNamespaceCref",
+            ("Order.cs", "namespace Edits;\n\n/// <summary>Made by <see cref=\"Shop\"/>.</summary>\npublic class Order\n{\n}\n"),
+            ("Shop.cs", "namespace Edits;\n\npublic static class Shop\n{\n    public static Order Create() => new();\n}\n"));
+
+        var line = await Server.CallAsync<ChangedFiles>("move_to_namespace", new() { ["projectPath"] = code, ["symbol"] = "Edits.Line", ["targetNamespace"] = "Sales" });
+        var order = await Server.CallAsync<ChangedFiles>("move_to_namespace", new() { ["projectPath"] = cref, ["symbol"] = "Edits.Order", ["targetNamespace"] = "Sales" });
+
+        line.Files.Should().Equal(FileOf(code, "Line.cs"));
+        Read(FileOf(code, "Line.cs")).Should().Be("using Edits;\n\nnamespace Sales;\n\npublic class Line\n{\n    public Order? Order { get; set; }\n}\n");
+        order.Files.Should().BeEquivalentTo(FileOf(cref, "Order.cs"), FileOf(cref, "Shop.cs"));
+        Read(FileOf(cref, "Order.cs")).Should().Be("using Edits;\n\nnamespace Sales;\n\n/// <summary>Made by <see cref=\"Shop\"/>.</summary>\npublic class Order\n{\n}\n");
+        Read(FileOf(cref, "Shop.cs")).Should().Be("using Sales;\n\nnamespace Edits;\n\npublic static class Shop\n{\n    public static Order Create() => new();\n}\n");
+    }
+
     // The build output is the earlier version; then a method is renamed in source.
     [Test]
     public async Task ApiDiff_AgainstAnEarlierBuild()

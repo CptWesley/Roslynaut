@@ -304,8 +304,9 @@ public sealed class BuildTargetWhyTool : IMcpTool
     [McpServerTool(Name = "build_target_why", ReadOnly = true)]
     [Description("Explains why a target ran or was skipped, in each project of a build's binary log where it appears: the chain of targets that asked "
         + "for it, through DependsOnTargets, BeforeTargets or AfterTargets, up to the target the build started with; and for a target with Inputs "
-        + "and Outputs, the output that was missing or the input that was newer, or that its outputs were up to date. A target that is not in the "
-        + "log never ran: nothing asked for it, or its condition was false.")]
+        + "and Outputs, the output that was missing or the input that was newer, or that its outputs were up to date. For a target that ran after "
+        + "another (AfterTargets), the log does not name that other target, only the target that asked for it, so the chain goes on from there. "
+        + "A target that is not in the log never ran: nothing asked for it, or its condition was false.")]
     internal static IReadOnlyList<TargetRun> Explain(
         [Description(BuildLog.BinlogPath)] string binlogPath,
         [Description("The target, such as CoreCompile.")] string target,
@@ -336,17 +337,19 @@ public sealed class BuildTargetWhyTool : IMcpTool
         for (var current = target; current is not null && chain.Count < 50;)
         {
             // TargetBuiltReason: InitialTargets, DefaultTargets and EntryTargets (4 to 6) are newer than this StructuredLogger's copy of the enum.
+            // For a target that runs after another, MSBuild logs as its parent not that target but the one that asked for it, if any.
             chain.Add((int)current.TargetBuiltReason switch
             {
                 1 => $"{current.Name} (BeforeTargets {current.ParentTarget})",
                 2 => $"{current.Name} (in DependsOnTargets of {current.ParentTarget})",
-                3 => $"{current.Name} (AfterTargets {current.ParentTarget})",
+                3 when string.IsNullOrEmpty(current.ParentTarget) => $"{current.Name} (AfterTargets of a target the build started with)",
+                3 => $"{current.Name} (AfterTargets of a target that {current.ParentTarget} asked for)",
                 4 => $"{current.Name} (InitialTargets)",
                 5 => $"{current.Name} (DefaultTargets)",
                 _ => $"{current.Name} (entry target)",
             });
 
-            var parent = (int)current.TargetBuiltReason is >= 1 and <= 3 ? current.ParentTarget : null;
+            var parent = (int)current.TargetBuiltReason is >= 1 and <= 3 && !string.IsNullOrEmpty(current.ParentTarget) ? current.ParentTarget : null;
             current = parent is null ? null : instances[current.Project.ProjectInstanceId]
                 .SelectMany(project => project.Children.OfType<Target>())
                 .FirstOrDefault(node => node.Name == parent && !node.Skipped);

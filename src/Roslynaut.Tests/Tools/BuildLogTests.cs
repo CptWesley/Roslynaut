@@ -60,6 +60,7 @@ public class BuildLogTests
                 <PropertyGroup><Marker>$(Marker);changed</Marker></PropertyGroup>
                 <ItemGroup><Extra Include="one;two" /><Extra Remove="one" /></ItemGroup>
               </Target>
+              <Target Name="CheckCompile" AfterTargets="CoreCompile" />
               <Target Name="NeverUpToDate" AfterTargets="Build" Inputs="App.csproj" Outputs="$(IntermediateOutputPath)never.txt">
                 <Message Text="ran" />
               </Target>
@@ -154,7 +155,13 @@ public class BuildLogTests
         marker.Chain.Take(2).Should().Equal("SetMarker (BeforeTargets CoreCompile)", "CoreCompile (in DependsOnTargets of Compile)");
         marker.Chain[^1].Should().Be("Build (DefaultTargets)");
 
-        BuildTargetWhyTool.Explain(binlog, "NeverUpToDate").Should().ContainSingle().Which.Messages.Should().Contain(message => message.Contains("never.txt"));
+        var never = BuildTargetWhyTool.Explain(binlog, "NeverUpToDate").Should().ContainSingle().Subject;
+        never.Messages.Should().Contain(message => message.Contains("never.txt"));
+        never.Chain.Should().Equal("NeverUpToDate (AfterTargets of a target the build started with)");
+
+        // It ran after CoreCompile, but MSBuild logs Compile, which asked for that.
+        BuildTargetWhyTool.Explain(binlog, "CheckCompile").Should().ContainSingle().Which.Chain.Take(2)
+            .Should().Equal("CheckCompile (AfterTargets of a target that Compile asked for)", "Compile (in DependsOnTargets of CoreBuild)");
         BuildTargetWhyTool.Explain(binlog, "CoreCompile", "Lib2").Should().ContainSingle().Which.Project.Should().Be("Lib2.csproj (net10.0)");
         BuildTargetWhyTool.Explain(binlog, "NoSuchTarget").Should().BeEmpty();
     }

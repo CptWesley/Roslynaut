@@ -46,6 +46,44 @@ public class WorkspaceServiceTests
             directory.Delete(recursive: true);
         }
     }
+
+    // With a reference of its own to each file, every project would load the framework once more, and Roslyn would give App copies of Lib's
+    // symbols, as it does for a referenced project whose references differ.
+    [Test]
+    public async Task Load_ProjectsShareTheReferencesToAFile()
+    {
+        var directory = Directory.CreateTempSubdirectory("roslynaut-shared-");
+        try
+        {
+            void Write(string path, string text)
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(Path.Combine(directory.FullName, path))!);
+                File.WriteAllText(Path.Combine(directory.FullName, path), text);
+            }
+
+            Write("Lib/Lib.csproj", """<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>""");
+            Write("Lib/Circle.cs", "namespace Lib; public class Circle { }");
+            Write("App/App.csproj", """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>
+                  <ItemGroup><ProjectReference Include="../Lib/Lib.csproj" /></ItemGroup>
+                </Project>
+                """);
+            Write("App/Uses.cs", "public static class Uses { public static Lib.Circle Make() => new(); }");
+
+            var solution = (await new WorkspaceService().GetAsync(Path.Combine(directory.FullName, "App", "App.csproj"))).Solution;
+            var (lib, app) = (solution.Projects.Single(project => project.Name == "Lib"), solution.Projects.Single(project => project.Name == "App"));
+            var (libCompilation, appCompilation) = ((await lib.GetCompilationAsync())!, (await app.GetCompilationAsync())!);
+
+            var runtime = lib.MetadataReferences.OfType<PortableExecutableReference>().Single(reference => Path.GetFileName(reference.FilePath) == "System.Runtime.dll");
+            app.MetadataReferences.Should().Contain(runtime);
+            appCompilation.GetTypeByMetadataName("Lib.Circle")!.ContainingAssembly.Should().BeSameAs(libCompilation.Assembly);
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
+    }
 }
 
 [NonParallelizable]

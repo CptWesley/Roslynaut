@@ -91,13 +91,24 @@ public class ProtocolTests : EndToEndTest
         (await Server.CallTextAsync("debug_stop")).Should().Be("Stopped.");
     }
 
-    // The SDK does not say which argument is missing; the schema lists the required ones.
     [Test]
-    public async Task ToolCalls_WithoutTheirRequiredArguments_Fail()
+    public async Task ToolCalls_WithoutTheirRequiredArguments_SayWhich()
     {
-        (await Server.CallFailingAsync("references", new() { ["symbol"] = "Circle" })).Should().Be("An error occurred invoking 'references'.");
-        (await Server.Client.ListToolsAsync()).Single(tool => tool.Name == "references").JsonSchema.GetProperty("required").EnumerateArray()
-            .Select(name => name.GetString()).Should().Equal("projectPath");
+        (await Server.CallFailingAsync("references", new() { ["symbol"] = "Circle" }))
+            .Should().Be("An error occurred invoking 'references': Missing required argument: projectPath.");
+        (await Server.CallFailingAsync("rename_symbol", new() { ["symbol"] = "Circle", ["projectPath"] = null }))
+            .Should().Be("An error occurred invoking 'rename_symbol': Missing required arguments: projectPath, newName.");
+    }
+
+    [Test]
+    public async Task ToolCalls_WithArgumentsOfTheWrongType_SayWhichAndWhat()
+    {
+        (await Server.CallFailingAsync("document_symbols", new() { ["projectPath"] = Sample.Solution, ["filePath"] = Sample.CircleFile, ["depth"] = "deep" }))
+            .Should().Be("An error occurred invoking 'document_symbols': Argument depth has to be integer or null, not \"deep\".");
+        (await Server.CallFailingAsync("type_hierarchy", new() { ["projectPath"] = Sample.Solution, ["symbol"] = "Circle", ["direction"] = "Sideways" }))
+            .Should().Be("An error occurred invoking 'type_hierarchy': Argument direction has to be one of Supertypes, Subtypes, not \"Sideways\".");
+        (await Server.CallFailingAsync("find_symbols", new() { ["projectPath"] = Sample.Solution, ["modifiers"] = "static" }))
+            .Should().Be("An error occurred invoking 'find_symbols': Argument modifiers has to be array or null, not \"static\".");
     }
 
     [Test]

@@ -34,8 +34,8 @@ internal static class SymbolTree
 
     /// <summary>
     /// For a namespace, the parts of it that the projects' own assemblies declare. A project's namespace also holds what its references declare
-    /// there, and for a referenced project those are copies of its symbols, which other projects resolve the path to as well; and copies of
-    /// namespaces have whole files as locations.
+    /// there. For a referenced project whose references are not the project's own, such as one for another framework, those are copies of its
+    /// symbols, which the path resolves to besides the originals; and copies of namespaces have whole files as locations.
     /// </summary>
     private static IEnumerable<ISymbol> OwnParts(ISymbol symbol, HashSet<IAssemblySymbol> own) =>
         symbol is INamespaceSymbol ns ? ns.ConstituentNamespaces.Where(part => own.Contains(part.ContainingAssembly)) : [symbol];

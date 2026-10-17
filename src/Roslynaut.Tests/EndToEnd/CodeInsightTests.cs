@@ -176,15 +176,13 @@ public class CodeInsightTests : EndToEndTest
             ["projectPath"] = Sample.Solution, ["scope"] = "Shapes", ["level"] = "Types",
         });
 
-        // Registry's other part is the regex generator's, whose code depends on the SDK.
-        var registry = metrics.Items.Single(type => type.Symbol.Signature == "Shapes.Internal.Registry");
-        (registry.Complexity, registry.Members, registry.MaxComplexity).Should().Be((5, 4, 3));
-        registry.Lines.Should().BeGreaterThan(Sample.LineOf(Sample.RegistryFile, "Description();") + 1 - Sample.LineOf(Sample.RegistryFile, "class Registry") + 1);
-        metrics.Items.Except([registry]).Select(type => (type.Symbol.Signature, type.Complexity, type.Lines, type.Members, type.MaxComplexity, type.Coupling)).Should().BeEquivalentTo(
+        // Registry only counts its own part, not the regex generator's: its Description has no code there.
+        metrics.Items.Select(type => (type.Symbol.Signature, type.Complexity, type.Lines, type.Members, type.MaxComplexity, type.Coupling)).Should().BeEquivalentTo(
         [
             ("Shapes.ShapeMath", 11, 35, 3, 5, 4),
             ("Shapes.Rectangle", 5, 17, 6, 1, 1),
             ("Shapes.Tests.ShapeTests", 5, 25, 5, 1, 10),
+            ("Shapes.Internal.Registry", 4, 23, 4, 3, 11),
             ("Shapes.App.Spinner", 3, 12, 1, 3, 1),
             ("Shapes.Circle", 2, 6, 3, 1, 2),
             ("Shapes.Shape", 2, 8, 3, 1, 2),
@@ -193,6 +191,32 @@ public class CodeInsightTests : EndToEndTest
             ("Shapes.IShape", 0, 9, 2, 0, 0),
         ]);
         metrics.Items.Select(type => type.Complexity).Should().BeInDescendingOrder();
+    }
+
+    // The regex generator's matching code is more complex than anything in the sample, and adds a part to Registry.
+    [Test]
+    public async Task CodeMetrics_LeaveOutGeneratedCode_UnlessAsked()
+    {
+        async Task<List<CodeMetricsTool.Metrics>> MeasureAsync(string level, bool includeGenerated) =>
+        [
+            .. (await Server.CallAsync<PagedResult<CodeMetricsTool.Metrics>>("code_metrics", new()
+            {
+                ["projectPath"] = Sample.Solution, ["level"] = level, ["includeGenerated"] = includeGenerated,
+            })).Items,
+        ];
+
+        var (members, allMembers) = (await MeasureAsync("Members", false), await MeasureAsync("Members", true));
+        var (types, allTypes) = (await MeasureAsync("Types", false), await MeasureAsync("Types", true));
+
+        const string runner = "System.Text.RegularExpressions.Generated.Description_0.RunnerFactory.Runner";
+        members.Should().OnlyContain(member => member.Symbol.Location!.FilePath.StartsWith(Sample.Root));
+        members[0].Symbol.Signature.Should().Be("Shapes.ShapeMath.Largest(System.Collections.Generic.IReadOnlyList<Shapes.IShape>)");
+        allMembers.Should().Contain(member => member.Symbol.Container == runner && member.Complexity > 5)
+            .And.Contain(member => member.Symbol.Signature == "Shapes.Internal.Registry.Description()");
+        types.Should().NotContain(type => type.Symbol.Signature == runner);
+        allTypes.Should().Contain(type => type.Symbol.Signature == runner);
+        var (own, all) = (types.Single(type => type.Symbol.Name == "Registry"), allTypes.Single(type => type.Symbol.Name == "Registry"));
+        (all.Lines > own.Lines, all.Complexity, all.Coupling > own.Coupling).Should().Be((true, own.Complexity + 1, true));
     }
 
     [Test]

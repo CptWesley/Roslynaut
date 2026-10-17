@@ -35,8 +35,8 @@ public class SymbolSearchTests
         symbols.Select(symbol => TestSolution.PathOf(SymbolEntry.From(symbol))).Should().ContainSingle().Which.Should().Be(expected);
     }
 
-    // A project's namespace also holds what the projects it references declare there. With references of their own to the same files, as
-    // WorkspaceService gives projects, those are copies of the referenced projects' symbols.
+    // A project's namespace also holds what the projects it references declare there. When its references are not theirs, as for a project of
+    // another framework, those are copies of the referenced projects' symbols; references of their own to the same file make that happen too.
     [Test]
     public async Task ResolveSymbolPath_ThroughANamespaceOfSeveralProjects_FindsEachSymbolOnce()
     {

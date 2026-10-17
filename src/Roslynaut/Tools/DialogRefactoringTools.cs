@@ -138,7 +138,14 @@ internal static class DialogRefactorings
     {
         var location = symbol.Locations.FirstOrDefault(location => location.IsInSource)
             ?? throw new McpException($"{symbol.ToDisplayString()} is not declared in source.");
-        var document = solution.GetDocument(location.SourceTree) ?? throw new McpException($"{symbol.ToDisplayString()} is not in the loaded solution.");
+        var id = solution.GetDocumentId(location.SourceTree) ?? throw new McpException($"{symbol.ToDisplayString()} is not in the loaded solution.");
+
+        // Roslyn removes the usings it adds that the code does not need, as the compiler reports them; it only does when it parses documentation
+        // comments with their diagnostics, since crefs can need usings too. So move it in a copy parsed so, and take over the text it changes.
+        // ponytail: the copy parses and compiles every project again; only the moved type's project and its dependents need it.
+        var diagnosed = solution.Projects.Where(project => project.ParseOptions is { DocumentationMode: < DocumentationMode.Diagnose })
+            .Aggregate(solution, (copy, project) => copy.WithProjectParseOptions(project.Id, project.ParseOptions!.WithDocumentationMode(DocumentationMode.Diagnose)));
+        var document = diagnosed.GetDocument(id) ?? throw new McpException($"{symbol.ToDisplayString()} is declared in generated code.");
 
         var serviceType = TypeOf("MoveToNamespace.IMoveToNamespaceService");
         var service = typeof(Microsoft.CodeAnalysis.Host.LanguageServices).GetMethod(nameof(Microsoft.CodeAnalysis.Host.LanguageServices.GetService))!
@@ -148,7 +155,19 @@ internal static class DialogRefactorings
             throw new McpException($"Roslyn cannot move {symbol.ToDisplayString()}: point at a type, or a namespace declaration, in a namespace.");
 
         var result = await ResultOfAsync(serviceType.GetMethod("MoveToNamespaceAsync")!.Invoke(service, [analysis, targetNamespace, cancellationToken])!);
-        return (bool)Property(result, "Succeeded") ? (Solution)Property(result, "UpdatedSolution") : throw new McpException($"Roslyn could not move it to {targetNamespace}.");
+        if (!(bool)Property(result, "Succeeded"))
+            throw new McpException($"Roslyn could not move it to {targetNamespace}.");
+
+        var moved = solution;
+        foreach (var project in ((Solution)Property(result, "UpdatedSolution")).GetChanges(diagnosed).GetProjectChanges())
+        {
+            if (project.GetAddedDocuments().Any() || project.GetRemovedDocuments().Any())
+                throw new McpException("Roslyn changed: Move to namespace added or removed documents.");
+            foreach (var changed in project.GetChangedDocuments(onlyGetDocumentsWithTextChanges: true))
+                moved = moved.WithDocumentText(changed, await project.NewProject.GetDocument(changed)!.GetTextAsync(cancellationToken));
+        }
+
+        return moved;
 
         static async Task<object> ResultOfAsync(object task)
         {

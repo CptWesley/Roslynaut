@@ -55,10 +55,10 @@ public sealed class UnusedSymbolsTool(WorkspaceService workspace, ResultCache ca
         return unused.Select(symbol => SymbolEntry.From(symbol));
     }
 
-    // Generated code is not for people to clean up, so only symbols declared in documents count.
+    // Generated code is not for people to clean up, so only symbols declared in code people wrote count.
     private static bool IsCandidate(Solution solution, ISymbol symbol, bool includePublic) =>
         symbol is INamedTypeSymbol or IMethodSymbol { MethodKind: MethodKind.Ordinary } or IPropertySymbol or IFieldSymbol or IEventSymbol
-        && symbol.Locations.Any(location => location.IsInSource && solution.GetDocument(location.SourceTree) is not (null or SourceGeneratedDocument))
+        && symbol.Locations.Any(location => location.IsInSource && WorkspaceService.IsWrittenCode(solution, location.SourceTree))
         && !symbol.IsImplicitlyDeclared
         && !symbol.IsOverride
         && symbol.GetAttributes().IsEmpty
