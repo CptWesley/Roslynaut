@@ -86,6 +86,18 @@ public class NavigationTests : EndToEndTest
             Entry("area", "Local", "double area", method, Sample.ShapeMathFile, "area ="));
     }
 
+    // What a property or field holds: the members of its type, from the framework too.
+    [Test]
+    public async Task ListSymbols_OfAPropertyAndAField_ListTheMembersOfTheirTypes()
+    {
+        var radius = await Server.CallAsync<PagedResult<SymbolEntry>>("list_symbols", new() { ["projectPath"] = Sample.Solution, ["symbol"] = "Circle.Radius" });
+        var factories = await Server.CallAsync<PagedResult<SymbolEntry>>("list_symbols", new() { ["projectPath"] = Sample.Solution, ["symbol"] = "Registry.Factories" });
+
+        radius.Items.Should().ContainEquivalentOf(new SymbolEntry("MaxValue", "Field", "double.MaxValue", "double", null)).And.OnlyContain(member => member.Container == "double");
+        factories.Items.Should().Contain(member => member.Name == "TryGetValue" && member.Kind == "Method")
+            .And.OnlyContain(member => member.Container == "System.Collections.Generic.Dictionary<string, System.Func<double, Shapes.Shape>>");
+    }
+
     [Test]
     public async Task FindSymbols_FiltersByStructure()
     {
@@ -285,6 +297,24 @@ public class NavigationTests : EndToEndTest
             new CallersTool.Caller(
                 new SymbolEntry(".ctor", "Method", "System.ArgumentException.ArgumentException(string?, string?)", "System.ArgumentException", null),
                 [Sample.Location(Sample.ShapeMathFile, "new ArgumentException")]),
+        ]);
+    }
+
+    // Reading a property calls its getter; Math.PI is a field and * a built-in operator, so neither counts.
+    [Test]
+    public async Task Callees_ByPosition_IncludePropertyReads()
+    {
+        var (line, column) = Sample.Find(Sample.CircleFile, "Area()");
+        var callees = await Server.CallAsync<PagedResult<CallersTool.Caller>>("callees", new()
+        {
+            ["projectPath"] = Sample.Solution, ["filePath"] = Sample.CircleFile, ["line"] = line, ["column"] = column,
+        });
+
+        callees.Items.Should().BeEquivalentTo(
+        [
+            new CallersTool.Caller(
+                Entry("Radius", "Property", "Shapes.Circle.Radius", "Shapes.Circle", Sample.CircleFile, "Radius {"),
+                [Sample.Location(Sample.CircleFile, "Radius *"), Sample.Location(Sample.CircleFile, "Radius;")]),
         ]);
     }
 

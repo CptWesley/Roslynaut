@@ -23,7 +23,7 @@ public sealed class FormatTool(WorkspaceService workspace) : IMcpTool
         [Description("Optional 1-based last line to format; without it, only startLine.")] int? endLine = null,
         CancellationToken cancellationToken = default)
     {
-        var document = await workspace.GetDocumentAsync(projectPath, filePath);
+        var document = WorkspaceService.Editable(await workspace.GetDocumentAsync(projectPath, filePath, cancellationToken));
         var formatted = await FormatAsync(document, startLine, endLine, cancellationToken);
         return new(await WorkspaceService.WriteChangesAsync(document.Project.Solution, formatted.Project.Solution, cancellationToken));
     }
@@ -53,7 +53,7 @@ public sealed class OrganizeUsingsTool(WorkspaceService workspace) : IMcpTool
         [Description("Remove unneeded usings; otherwise only sort.")] bool removeUnused = true,
         CancellationToken cancellationToken = default)
     {
-        var document = await workspace.GetDocumentAsync(projectPath, filePath);
+        var document = WorkspaceService.Editable(await workspace.GetDocumentAsync(projectPath, filePath, cancellationToken));
         var organized = await OrganizeAsync(document, removeUnused, cancellationToken);
         return new(await WorkspaceService.WriteChangesAsync(document.Project.Solution, organized.Project.Solution, cancellationToken));
     }

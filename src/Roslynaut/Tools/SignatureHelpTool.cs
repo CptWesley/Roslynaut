@@ -43,6 +43,10 @@ public sealed class SignatureHelpTool(WorkspaceService workspace) : IMcpTool
             BaseObjectCreationExpressionSyntax creation when model.GetTypeInfo(creation, cancellationToken).Type is INamedTypeSymbol type =>
                 type.InstanceConstructors.Where(constructor => model.IsAccessible(position, constructor)),
             ElementAccessExpressionSyntax access => model.GetIndexerGroup(access.Expression, cancellationToken),
+
+            // base(...) or this(...) of a constructor, or the base type's arguments of a primary constructor: the constructors of that type.
+            ConstructorInitializerSyntax or PrimaryConstructorBaseTypeSyntax when (bound.Symbol ?? bound.CandidateSymbols.FirstOrDefault())?.ContainingType is { } type =>
+                type.InstanceConstructors.Where(constructor => model.IsAccessible(position, constructor)),
             _ => bound.Symbol is { } symbol ? [symbol] : bound.CandidateSymbols,
         };
 

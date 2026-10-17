@@ -29,9 +29,21 @@ public sealed class UnusedSymbolsTool(WorkspaceService workspace, ResultCache ca
     // ponytail: one reference search per candidate; index all references once if this gets slow on big solutions.
     internal static async Task<IEnumerable<SymbolEntry>> FindAsync(Solution solution, string? scope, bool includePublic, CancellationToken cancellationToken)
     {
-        var roots = scope is null
-            ? await SymbolTree.GetRootNamespacesAsync(solution, cancellationToken)
-            : (await SymbolTree.ResolveAsync(solution, scope, cancellationToken)).Select(SymbolTree.TypeOrSelf);
+        IAsyncEnumerable<ISymbol> symbols;
+        if (scope is not null && scope.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+        {
+            // In the order of the file, so types before their members too.
+            var root = await (await WorkspaceService.GetDocumentAsync(solution, scope, cancellationToken)).GetSyntaxRootAsync(cancellationToken);
+            symbols = (await SymbolTree.GetDeclaredInAsync(solution, [root!], cancellationToken)).ToAsyncEnumerable();
+        }
+        else
+        {
+            var roots = scope is null
+                ? await SymbolTree.GetRootNamespacesAsync(solution, cancellationToken)
+                : (await SymbolTree.ResolveAsync(solution, scope, cancellationToken)).Select(SymbolTree.TypeOrSelf);
+            symbols = SymbolTree.GetDescendantsAsync(solution, roots, includeLocals: false, cancellationToken);
+        }
+
         // The runtime uses entry points and their types, such as the Program of top-level statements.
         var entryPoints = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
         foreach (var project in solution.Projects)
@@ -42,7 +54,7 @@ public sealed class UnusedSymbolsTool(WorkspaceService workspace, ResultCache ca
 
         // Breadth first, so types come before their members.
         var unused = new List<ISymbol>();
-        await foreach (var symbol in SymbolTree.GetDescendantsAsync(solution, roots, includeLocals: false, cancellationToken))
+        await foreach (var symbol in symbols)
         {
             if (!IsCandidate(solution, symbol, includePublic) || entryPoints.Contains(symbol) || unused.Contains(symbol.ContainingType, SymbolEqualityComparer.Default))
                 continue;

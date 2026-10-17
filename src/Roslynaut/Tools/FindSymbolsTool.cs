@@ -66,7 +66,7 @@ public sealed class FindSymbolsTool(WorkspaceService workspace, ResultCache cach
         }
         else if (scope.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
         {
-            var root = await WorkspaceService.GetDocument(solution, scope).GetSyntaxRootAsync(cancellationToken);
+            var root = await (await WorkspaceService.GetDocumentAsync(solution, scope, cancellationToken)).GetSyntaxRootAsync(cancellationToken);
             symbols = (await SymbolTree.GetDeclaredInAsync(solution, [root!], cancellationToken)).ToAsyncEnumerable();
         }
         else

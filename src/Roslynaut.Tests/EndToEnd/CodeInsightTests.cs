@@ -94,6 +94,57 @@ public class CodeInsightTests : EndToEndTest
             ReturnStatements: []));
     }
 
+    // The statements of an else, a catch or a lambda sit in the statement around them, which the lines cover whole.
+    [Test]
+    public async Task DataFlow_OfStatementsWithElseCatchAndLambdaBlocks()
+    {
+        var project = Sample.NewProject("DataFlow", ("Flow.cs", """
+            using System;
+
+            namespace Edits;
+
+            public static class Flow
+            {
+                public static int Sign(int x)
+                {
+                    int sign;
+                    if (x < 0)
+                        sign = -1;
+                    else
+                        sign = 1;
+                    try
+                    {
+                        sign = checked(sign * x);
+                    }
+                    catch (OverflowException)
+                    {
+                        return 0;
+                    }
+
+                    Func<int> half = () => { return sign / 2; };
+                    return half();
+                }
+            }
+            """));
+        var file = Path.Combine(Path.GetDirectoryName(project)!, "Flow.cs");
+        async Task<DataFlowTool.DataFlow> AnalyzeAsync(int startLine, int endLine) => await Server.CallAsync<DataFlowTool.DataFlow>("data_flow", new()
+        {
+            ["projectPath"] = project, ["filePath"] = file, ["startLine"] = startLine, ["endLine"] = endLine,
+        });
+        int Line(string text) => Sample.LineOf(file, text);
+
+        var branches = await AnalyzeAsync(Line("if (x < 0)"), Line("sign = 1;"));
+        var guarded = await AnalyzeAsync(Line("try"), Line("return 0;") + 1);
+        var lambda = await AnalyzeAsync(Line("Func<int> half"), Line("return half();"));
+
+        (branches.Statements, branches.DataFlowsIn, branches.DataFlowsOut, branches.AlwaysAssigned, branches.EndPointIsReachable)
+            .Should().BeEquivalentTo((1, new[] { "x" }, new[] { "sign" }, new[] { "sign" }, true));
+        (guarded.Statements, guarded.DataFlowsIn, guarded.DataFlowsOut, guarded.EndPointIsReachable).Should().BeEquivalentTo((1, new[] { "x", "sign" }, new[] { "sign" }, true));
+        guarded.ExitPoints.Should().Equal(Sample.Location(file, "return 0;"));
+        (lambda.Statements, lambda.VariablesDeclared, lambda.Captured, lambda.EndPointIsReachable).Should().BeEquivalentTo((2, new[] { "half" }, new[] { "sign" }, false));
+        lambda.ReturnStatements.Should().Equal(Sample.Location(file, "return half();"));
+    }
+
     [Test]
     public async Task SignatureHelp_PicksTheOverloadAndParameter()
     {
@@ -109,6 +160,52 @@ public class CodeInsightTests : EndToEndTest
         ], options => options.WithStrictOrdering());
     }
 
+    // Within base(...) and the base type's arguments of a primary constructor, as within new: the base type's constructors, the protected one too.
+    // The project writes no documentation file, which leaves the compiler to skip documentation comments; they still document the constructors.
+    [Test]
+    public async Task SignatureHelp_OfABaseConstructorCall_ListsTheBaseConstructors()
+    {
+        var project = Sample.NewProject("BaseSignatures", ("Figures.cs", """
+            namespace Edits;
+
+            public class Figure
+            {
+                /// <summary>A figure with a name.</summary>
+                public Figure(string name) { }
+
+                /// <summary>A figure with a name and a size.</summary>
+                public Figure(string name, int size) { }
+
+                protected Figure(int size) { }
+            }
+
+            public class Dot : Figure
+            {
+                public Dot() : base("dot", 1) { }
+            }
+
+            public class Ring(int size) : Figure("ring", size)
+            {
+            }
+            """));
+        var file = Path.Combine(Path.GetDirectoryName(project)!, "Figures.cs");
+        async Task<List<SignatureHelpTool.Signature>> HelpAsync(string text)
+        {
+            var (line, column) = Sample.Find(file, text);
+            return await Server.CallAsync<List<SignatureHelpTool.Signature>>("signature_help", new() { ["projectPath"] = project, ["filePath"] = file, ["line"] = line, ["column"] = column });
+        }
+
+        SignatureHelpTool.Parameter Parameter(string name, string type) => new(name, type, null, false);
+        List<SignatureHelpTool.Signature> constructors =
+        [
+            new("Edits.Figure.Figure(string)", "A figure with a name.", [Parameter("name", "string")], null, false),
+            new("Edits.Figure.Figure(string, int)", "A figure with a name and a size.", [Parameter("name", "string"), Parameter("size", "int")], 1, true),
+            new("Edits.Figure.Figure(int)", null, [Parameter("size", "int")], null, false),
+        ];
+        (await HelpAsync("1) { }")).Should().BeEquivalentTo(constructors, options => options.WithStrictOrdering());
+        (await HelpAsync("size)\n")).Should().BeEquivalentTo(constructors, options => options.WithStrictOrdering());
+    }
+
     [Test]
     public async Task Completion_AfterADot_ListsTheMembers()
     {
@@ -120,6 +217,35 @@ public class CodeInsightTests : EndToEndTest
         all.Items.Select(item => (item.Text, item.Kind)).Should().BeEquivalentTo(
             [("Classify", "Method"), ("Equals", "Method"), ("Largest", "Method"), ("ReferenceEquals", "Method"), ("TotalArea", "Method")]);
         filtered.Items.Should().Equal(new CompletionTool.CompletionEntry("TotalArea", "Method", null));
+    }
+
+    // At the start of a statement: the keywords that can start one, and the locals and parameters in scope there.
+    [Test]
+    public async Task Completion_InAStatement_ListsKeywordsLocalsAndParameters()
+    {
+        async Task<IEnumerable<(string Text, string? Kind)>> CompleteAsync(string filter)
+        {
+            var arguments = At(Sample.ShapeMathFile, "if (area");
+            arguments["filter"] = filter;
+            return (await Server.CallAsync<PagedResult<CompletionTool.CompletionEntry>>("completion", arguments)).Items.Select(item => (item.Text, item.Kind));
+        }
+
+        (await CompleteAsync("fo")).Should().Contain([("for", "Keyword"), ("foreach", "Keyword")]);
+        (await CompleteAsync("sh")).Should().Contain([("shape", "Local"), ("shapes", "Parameter")]);
+        (await CompleteAsync("ar")).Should().Contain(("area", "Local")).And.NotContain(("total", "Local"));
+    }
+
+    // The conversion that fails: an int field where the method returns a string.
+    [Test]
+    public async Task ExpressionInfo_OfAnExpressionThatDoesNotConvert()
+    {
+        var (line, column) = Sample.Find(Sample.AccountFile, "balance;", 2);
+        var expressions = await Server.CallAsync<List<ExpressionInfoTool.ExpressionInfo>>("expression_info", new()
+        {
+            ["projectPath"] = Sample.ProblemsProject, ["filePath"] = Sample.AccountFile, ["line"] = line, ["column"] = column,
+        });
+
+        expressions.Should().BeEquivalentTo([new ExpressionInfoTool.ExpressionInfo("balance", "int", "string", null, null, null, "Problems.Account.balance", [], null)]);
     }
 
     [Test]
@@ -198,6 +324,18 @@ public class CodeInsightTests : EndToEndTest
             ("Largest", 5, 11, 1, 2),
             ("TotalArea", 3, 12, 1, 2),
             ("Classify", 3, 6, 1, 0));
+    }
+
+    // The app's code outside its top-level statements, which the compiler puts in a Main of its own, is the spinner.
+    [Test]
+    public async Task CodeMetrics_OfAFile_AndOfAProject()
+    {
+        async Task<IEnumerable<(string, int)>> MeasureAsync(string scope) =>
+            (await Server.CallAsync<PagedResult<CodeMetricsTool.Metrics>>("code_metrics", new() { ["projectPath"] = Sample.Solution, ["scope"] = scope }))
+                .Items.Select(member => (member.Symbol.Name, member.Complexity));
+
+        (await MeasureAsync(Sample.ShapeMathFile)).Should().Equal(("Largest", 5), ("TotalArea", 3), ("Classify", 3));
+        (await MeasureAsync("Shapes.App")).Should().Equal(("Spin", 3));
     }
 
     // Each type of the namespace once, though three projects declare the namespace.
@@ -292,6 +430,20 @@ public class CodeInsightTests : EndToEndTest
         ]);
     }
 
+    [Test]
+    public async Task FindOperations_WithinAMethod()
+    {
+        var calls = await Server.CallAsync<PagedResult<FindOperationsTool.OperationEntry>>("find_operations", new()
+        {
+            ["projectPath"] = Sample.Solution, ["kind"] = "Invocation", ["scope"] = "ShapeMath.Largest",
+        });
+
+        const string largest = "Shapes.ShapeMath.Largest(System.Collections.Generic.IReadOnlyList<Shapes.IShape>)";
+        calls.Items.Should().Equal(
+            new FindOperationsTool.OperationEntry(Sample.Location(Sample.ShapeMathFile, "shape.Area() >"), largest, "Shapes.IShape.Area()", false),
+            new FindOperationsTool.OperationEntry(Sample.Location(Sample.ShapeMathFile, "largest.Area()"), largest, "Shapes.IShape.Area()", false));
+    }
+
     // Not the Program of the top-level statements, nor what the regex generator declares and leaves unused.
     [Test]
     public async Task UnusedSymbols_FindsOnlyTheUnusedMethod()
@@ -314,6 +466,18 @@ public class CodeInsightTests : EndToEndTest
             "Shapes.Rectangle.Scale(double)",
             "Shapes.Internal.Registry.Unused()");
         rectangle.Items.Select(symbol => symbol.Signature).Should().Equal("Shapes.Rectangle.Scale(double)");
+    }
+
+    [Test]
+    public async Task UnusedSymbols_WithinAFile()
+    {
+        async Task<IEnumerable<string>> UnusedAsync(string file) =>
+            (await Server.CallAsync<PagedResult<SymbolEntry>>("unused_symbols", new() { ["projectPath"] = Sample.Solution, ["scope"] = file, ["includePublic"] = true }))
+                .Items.Select(symbol => symbol.Signature);
+
+        (await UnusedAsync(Sample.RegistryFile)).Should().Equal("Shapes.Internal.Registry.Unused()");
+        (await UnusedAsync(Sample.ShapeMathFile)).Should().Equal("Shapes.ShapeMath.Largest(System.Collections.Generic.IReadOnlyList<Shapes.IShape>)");
+        (await UnusedAsync(Sample.In("src", "Shapes", "ShapeFactory.cs"))).Should().Equal("Shapes.ShapeFactory");
     }
 
     [Test]
@@ -357,6 +521,35 @@ public class CodeInsightTests : EndToEndTest
         source.Source.Should().Contain("partial class Registry").And.Contain("private static partial global::System.Text.RegularExpressions.Regex Description()");
         source.Lines.Should().Be(source.Source!.Split('\n').Length);
         list.Items.Should().Equal(source with { Source = null });
+    }
+
+    // Locations in generated code give the path of the generator's file, which is not on disk: the tools that take a file take that path too,
+    // except to edit it.
+    [Test]
+    public async Task GeneratedSources_ReadByThePathTheirLocationsGive()
+    {
+        var generated = (await Server.CallAsync<PagedResult<GeneratedSourcesTool.GeneratedSource>>("generated_sources", new() { ["projectPath"] = Sample.Solution, ["name"] = "RegexGenerator" }))
+            .Items.Single();
+        var lines = generated.Source!.Split('\n').Select(text => text.TrimEnd('\r')).ToArray();
+        var line = Array.FindIndex(lines, text => text.Contains("partial class Registry")) + 1;
+        var column = lines[line - 1].IndexOf("Registry", StringComparison.Ordinal) + 1;
+        var registry = new SourceLocation(generated.FilePath!, line, column, lines[line - 1].Trim());
+
+        var outline = await Server.CallAsync<PagedResult<SymbolEntry>>("document_symbols", new() { ["projectPath"] = Sample.Solution, ["filePath"] = generated.FilePath, ["depth"] = 0 });
+        var definition = await Server.CallAsync<List<DefinitionTool.Definition>>("definition", new()
+        {
+            ["projectPath"] = Sample.Solution, ["filePath"] = generated.FilePath, ["line"] = line, ["column"] = column,
+        });
+        var matches = await Server.CallAsync<PagedResult<SearchPatternTool.TextMatch>>("search_pattern", new()
+        {
+            ["projectPath"] = Sample.Solution, ["pattern"] = "partial class Registry", ["scope"] = generated.FilePath,
+        });
+
+        outline.Items.Should().ContainEquivalentOf(new SymbolEntry("Registry", "Class", "Shapes.Internal.Registry", "Shapes.Internal", registry));
+        definition.Should().ContainSingle().Which.Locations.Should().Equal(Sample.Location(Sample.RegistryFile, "Registry"), registry);
+        matches.Items.Should().Equal(new SearchPatternTool.TextMatch(generated.FilePath!, line, $"{line}: {lines[line - 1]}\n"));
+        (await Server.CallFailingAsync("format", new() { ["projectPath"] = Sample.Solution, ["filePath"] = generated.FilePath }))
+            .Should().Be($"An error occurred invoking 'format': '{generated.FilePath}' is the output of a source generator, which cannot be edited.");
     }
 
     [Test]
@@ -505,6 +698,19 @@ public class CodeInsightTests : EndToEndTest
         ]);
         preview.Resolved.Should().BeEmpty();
         File.ReadAllText(Sample.ShapeMathFile).Should().Be(before);
+    }
+
+    // The local feed has no such package, so restore fails, and the project loads without sources or compiler options.
+    [Test]
+    public async Task Diagnostics_OfAProjectThatDidNotLoad_SayWhy()
+    {
+        var project = Sample.NewProject("Unrestored", ("Code.cs", "namespace Edits;\n\npublic static class Code\n{\n}\n"));
+        File.WriteAllText(project, File.ReadAllText(project).Replace("</PropertyGroup>", "</PropertyGroup>\n  <ItemGroup>\n    <PackageReference Include=\"Roslynaut.E2E.Missing\" Version=\"1.0.0\" />\n  </ItemGroup>"));
+
+        var diagnostics = await Server.CallAsync<PagedResult<DiagnosticsTool.DiagnosticEntry>>("diagnostics", new() { ["projectPath"] = project });
+
+        diagnostics.Items.Should().ContainSingle().Which.Should().Match<DiagnosticsTool.DiagnosticEntry>(diagnostic => diagnostic.Id == "NU1101" && diagnostic.Severity == "Error"
+            && diagnostic.Message.StartsWith("Unable to find package Roslynaut.E2E.Missing.") && diagnostic.Message.EndsWith(" Unrestored.csproj did not load.") && diagnostic.Location == null);
     }
 
     // The project's .editorconfig sets the severities, as for the build; a change to it applies at once.

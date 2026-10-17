@@ -31,9 +31,10 @@ public sealed class DataFlowTool(WorkspaceService workspace) : IMcpTool
         var model = (await document.GetSemanticModelAsync(cancellationToken))!;
         var root = await model.SyntaxTree.GetRootAsync(cancellationToken);
 
-        // The outermost statements within the lines; top-level statements each sit in a global statement of their own.
+        // The outermost statements within the lines, not those inside one of them, which an else, a switch section, a catch or a lambda can
+        // stand between; top-level statements each sit in a global statement of their own.
         var statements = root.DescendantNodes(span).OfType<StatementSyntax>()
-            .Where(statement => span.Contains(statement.Span) && !(statement.Parent is StatementSyntax parent && span.Contains(parent.Span)))
+            .Where(statement => span.Contains(statement.Span) && !statement.Ancestors().OfType<StatementSyntax>().Any(outer => span.Contains(outer.Span)))
             .ToList();
         if (statements.Count == 0)
             throw new McpException("The lines contain no whole statement.");

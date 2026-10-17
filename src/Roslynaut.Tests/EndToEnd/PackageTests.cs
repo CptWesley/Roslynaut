@@ -67,6 +67,17 @@ public class PackageTests : EndToEndTest
             .Should().Be($"An error occurred invoking 'package_info': Package {Greetings} has no version 9.9.9.");
     }
 
+    // Greetings only has net10.0, which a net8.0 project cannot use.
+    [Test]
+    public async Task PackageInfo_ForAnotherFramework_ThatItHasNothingFor()
+    {
+        var info = await Server.CallAsync<PackageInfo>("package_info", new() { ["projectPath"] = Sample.AppProject, ["id"] = Greetings, ["targetFramework"] = "net8.0" });
+
+        info.Frameworks.Should().Equal("net10.0");
+        info.Nearest.Should().BeEquivalentTo(new Dictionary<string, string?> { ["net8.0"] = null });
+        info.Dependencies.Should().BeEmpty();
+    }
+
     [Test]
     public async Task PackageSearch_WithPrereleases()
     {

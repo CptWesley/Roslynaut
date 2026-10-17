@@ -34,7 +34,7 @@ public sealed class PreviewEditTool(WorkspaceService workspace) : IMcpTool
         var projects = new HashSet<ProjectId>();
         foreach (var edit in edits)
         {
-            var document = WorkspaceService.GetDocument(edited, edit.FilePath);
+            var document = WorkspaceService.Editable(await WorkspaceService.GetDocumentAsync(edited, edit.FilePath, cancellationToken));
             var text = await document.GetTextAsync(cancellationToken);
             var content = text.ToString();
 

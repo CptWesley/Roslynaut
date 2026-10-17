@@ -60,6 +60,19 @@ public class TestRunnerTests : EndToEndTest
         (run.Succeeded, run.Total, run.Passed, run.Failures.Count, run.BuildErrors.Count).Should().Be((true, 1, 1, 0, 0));
     }
 
+    // A filter among the arguments works as one passed as filter does; the Release build goes to its own output directory.
+    [Test]
+    public async Task RunTests_InAnotherConfiguration_WithMoreArguments()
+    {
+        var run = await Server.CallAsync<RunTestsTool.TestRun>("run_tests", new()
+        {
+            ["projectPath"] = Sample.TestsProject, ["configuration"] = "Release", ["arguments"] = new[] { "--filter", "Name=Square_Area_IsSideSquared" },
+        });
+
+        (run.Succeeded, run.Total, run.Passed).Should().Be((true, 1, 1));
+        File.Exists(Sample.In("tests", "Shapes.Tests", "bin", "Release", "net10.0", "Shapes.Tests.dll")).Should().BeTrue();
+    }
+
     [Test]
     public async Task RunTests_All_ReportsTheFailure()
     {

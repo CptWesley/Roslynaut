@@ -42,7 +42,7 @@ public sealed class CodeMetricsTool(WorkspaceService workspace, ResultCache cach
         var roots = scope is null
             ? (await SymbolTree.GetRootNamespacesAsync(solution, cancellationToken)).ToList()
             : scope.EndsWith(".cs", StringComparison.OrdinalIgnoreCase)
-                ? await TypesInAsync(WorkspaceService.GetDocument(solution, scope), cancellationToken)
+                ? await TypesInAsync(await WorkspaceService.GetDocumentAsync(solution, scope, cancellationToken), cancellationToken)
                 : [.. (await SymbolTree.ResolveAsync(solution, scope, cancellationToken)).Select(SymbolTree.TypeOrSelf)];
 
         var symbols = new List<ISymbol>(roots.Where(root => root is not INamespaceSymbol));

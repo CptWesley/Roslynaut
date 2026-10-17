@@ -66,12 +66,12 @@ public sealed class WorkspaceService
         return GetAsync(path);
     }
 
-    public async Task<Document> GetDocumentAsync(string projectPath, string filePath)
+    public async Task<Document> GetDocumentAsync(string projectPath, string filePath, CancellationToken cancellationToken = default)
     {
         var loaded = await GetAsync(projectPath);
         try
         {
-            return GetDocument(loaded.Solution, filePath);
+            return await GetDocumentAsync(loaded.Solution, filePath, cancellationToken);
         }
         catch (McpException e) when (loaded.LoadErrors.Count > 0)
         {
@@ -79,12 +79,30 @@ public sealed class WorkspaceService
         }
     }
 
-    public static Document GetDocument(Solution solution, string filePath)
+    /// <summary>A document of the solution by its path; or a source generator's, by the path that locations in it give, which is not on disk.</summary>
+    public static async Task<Document> GetDocumentAsync(Solution solution, string filePath, CancellationToken cancellationToken)
     {
-        var id = solution.GetDocumentIdsWithFilePath(Path.GetFullPath(filePath)).FirstOrDefault()
-            ?? throw new McpException($"'{filePath}' is not part of the loaded project or solution.");
-        return solution.GetDocument(id)!;
+        if (solution.GetDocumentIdsWithFilePath(Path.GetFullPath(filePath)).FirstOrDefault() is { } id)
+            return solution.GetDocument(id)!;
+
+        // ponytail: the paths are relative, so one generator's file in several projects has one path, and the first project's wins; give each
+        // project a GeneratedFilesOutputDirectory of its own if that matters.
+        foreach (var project in solution.Projects)
+        {
+            foreach (var generated in await project.GetSourceGeneratedDocumentsAsync(cancellationToken))
+            {
+                if (generated.FilePath is { } path && Path.GetFullPath(path).Equals(Path.GetFullPath(filePath), StringComparison.OrdinalIgnoreCase))
+                    return generated;
+            }
+        }
+
+        throw new McpException($"'{filePath}' is not part of the loaded project or solution.");
     }
+
+    /// <summary>The document, if code can be edited in it: not a source generator's output.</summary>
+    public static Document Editable(Document document) => document is SourceGeneratedDocument
+        ? throw new McpException($"'{document.FilePath}' is the output of a source generator, which cannot be edited.")
+        : document;
 
     /// <summary>
     /// Whether a syntax tree is code that people wrote, as Roslyn's analyzers tell it from generated code: a document of the solution, not from a
@@ -297,19 +315,24 @@ public sealed class WorkspaceService
             var loaded = Load(path, _settings);
             var previous = _watchers;
             var roots = GetRoots(loaded.Solution);
-            _watchers = [.. roots.Select(root => Watch(root)), .. BuildFilesOutside(loaded, roots).Select(file => Watch(Path.GetDirectoryName(file)!, Path.GetFileName(file)))];
+            _watchers =
+            [
+                .. roots.Select(root => Watch(root)),
+                .. BuildFilesOutside(loaded, roots).Select(file => Watch(Path.GetDirectoryName(file)!, Path.GetFileName(file))),
+                .. SourceDirectoriesOutside(loaded.Solution, roots).Select(directory => Watch(directory, "*.cs")),
+            ];
             foreach (var watcher in previous)
                 watcher.Dispose();
 
             return _loaded = loaded;
         }
 
-        /// <summary>Watches a directory with its subdirectories, or one file in it.</summary>
-        private FileSystemWatcher Watch(string root, string? file = null)
+        /// <summary>Watches a directory with its subdirectories, or the files in it that a filter, such as a file name, matches.</summary>
+        private FileSystemWatcher Watch(string root, string? filter = null)
         {
-            var watcher = new FileSystemWatcher(root, file ?? "*")
+            var watcher = new FileSystemWatcher(root, filter ?? "*")
             {
-                IncludeSubdirectories = file is null,
+                IncludeSubdirectories = filter is null,
                 InternalBufferSize = 64 * 1024,
                 NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.LastWrite,
             };
@@ -407,6 +430,18 @@ public sealed class WorkspaceService
                 .Concat(loaded.Solution.Projects.SelectMany(project => project.AnalyzerConfigDocuments.Select(document => document.FilePath)))
                 .OfType<string>()
                 .Where(file => file.Length > 0 && File.Exists(file) && !roots.Any(root => IsUnder(file, root)))
+                .Distinct(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// The directories of the source files the projects compile from outside the watched directories, such as files shared between
+        /// projects through Compile items with a relative path, or a package's content files.
+        /// </summary>
+        private static IEnumerable<string> SourceDirectoriesOutside(Solution solution, string[] roots) =>
+            solution.Projects.SelectMany(project => project.Documents.Select(document => document.FilePath))
+                .OfType<string>()
+                .Where(file => !roots.Any(root => IsUnder(file, root)))
+                .Select(file => Path.GetDirectoryName(file)!)
+                .Where(Directory.Exists)
                 .Distinct(StringComparer.OrdinalIgnoreCase);
 
         private static IEnumerable<string> Enumerate(string directory) =>
@@ -560,10 +595,13 @@ public sealed class WorkspaceService
                 loader: TextLoader.From(TextAndVersion.Create(Read(file), VersionStamp.Create(), file)), filePath: file));
         var references = arguments.MetadataReferences.Select(reference => (Path: Path.GetFullPath(reference.Reference, directory), reference.Properties)).ToList();
 
+        // Without a documentation file to write, the compiler skips documentation comments; an IDE parses them, for the documentation it shows.
+        var parseOptions = arguments.ParseOptions.DocumentationMode == DocumentationMode.None ? arguments.ParseOptions.WithDocumentationMode(DocumentationMode.Parse) : arguments.ParseOptions;
+
         return project
             .WithAssemblyName(arguments.CompilationName ?? name)
             .WithCompilationOptions(arguments.CompilationOptions.WithStrongNameProvider(new DesktopStrongNameProvider(arguments.KeyFileSearchPaths)))
-            .WithParseOptions(arguments.ParseOptions)
+            .WithParseOptions(parseOptions)
             .WithDocuments(Documents(arguments.SourceFiles.Select(file => file.Path)))
             .WithAdditionalDocuments(Documents(arguments.AdditionalFiles.Select(file => file.Path)))
             .WithAnalyzerConfigDocuments(Documents(arguments.AnalyzerConfigPaths))

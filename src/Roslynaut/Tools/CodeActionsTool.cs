@@ -25,7 +25,7 @@ public sealed class CodeActionsTool(WorkspaceService workspace, CodeActionServic
         [Description(ToolDefaults.PageSize)] int pageSize = ToolDefaults.DefaultPageSize,
         CancellationToken cancellationToken = default)
     {
-        var document = await workspace.GetDocumentAsync(projectPath, filePath);
+        var document = WorkspaceService.Editable(await workspace.GetDocumentAsync(projectPath, filePath, cancellationToken));
         var text = await document.GetTextAsync(cancellationToken);
         var span = SpanOf(text, filePath, line, column, endLine ?? (endColumn is null ? null : line), endColumn);
         return await cache.GetPageAsync<CodeActionEntry>(document.Project.Solution, $"code_actions|{filePath}|{span}", page, pageSize,
@@ -60,7 +60,7 @@ public sealed class FixAllTool(WorkspaceService workspace, CodeActionService cod
         CancellationToken cancellationToken = default)
     {
         var solution = (await workspace.GetAsync(projectPath)).Solution;
-        var document = filePath is null ? null : WorkspaceService.GetDocument(solution, filePath);
+        var document = filePath is null ? null : WorkspaceService.Editable(await WorkspaceService.GetDocumentAsync(solution, filePath, cancellationToken));
         var (fixTitle, changed) = await codeActions.FixAllAsync(solution, document, diagnosticId, title, cancellationToken);
         return new(fixTitle, await WorkspaceService.WriteChangesAsync(solution, changed, cancellationToken));
     }

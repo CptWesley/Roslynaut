@@ -105,6 +105,30 @@ public class WorkspaceSyncTests : EndToEndTest
         await EventuallyAsync(async () => await SayAsync() == "    public static string Say() => \"hi\";", "the server should load the project again");
     }
 
+    // A file that projects share sits outside their folders, and a Compile item with a relative path brings it in.
+    [Test]
+    public async Task LinkedFilesOutsideTheProject_ShowTheirChanges()
+    {
+        var project = Sample.Write("edits/Linked/App/App.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <TargetFramework>net10.0</TargetFramework>
+              </PropertyGroup>
+              <ItemGroup>
+                <Compile Include="..\Shared\Flag.cs" />
+              </ItemGroup>
+            </Project>
+            """);
+        var flag = Sample.Write("edits/Linked/Shared/Flag.cs", "namespace Edits;\n\npublic static class Flag\n{\n    public static string Say() => \"hi\";\n}\n");
+        async Task<string> SayAsync() =>
+            (await Server.CallAsync<List<SymbolSourceTool.SymbolSource>>("symbol_source", new() { ["projectPath"] = project, ["symbol"] = "Flag.Say" })).Single().Source;
+        (await SayAsync()).Should().Be("    public static string Say() => \"hi\";");
+
+        File.WriteAllText(flag, File.ReadAllText(flag).Replace("\"hi\"", "\"HI\""));
+
+        await EventuallyAsync(async () => await SayAsync() == "    public static string Say() => \"HI\";", "the server should see the change to the linked file");
+    }
+
     // An editor that saves through a temporary file renames it over the original.
     [Test]
     public async Task FilesReplacedByARename_ShowTheirNewText()

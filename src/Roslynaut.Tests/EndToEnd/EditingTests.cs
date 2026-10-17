@@ -120,6 +120,20 @@ public class EditingTests : EndToEndTest
         Read(FileOf(project, "Counter.cs")).Should().Be(Counter.ReplaceLineEndings("\n"));
     }
 
+    // Roslyn would rename Width over Height, which Box already has, and leave two properties of one name.
+    [Test]
+    public async Task RenameSymbol_ToANameThatConflicts_ChangesNothing()
+    {
+        const string box = "namespace Edits;\n\npublic class Box\n{\n    public int Width { get; set; }\n\n    public int Height { get; set; }\n\n    public int Area() => Width * Height;\n}\n";
+        var project = Sample.NewProject("RenameConflict", ("Box.cs", box));
+
+        var error = await Server.CallFailingAsync("rename_symbol", new() { ["projectPath"] = project, ["symbol"] = "Box.Width", ["newName"] = "Height" });
+
+        error.Should().StartWith("An error occurred invoking 'rename_symbol': Renaming Edits.Box.Width to Height would leave code that does not compile, so nothing changed: CS0102 ")
+            .And.Contain("(Box.cs:7)");
+        Read(FileOf(project, "Box.cs")).Should().Be(box);
+    }
+
     // Reorders, and adds a parameter that call sites pass a value for.
     [Test]
     public async Task ChangeSignature_UpdatesTheCallSites()
@@ -480,6 +494,28 @@ public class EditingTests : EndToEndTest
         await Server.CallAsync<EditResult>("insert_after_symbol", new() { ["projectPath"] = project, ["symbol"] = "Widget.Speed", ["code"] = "    public int Weight;" });
 
         Read(FileOf(project, "Widget.cs")).Should().Be(Widget.Replace("    public int Speed;", "    public int Speed;\n    public int Weight;").ReplaceLineEndings("\n"));
+    }
+
+    // A partial type has a declaration per part; a position picks one.
+    [Test]
+    public async Task InsertAfterSymbol_OfAPartialType_AfterThePartAtAPosition()
+    {
+        const string order = "namespace Edits;\n\npublic partial class Order\n{\n    public int Id { get; set; }\n}\n";
+        const string lines = "namespace Edits;\n\npublic partial class Order\n{\n    public int Lines { get; set; }\n}\n";
+        var project = Sample.NewProject("InsertAfterPartial", ("Order.cs", order), ("Order.Lines.cs", lines));
+        var file = FileOf(project, "Order.Lines.cs");
+        var (line, column) = Sample.Find(file, "Order");
+
+        (await Server.CallFailingAsync("insert_after_symbol", new() { ["projectPath"] = project, ["symbol"] = "Edits.Order", ["code"] = "\npublic class Line\n{\n}" }))
+            .Should().Be("An error occurred invoking 'insert_after_symbol': Edits.Order has 2 declarations; edit one by a position in it.");
+        var result = await Server.CallAsync<EditResult>("insert_after_symbol", new()
+        {
+            ["projectPath"] = project, ["filePath"] = file, ["line"] = line, ["column"] = column, ["code"] = "\npublic class Line\n{\n}",
+        });
+
+        result.ChangedFiles.Should().Equal(file);
+        Read(file).Should().Be(lines + "\npublic class Line\n{\n}\n");
+        Read(FileOf(project, "Order.cs")).Should().Be(order);
     }
 
     // An agent edits in a row, each edit on what the one before wrote, without waiting for the file watchers.

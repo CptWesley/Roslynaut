@@ -13,7 +13,7 @@ internal static class CodeScope
     public static async Task<List<(Document Document, TextSpan? Span)>> ResolveAsync(Solution solution, string? scope, CancellationToken cancellationToken)
     {
         if (scope is not null && scope.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
-            return [(WorkspaceService.GetDocument(solution, scope), null)];
+            return [(await WorkspaceService.GetDocumentAsync(solution, scope, cancellationToken), null)];
 
         var projects = scope is null ? solution.Projects : solution.Projects.Where(project => project.Name.Equals(scope, StringComparison.OrdinalIgnoreCase)).ToList();
         if (scope is null || projects.Any())

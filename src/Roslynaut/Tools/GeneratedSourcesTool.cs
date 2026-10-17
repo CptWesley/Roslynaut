@@ -42,7 +42,7 @@ public sealed class GeneratedSourcesTool(WorkspaceService workspace, ResultCache
     }
 
     /// <param name="Name">The hint name the generator gave the file.</param>
-    /// <param name="FilePath">The path other tools report locations in this file with.</param>
+    /// <param name="FilePath">The path other tools report locations in this file with, and take to read it.</param>
     /// <param name="Source">The content, when asked for by name.</param>
     public sealed record GeneratedSource(string Project, string Name, string? FilePath, int Lines, string? Source);
 }

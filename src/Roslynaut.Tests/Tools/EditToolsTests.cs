@@ -54,7 +54,7 @@ public class EditToolsTests
     {
         var solution = TestSolution.Create(Widget);
         var symbols = await SymbolTree.ResolveAsync(solution, path, CancellationToken.None);
-        return (await TextOf(await SymbolEdits.EditAsync(solution, symbols, placement, code, CancellationToken.None))).Replace("\r\n", "\n");
+        return (await TextOf(await SymbolEdits.EditAsync(solution, symbols, placement, code, null, null, CancellationToken.None))).Replace("\r\n", "\n");
     }
 
     [Test]

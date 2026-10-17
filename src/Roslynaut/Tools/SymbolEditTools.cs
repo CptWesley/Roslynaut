@@ -24,9 +24,10 @@ internal static class SymbolEdits
     /// Replaces the declaration (from the start of its first line, as symbol_source returns it), or inserts code on the lines before it
     /// (and before its documentation comment) or after it.
     /// </summary>
-    public static async Task<Solution> EditAsync(Solution solution, IReadOnlyList<ISymbol> symbols, Placement placement, string code, CancellationToken cancellationToken)
+    public static async Task<Solution> EditAsync(
+        Solution solution, IReadOnlyList<ISymbol> symbols, Placement placement, string code, string? filePath, int? line, CancellationToken cancellationToken)
     {
-        var (document, node) = await DeclarationAsync(solution, symbols, cancellationToken);
+        var (document, node) = await DeclarationAsync(solution, symbols, filePath, line, cancellationToken);
         var text = await document.GetTextAsync(cancellationToken);
         var newLine = text.Lines.Count > 1 && text.ToString(TextSpan.FromBounds(text.Lines[0].End, text.Lines[0].EndIncludingLineBreak)) is { Length: > 0 } lineBreak ? lineBreak : "\n";
         var lines = code.EndsWith('\n') ? code : code + newLine;
@@ -105,14 +106,22 @@ internal static class SymbolEdits
         _ => [],
     };
 
-    private static async Task<(Document Document, SyntaxNode Node)> DeclarationAsync(Solution solution, IReadOnlyList<ISymbol> symbols, CancellationToken cancellationToken)
+    /// <summary>The declaration to edit; of a symbol with several, such as a partial type, the one at the 1-based line of a file.</summary>
+    private static async Task<(Document Document, SyntaxNode Node)> DeclarationAsync(
+        Solution solution, IReadOnlyList<ISymbol> symbols, string? filePath, int? line, CancellationToken cancellationToken)
     {
-        if (symbols is not [var symbol] || symbol.DeclaringSyntaxReferences is not [var reference])
+        if (symbols is not [var symbol])
+            throw new McpException($"The symbol path matches {symbols.Count} symbols; pick one by adding a parameter list, or by position.");
+
+        var references = symbol.DeclaringSyntaxReferences;
+        if (references.Length > 1 && filePath is not null && line is { } at)
         {
-            throw new McpException(symbols.Count != 1
-                ? $"The symbol path matches {symbols.Count} symbols; pick one by adding a parameter list, or by position."
-                : $"{symbols[0].ToDisplayString()} has {symbols[0].DeclaringSyntaxReferences.Length} declarations; edit one by position.");
+            references = [.. references.Where(reference => reference.SyntaxTree.FilePath.Equals(Path.GetFullPath(filePath), StringComparison.OrdinalIgnoreCase)
+                && reference.SyntaxTree.GetLineSpan(reference.Span) is var span && span.StartLinePosition.Line < at && at <= span.EndLinePosition.Line + 1)];
         }
+
+        if (references is not [var reference])
+            throw new McpException($"{symbol.ToDisplayString()} has {symbol.DeclaringSyntaxReferences.Length} declarations; edit one by a position in it.");
 
         var node = await reference.GetSyntaxAsync(cancellationToken);
 
@@ -146,7 +155,7 @@ public sealed class ReplaceSymbolBodyTool(WorkspaceService workspace) : IMcpTool
         CancellationToken cancellationToken = default)
     {
         var (solution, symbols) = await workspace.ResolveAsync(projectPath, symbol, filePath, line, column, cancellationToken);
-        var edited = await SymbolEdits.EditAsync(solution, symbols, SymbolEdits.Placement.Replace, code, cancellationToken);
+        var edited = await SymbolEdits.EditAsync(solution, symbols, SymbolEdits.Placement.Replace, code, filePath, line, cancellationToken);
         return new(await WorkspaceService.WriteChangesAsync(solution, edited, cancellationToken));
     }
 }
@@ -168,7 +177,7 @@ public sealed class InsertBeforeSymbolTool(WorkspaceService workspace) : IMcpToo
         CancellationToken cancellationToken = default)
     {
         var (solution, symbols) = await workspace.ResolveAsync(projectPath, symbol, filePath, line, column, cancellationToken);
-        var edited = await SymbolEdits.EditAsync(solution, symbols, SymbolEdits.Placement.Before, code, cancellationToken);
+        var edited = await SymbolEdits.EditAsync(solution, symbols, SymbolEdits.Placement.Before, code, filePath, line, cancellationToken);
         return new(await WorkspaceService.WriteChangesAsync(solution, edited, cancellationToken));
     }
 }
@@ -189,7 +198,7 @@ public sealed class InsertAfterSymbolTool(WorkspaceService workspace) : IMcpTool
         CancellationToken cancellationToken = default)
     {
         var (solution, symbols) = await workspace.ResolveAsync(projectPath, symbol, filePath, line, column, cancellationToken);
-        var edited = await SymbolEdits.EditAsync(solution, symbols, SymbolEdits.Placement.After, code, cancellationToken);
+        var edited = await SymbolEdits.EditAsync(solution, symbols, SymbolEdits.Placement.After, code, filePath, line, cancellationToken);
         return new(await WorkspaceService.WriteChangesAsync(solution, edited, cancellationToken));
     }
 }
