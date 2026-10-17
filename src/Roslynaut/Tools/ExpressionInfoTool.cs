@@ -52,7 +52,7 @@ public sealed class ExpressionInfoTool(WorkspaceService workspace) : IMcpTool
             type.Type?.ToDisplayString(),
             SymbolEqualityComparer.Default.Equals(type.Type, type.ConvertedType) ? null : type.ConvertedType?.ToDisplayString(),
             conversion.IsIdentity || !conversion.Exists ? null : $"{(conversion.IsImplicit ? "Implicit" : "Explicit")} {Kind(conversion)}",
-            constant.HasValue ? constant.Value?.ToString() ?? "null" : null,
+            constant.HasValue ? FormattableString.Invariant($"{constant.Value ?? "null"}") : null,
             type.Nullability.FlowState == NullableFlowState.None ? null : type.Nullability.FlowState.ToString(),
             symbol.Symbol?.ToDisplayString(),
             [.. symbol.CandidateSymbols.Select(candidate => candidate.ToDisplayString())],

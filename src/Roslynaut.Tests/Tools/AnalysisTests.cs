@@ -157,6 +157,26 @@ public class AnalysisTests
             .Should().BeEquivalentTo("F.Internals.unused", "F.Internals.Helper", "F.Internals.Use", "F.Internals.Forgotten");
     }
 
+    // Agents read the output, whatever the culture of the machine the server runs on.
+    [Test]
+    [SetCulture("nl-NL")]
+    public async Task ExpressionInfo_WritesConstantsInvariantly()
+    {
+        const string code = "class C { double Half() => 0.5; }";
+        var document = TestSolution.Create(code).Projects.Single().Documents.Single();
+
+        (await ExpressionInfoTool.DescribeAsync(document, code.IndexOf("0.5", StringComparison.Ordinal), CancellationToken.None)).First().ConstantValue.Should().Be("0.5");
+    }
+
+    [Test]
+    public async Task UnusedSymbols_LeavesOutTheTypeOfTheEntryPoint()
+    {
+        var solution = TestSolution.Create("return;\nclass Helper { }\n");
+        solution = solution.WithProjectCompilationOptions(solution.ProjectIds[0], new CSharpCompilationOptions(OutputKind.ConsoleApplication));
+
+        (await UnusedSymbolsTool.FindAsync(solution, null, includePublic: false, CancellationToken.None)).Select(TestSolution.PathOf).Should().Equal("Helper");
+    }
+
     [TestCase(false, new[] { "F.Leaf.name" })]
     [TestCase(true, new[] { "F.Leaf.name", "F.Leaf.Children" })]
     public async Task UnusedSymbols_LeavesOutPublic_UnlessAsked(bool includePublic, string[] expected)
@@ -189,6 +209,9 @@ public class AnalysisTests
             .Which.Should().Match<GeneratedSourcesTool.GeneratedSource>(source => source.Name == "Hello.g.cs" && source.Lines == 1 && source.Source == null);
         (await GeneratedSourcesTool.ListAsync(solution, "hello", CancellationToken.None)).Should().ContainSingle()
             .Which.Source.Should().Contain("class Hello");
+
+        // Generated code is not for people to clean up.
+        (await UnusedSymbolsTool.FindAsync(solution, null, includePublic: true, CancellationToken.None)).Should().NotContain(symbol => symbol.Name == "Hello");
 
         // A build that writes the generator again must be able to; Windows lets a loaded assembly be deleted, not written.
         File.WriteAllBytes(generator, []);

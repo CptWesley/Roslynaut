@@ -11,6 +11,7 @@ dotnet build src/Roslynaut.slnx
 dotnet test src/Roslynaut.Tests                                              # all tests
 dotnet test src/Roslynaut.Tests --filter "FullyQualifiedName~NavigationTests" # one class
 dotnet test src/Roslynaut.Tests --filter "Name=References_HaveContainerAndAccess"
+dotnet test src/Roslynaut.Tests --filter "TestCategory!=EndToEnd"                    # without the end-to-end tests
 dotnet run --project src/Roslynaut -- --protocol stdio|http|sse              # no args = stdio
 ```
 
@@ -58,6 +59,13 @@ Tests use NUnit with AwesomeAssertions (`.Should()`). Both are global usings.
 ## Testing
 
 `TestSolution.Create(code)` builds an in-memory `AdhocWorkspace` solution, so most tests run without MSBuild. Tests that need real builds or processes (`TestToolsTests`, `ProcessInspectionTests`, `DebugTests`) are `[NonParallelizable]`. They write a temporary project in `[OneTimeSetUp]`.
+
+The end-to-end tests (`EndToEnd/`, category `EndToEnd`, about two minutes) run the server as a client does and call every tool through MCP.
+- `EndToEndSetup` writes `SampleSolution` to a temporary git repository: a library, a console app and an NUnit project, plus a local feed with two versions of a package that embeds its PDB and sources. It starts one stdio server for all of them and builds the sample through the server's `build` tool, whose binary log the `build_*` tests read.
+- Packages restore into the sample's own packages folder, falling back on the machine's global packages folder, so no package is downloaded that the test project's own restore did not already download.
+- Tests read results into the server's own records (`ServerProcess.CallAsync<T>`) and compare them with what `SampleSolution.Location` finds in the files, so a change to the sample moves the expected positions along.
+- Tests that change code do so in a project of their own (`SampleSolution.NewProject`). `TransportTests` start HTTP and SSE servers of their own. `DebugTests` need netcoredbg, as above.
+- Run only them with `--filter "TestCategory=EndToEnd"`, or leave them out with `--filter "TestCategory!=EndToEnd"`.
 
 ## Conventions
 

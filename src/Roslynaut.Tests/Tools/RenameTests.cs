@@ -54,6 +54,35 @@ public class RenameTests
         });
     }
 
+    // Roslyn formats with the platform's line ends, such as \r\n on Windows.
+    [TestCase("\n", "\r\n")]
+    [TestCase("\r\n", "\n")]
+    public async Task WriteChanges_KeepsTheLineEndsOfTheFile(string fileLineEnd, string otherLineEnd)
+    {
+        await InFileAsync($"public class Widget{fileLineEnd}{{{fileLineEnd}}}{fileLineEnd}", async (solution, _, path) =>
+        {
+            var document = solution.Projects.Single().Documents.Single();
+            var edited = solution.WithDocumentText(document.Id, Microsoft.CodeAnalysis.Text.SourceText.From(
+                $"public class Widget{fileLineEnd}{{{otherLineEnd}    int x;{otherLineEnd}}}{fileLineEnd}"));
+
+            (await WorkspaceService.WriteChangesAsync(solution, edited, CancellationToken.None)).Should().Equal(path);
+            File.ReadAllText(path).Should().Be($"public class Widget{fileLineEnd}{{{fileLineEnd}    int x;{fileLineEnd}}}{fileLineEnd}");
+        });
+    }
+
+    [Test]
+    public async Task WriteChanges_NewFile_TakesTheLineEndsOfTheProject()
+    {
+        await InFileAsync("public class Widget\n{\n}\n", async (solution, directory, _) =>
+        {
+            var gadget = Path.Combine(directory, "Gadget.cs");
+            var added = solution.Projects.Single().AddDocument("Gadget.cs", "public class Gadget\r\n{\r\n}\r\n", filePath: gadget).Project.Solution;
+
+            (await WorkspaceService.WriteChangesAsync(solution, added, CancellationToken.None)).Should().Equal(gadget);
+            File.ReadAllText(gadget).Should().Be("public class Gadget\n{\n}\n");
+        });
+    }
+
     // Roslyn's own option would rename the file after any symbol.
     [Test]
     public async Task WriteChanges_KeepsFile_WhenRenamingMember()

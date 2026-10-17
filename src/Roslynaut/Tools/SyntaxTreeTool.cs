@@ -67,7 +67,7 @@ public sealed class SyntaxTreeTool(WorkspaceService workspace) : IMcpTool
             if (operation.Type is { } type)
                 details.Add($"Type: {type.ToDisplayString()}");
             if (operation.ConstantValue.HasValue)
-                details.Add($"Constant: {operation.ConstantValue.Value ?? "null"}");
+                details.Add(FormattableString.Invariant($"Constant: {operation.ConstantValue.Value ?? "null"}"));
             if (ReferencedSymbol(operation) is { } symbol)
                 details.Add($"Symbol: {symbol.ToDisplayString()}");
             if (operation.IsImplicit)

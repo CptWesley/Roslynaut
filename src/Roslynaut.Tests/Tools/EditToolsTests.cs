@@ -19,6 +19,16 @@ public class EditToolsTests
         (await TextOf((await OrganizeUsingsTool.OrganizeAsync(DocumentOf(solution), removeUnused, CancellationToken.None)).Project.Solution)).Should().Be(expected);
     }
 
+    // A line's indentation comes before it, so it changes too; the lines around keep theirs.
+    [Test]
+    public async Task Format_Lines_IndentsThemToo()
+    {
+        var solution = TestSolution.Create("class C\n{\nvoid M()\n{\nreturn  ;\n}\n}\n");
+
+        (await (await FormatTool.FormatAsync(DocumentOf(solution), 5, null, CancellationToken.None)).GetTextAsync()).ToString().ReplaceLineEndings("\n")
+            .Should().Be("class C\n{\nvoid M()\n{\n        return;\n}\n}\n");
+    }
+
     [Test]
     public async Task FixAll_FixesEveryOccurrence()
     {

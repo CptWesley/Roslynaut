@@ -178,6 +178,10 @@ public class BuildLogTests
 
         BuildLogSearchTool.Search(binlog, "$task Csc project(Lib2)").Should().ContainSingle().Which.Should().Match<BuildLogSearchTool.LogMatch>(match =>
             match.Project == "Lib2.csproj (net10.0)" && match.Target == "CoreCompile" && match.Task == "Csc");
+
+        // App's MSBuild task built Lib2, but is not in Lib2.
+        BuildLogSearchTool.Search(binlog, "$target CoreCompile project(Lib2)").Should().Contain(match => match.Target == "CoreCompile")
+            .And.OnlyContain(match => match.Project == "Lib2.csproj (net10.0)" && match.Task == null);
     }
 
     [Test]

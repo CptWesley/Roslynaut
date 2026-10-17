@@ -2,6 +2,7 @@ using System.ComponentModel;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Formatting;
+using Microsoft.CodeAnalysis.Text;
 using ModelContextProtocol.Server;
 
 namespace Roslynaut.Tools;
@@ -23,10 +24,20 @@ public sealed class FormatTool(WorkspaceService workspace) : IMcpTool
         CancellationToken cancellationToken = default)
     {
         var document = await workspace.GetDocumentAsync(projectPath, filePath);
-        var formatted = startLine is null
-            ? await Formatter.FormatAsync(document, options: null, cancellationToken)
-            : await Formatter.FormatAsync(document, WorkspaceService.LinesOf(await document.GetTextAsync(cancellationToken), startLine.Value, endLine ?? startLine.Value, filePath), options: null, cancellationToken);
+        var formatted = await FormatAsync(document, startLine, endLine, cancellationToken);
         return new(await WorkspaceService.WriteChangesAsync(document.Project.Solution, formatted.Project.Solution, cancellationToken));
+    }
+
+    internal static async Task<Document> FormatAsync(Document document, int? startLine, int? endLine, CancellationToken cancellationToken)
+    {
+        if (startLine is null)
+            return await Formatter.FormatAsync(document, options: null, cancellationToken);
+
+        // The first line's indentation is in the whitespace after the line before, which the formatter only changes when the span has it.
+        var text = await document.GetTextAsync(cancellationToken);
+        var lines = WorkspaceService.LinesOf(text, startLine.Value, endLine ?? startLine.Value, document.FilePath);
+        var span = TextSpan.FromBounds(startLine > 1 ? text.Lines[startLine.Value - 2].End : 0, lines.End);
+        return await Formatter.FormatAsync(document, span, options: null, cancellationToken);
     }
 }
 

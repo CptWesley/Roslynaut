@@ -1,3 +1,4 @@
+using Microsoft.CodeAnalysis;
 using Roslynaut.Tools;
 
 namespace Roslynaut.Tests.Tools;
@@ -32,6 +33,25 @@ public class SymbolSearchTests
         var symbols = await SymbolTree.ResolveAsync(TestSolution.Nested, path, CancellationToken.None);
 
         symbols.Select(symbol => TestSolution.PathOf(SymbolEntry.From(symbol))).Should().ContainSingle().Which.Should().Be(expected);
+    }
+
+    // A project's namespace also holds what the projects it references declare there. With references of their own to the same files, as
+    // WorkspaceService gives projects, those are copies of the referenced projects' symbols.
+    [Test]
+    public async Task ResolveSymbolPath_ThroughANamespaceOfSeveralProjects_FindsEachSymbolOnce()
+    {
+        var lib = TestSolution.Create("namespace Shapes { public class Circle { } } namespace Shapes.Internal { class Registry { } }").Projects.Single();
+        var solution = lib.Solution.AddProject("App", "App", LanguageNames.CSharp)
+            .WithCompilationOptions(lib.CompilationOptions!)
+            .AddMetadataReference(MetadataReference.CreateFromFile(typeof(object).Assembly.Location))
+            .AddProjectReference(new ProjectReference(lib.Id))
+            .AddDocument("App.cs", "namespace Shapes.App { class Program { } }").Project.Solution;
+
+        (await SymbolTree.ResolveAsync(solution, "Shapes.Circle", CancellationToken.None)).Should().ContainSingle();
+        var children = new List<SymbolEntry>();
+        foreach (var shapes in await SymbolTree.ResolveAsync(solution, "Shapes", CancellationToken.None))
+            children.AddRange((await SymbolTree.GetChildrenAsync(solution, shapes, CancellationToken.None)).Select(child => SymbolEntry.From(child)));
+        children.Distinct().Select(TestSolution.PathOf).Should().BeEquivalentTo("Shapes.Circle", "Shapes.Internal", "Shapes.App");
     }
 
     [TestCase("Some.Foo.Package.Foo.Bar", new[] { Bar, Barrier })]

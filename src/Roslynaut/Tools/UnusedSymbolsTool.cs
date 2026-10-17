@@ -10,9 +10,9 @@ public sealed class UnusedSymbolsTool(WorkspaceService workspace, ResultCache ca
     public Delegate Handler => FindUnusedAsync;
 
     [McpServerTool(Name = "unused_symbols", ReadOnly = true)]
-    [Description("Finds types and members declared in source that nothing references; the members of an unused type are left out. "
-        + "Public ones are left out unless asked for, as they can be used from outside. So are overrides, interface implementations, "
-        + "constructors, entry points and symbols with attributes, as frameworks, serializers or reflection may use those. Paged.")]
+    [Description("Finds types and members declared in source that nothing references; the members of an unused type are left out, and so is "
+        + "generated code. Public ones are left out unless asked for, as they can be used from outside. So are overrides, interface implementations, "
+        + "constructors, entry points and their types, and symbols with attributes, as frameworks, serializers or reflection may use those. Paged.")]
     private async Task<PagedResult<SymbolEntry>> FindUnusedAsync(
         [Description(ToolDefaults.ProjectPath)] string projectPath,
         [Description("Optional path of a C# file, or a symbol path, to search within. " + ToolDefaults.SymbolPath)] string? scope = null,
@@ -32,18 +32,19 @@ public sealed class UnusedSymbolsTool(WorkspaceService workspace, ResultCache ca
         var roots = scope is null
             ? await SymbolTree.GetRootNamespacesAsync(solution, cancellationToken)
             : (await SymbolTree.ResolveAsync(solution, scope, cancellationToken)).Select(SymbolTree.TypeOrSelf);
+        // The runtime uses entry points and their types, such as the Program of top-level statements.
         var entryPoints = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
         foreach (var project in solution.Projects)
         {
             if ((await project.GetCompilationAsync(cancellationToken))?.GetEntryPoint(cancellationToken) is { } entryPoint)
-                entryPoints.Add(entryPoint);
+                entryPoints.UnionWith([entryPoint, entryPoint.ContainingType]);
         }
 
         // Breadth first, so types come before their members.
         var unused = new List<ISymbol>();
         await foreach (var symbol in SymbolTree.GetDescendantsAsync(solution, roots, includeLocals: false, cancellationToken))
         {
-            if (!IsCandidate(symbol, includePublic) || entryPoints.Contains(symbol) || unused.Contains(symbol.ContainingType, SymbolEqualityComparer.Default))
+            if (!IsCandidate(solution, symbol, includePublic) || entryPoints.Contains(symbol) || unused.Contains(symbol.ContainingType, SymbolEqualityComparer.Default))
                 continue;
 
             var references = await SymbolFinder.FindReferencesAsync(symbol, solution, cancellationToken);
@@ -54,9 +55,10 @@ public sealed class UnusedSymbolsTool(WorkspaceService workspace, ResultCache ca
         return unused.Select(symbol => SymbolEntry.From(symbol));
     }
 
-    private static bool IsCandidate(ISymbol symbol, bool includePublic) =>
+    // Generated code is not for people to clean up, so only symbols declared in documents count.
+    private static bool IsCandidate(Solution solution, ISymbol symbol, bool includePublic) =>
         symbol is INamedTypeSymbol or IMethodSymbol { MethodKind: MethodKind.Ordinary } or IPropertySymbol or IFieldSymbol or IEventSymbol
-        && symbol.Locations.Any(location => location.IsInSource)
+        && symbol.Locations.Any(location => location.IsInSource && solution.GetDocument(location.SourceTree) is not (null or SourceGeneratedDocument))
         && !symbol.IsImplicitlyDeclared
         && !symbol.IsOverride
         && symbol.GetAttributes().IsEmpty

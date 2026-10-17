@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using ModelContextProtocol;
 
 namespace Roslynaut;
@@ -25,7 +26,10 @@ internal static class DotnetCli
         var start = new ProcessStartInfo(executable)
         {
             WorkingDirectory = workingDirectory ?? "",
-            RedirectStandardInput = input is not null,
+
+            // Not the server's own standard input, which carries the protocol over stdio: a process could read it, and Git for Windows
+            // blocks on it while the server waits to read it.
+            RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
 
@@ -37,18 +41,23 @@ internal static class DotnetCli
 
         using var process = Start(start);
         if (input is not null)
-        {
             await process.StandardInput.WriteAsync(input);
-            process.StandardInput.Close();
-        }
+        process.StandardInput.Close();
 
         using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutSource.CancelAfter(timeout);
         try
         {
-            var (output, error) = (process.StandardOutput.ReadToEndAsync(timeoutSource.Token), process.StandardError.ReadToEndAsync(timeoutSource.Token));
+            var (output, error) = (new StringBuilder(), new StringBuilder());
+            var reading = Task.WhenAll(CopyAsync(process.StandardOutput, output), CopyAsync(process.StandardError, error));
             await process.WaitForExitAsync(timeoutSource.Token);
-            return (process.ExitCode, await output + await error);
+
+            // A process it starts can inherit the pipes and keep them open after it exits, such as the MSBuild nodes that dotnet build keeps for
+            // reuse; what it wrote itself is in the pipes by then.
+            await Task.WhenAny(reading, Task.Delay(TimeSpan.FromSeconds(2), timeoutSource.Token));
+            lock (output)
+            lock (error)
+                return (process.ExitCode, output.ToString() + error);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -58,6 +67,16 @@ internal static class DotnetCli
         {
             if (!process.HasExited)
                 process.Kill(entireProcessTree: true);
+        }
+
+        static async Task CopyAsync(StreamReader reader, StringBuilder text)
+        {
+            var buffer = new char[4096];
+            for (int read; (read = await reader.ReadAsync(buffer)) > 0;)
+            {
+                lock (text)
+                    text.Append(buffer, 0, read);
+            }
         }
 
         // An executable that is not on the PATH.

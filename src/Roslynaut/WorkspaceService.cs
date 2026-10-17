@@ -104,9 +104,12 @@ public sealed class WorkspaceService
                 if (path is null)
                     continue;
 
-                var text = await document.GetTextAsync(cancellationToken);
+                // A new file takes the line ends of the project's files.
+                var text = (await document.GetTextAsync(cancellationToken)).ToString();
+                if ((original ?? project.OldProject.Documents.FirstOrDefault()) is { } model)
+                    text = WithLineEndsOf((await model.GetTextAsync(cancellationToken)).ToString(), text);
                 Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-                await File.WriteAllTextAsync(path, text.ToString(), EncodingOf(original?.FilePath ?? path), cancellationToken);
+                await File.WriteAllTextAsync(path, text, EncodingOf(original?.FilePath ?? path), cancellationToken);
                 if (original?.FilePath is { } moved && !moved.Equals(path, StringComparison.OrdinalIgnoreCase))
                     File.Delete(moved);
                 written.Add(path);
@@ -145,6 +148,22 @@ public sealed class WorkspaceService
             [0xFF, 0xFE, ..] => Encoding.Unicode,
             [0xFE, 0xFF, ..] => Encoding.BigEndianUnicode,
             _ => new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+        };
+    }
+
+    /// <summary>
+    /// A document's new text with the line ends its old text had, if those were of one kind: Roslyn writes the platform's line ends into code
+    /// it formats or generates, which would mix them into a file with the other kind.
+    /// </summary>
+    internal static string WithLineEndsOf(string original, string text)
+    {
+        var crlf = (original.Length - original.Replace("\r\n", "").Length) / 2;
+        var lf = original.Count(c => c == '\n') - crlf;
+        return (crlf, lf) switch
+        {
+            (0, > 0) => text.Replace("\r\n", "\n"),
+            (> 0, 0) => text.Replace("\r\n", "\n").Replace("\n", "\r\n"),
+            _ => text,
         };
     }
 

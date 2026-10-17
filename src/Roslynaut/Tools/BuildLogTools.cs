@@ -87,10 +87,16 @@ internal static class BuildLog
         evaluation.FindChild<Folder>("Properties")?.FindChild<Folder>("Global")?.Children.OfType<Property>() ?? [];
 
     /// <summary>The project, target and task a node is in, or is.</summary>
-    public static (string? Project, string? Target, string? Task) Where(BaseNode node) => (
-        node.GetNearestParentOrSelf<Project>() is { } project ? Name(project) : node.GetNearestParentOrSelf<ProjectEvaluation>() is { } evaluation ? Name(evaluation) : null,
-        node.GetNearestParentOrSelf<Target>()?.Name,
-        node.GetNearestParentOrSelf<LogTask>()?.Name);
+    public static (string? Project, string? Target, string? Task) Where(BaseNode node)
+    {
+        // A target or task above the project, such as the MSBuild task that built it, belongs to another project.
+        var project = node.GetNearestParentOrSelf<Project>();
+        string? Within(NamedNode? found) => found is not null && found.GetNearestParentOrSelf<Project>() == project ? found.Name : null;
+        return (
+            project is not null ? Name(project) : node.GetNearestParentOrSelf<ProjectEvaluation>() is { } evaluation ? Name(evaluation) : null,
+            Within(node.GetNearestParentOrSelf<Target>()),
+            Within(node.GetNearestParentOrSelf<LogTask>()));
+    }
 
     public static string Join(IReadOnlyCollection<string> values, int max = 20) =>
         values.Count > max ? string.Join(";", values.Take(max)) + $";… ({values.Count} in all)" : string.Join(";", values);

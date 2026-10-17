@@ -16,7 +16,9 @@ internal static class SymbolTree
     public static async Task<IReadOnlyList<ISymbol>> ResolveAsync(Solution solution, string path, CancellationToken cancellationToken)
     {
         var segments = Split(path);
+        var own = (await GetRootNamespacesAsync(solution, cancellationToken)).Select(root => root.ContainingAssembly).ToHashSet<IAssemblySymbol>(ReferenceEqualityComparer.Instance);
         IEnumerable<ISymbol> symbols = (await SymbolFinder.FindSourceDeclarationsAsync(solution, NameOf(segments[0]), ignoreCase: true, cancellationToken))
+            .SelectMany(symbol => OwnParts(symbol, own))
             .Where(symbol => Matches(symbol, segments[0]));
         foreach (var segment in segments.Skip(1))
         {
@@ -29,6 +31,14 @@ internal static class SymbolTree
         var resolved = symbols.Distinct(SymbolEqualityComparer.Default).ToList();
         return resolved.Count > 0 ? resolved : throw new McpException($"No symbol found for '{path}'.");
     }
+
+    /// <summary>
+    /// For a namespace, the parts of it that the projects' own assemblies declare. A project's namespace also holds what its references declare
+    /// there, and for a referenced project those are copies of its symbols, which other projects resolve the path to as well; and copies of
+    /// namespaces have whole files as locations.
+    /// </summary>
+    private static IEnumerable<ISymbol> OwnParts(ISymbol symbol, HashSet<IAssemblySymbol> own) =>
+        symbol is INamespaceSymbol ns ? ns.ConstituentNamespaces.Where(part => own.Contains(part.ContainingAssembly)) : [symbol];
 
     /// <summary>The symbols declared in a symbol; for a variable, field, property or event the members of its type.</summary>
     public static Task<IEnumerable<ISymbol>> GetChildrenAsync(Solution solution, ISymbol symbol, CancellationToken cancellationToken) =>

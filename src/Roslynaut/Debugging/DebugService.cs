@@ -242,6 +242,9 @@ public sealed partial class DebugService(WorkspaceService workspace, PdbService 
         {
             // dotnet reads global.json from the working directory.
             WorkingDirectory = Path.GetDirectoryName(path)!,
+
+            // Not the server's own standard input, which carries the protocol over stdio.
+            RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             Environment =
@@ -255,6 +258,7 @@ public sealed partial class DebugService(WorkspaceService workspace, PdbService 
         var output = new StringBuilder();
         var processId = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
         var run = Process.Start(start)!;
+        run.StandardInput.Close();
         var started = run.StartTime;
         using var stopSearch = new CancellationTokenSource();
         if (application is not null)
