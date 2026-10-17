@@ -81,8 +81,7 @@ internal static class ProcessInspection
 
         if (type is null)
             throw new McpException("Pass an address, or a type to find objects of.");
-        if (!heap.CanWalkHeap)
-            throw new McpException("The heap cannot be walked; try again, or take a dump with the heap.");
+        RequireWalkable(heap, dumpPath);
 
         return [.. heap.EnumerateObjects().Where(item => item.IsValid && item.Type?.Name is { } name && type.IsMatch(name)).Take(top).Select(item => Inspect(item, runtime))];
     }
@@ -197,10 +196,7 @@ internal static class ProcessInspection
         using var target = Open(processId, dumpPath);
         using var runtime = RuntimeOf(target);
         var heap = HeapOf(runtime);
-        if (!heap.CanWalkHeap)
-            throw new McpException(dumpPath is null
-                ? "The heap cannot be walked right now, for instance during a garbage collection; try again."
-                : "The heap cannot be walked in this dump; take one with the heap, such as with dotnet-dump collect --type Heap.");
+        RequireWalkable(heap, dumpPath);
 
         var types = new Dictionary<string, (long Count, long Size)>();
         foreach (var item in heap.EnumerateObjects())
@@ -210,6 +206,18 @@ internal static class ProcessInspection
         }
 
         return new(types);
+    }
+
+    /// <summary>
+    /// Fails unless the heap's objects can be enumerated. A dump without the heap, such as a minidump, still has the heap's segments, but not
+    /// their memory, so it walks as if there were no objects at all.
+    /// </summary>
+    private static void RequireWalkable(ClrHeap heap, string? dumpPath)
+    {
+        if (dumpPath is null && !heap.CanWalkHeap)
+            throw new McpException("The heap cannot be walked right now, for instance during a garbage collection; try again.");
+        if (dumpPath is not null && (!heap.CanWalkHeap || !heap.EnumerateObjects().Any(item => item.IsValid)))
+            throw new McpException("The heap cannot be walked in this dump; take one with the heap, such as with dotnet-dump collect --type Heap.");
     }
 
     /// <summary>The largest types of a snapshot; or, against an earlier one, the types that grew the most, with how much.</summary>

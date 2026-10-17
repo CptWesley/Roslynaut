@@ -56,12 +56,14 @@ public sealed class UnusedSymbolsTool(WorkspaceService workspace, ResultCache ca
     }
 
     // Generated code is not for people to clean up, so only symbols declared in code people wrote count.
+    // Frameworks also find types by their members' attributes, such as test fixtures by their [Test] methods.
     private static bool IsCandidate(Solution solution, ISymbol symbol, bool includePublic) =>
         symbol is INamedTypeSymbol or IMethodSymbol { MethodKind: MethodKind.Ordinary } or IPropertySymbol or IFieldSymbol or IEventSymbol
         && symbol.Locations.Any(location => location.IsInSource && WorkspaceService.IsWrittenCode(solution, location.SourceTree))
         && !symbol.IsImplicitlyDeclared
         && !symbol.IsOverride
         && symbol.GetAttributes().IsEmpty
+        && (symbol is not INamedTypeSymbol type || type.GetMembers().All(member => member.GetAttributes().IsEmpty))
         && !ImplementsInterface(symbol)
         && (includePublic || !IsVisibleOutside(symbol));
 

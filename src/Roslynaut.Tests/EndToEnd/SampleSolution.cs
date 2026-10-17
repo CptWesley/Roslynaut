@@ -7,7 +7,7 @@ namespace Roslynaut.Tests.EndToEnd;
 /// The code the end-to-end tests run the tools on, written to a temporary directory under git:
 /// <list type="bullet">
 /// <item>Shapes.slnx, with the library src/Shapes, the console app src/Shapes.App and the NUnit project tests/Shapes.Tests.</item>
-/// <item>A local feed with Roslynaut.E2E.Greetings 1.0.0 and 2.0.0, which depend on Roslynaut.E2E.Base 1.0.0. Their assemblies embed their PDB
+/// <item>A local feed with Roslynaut.E2E.Greetings 1.0.0, 2.0.0 and 3.0.0-beta, which depend on Roslynaut.E2E.Base 1.0.0. Their assemblies embed their PDB
 /// and source, so their source is at hand without a symbol server. Shapes.App uses Greetings 1.0.0.</item>
 /// <item>Problems/Problems.csproj, outside the solution, with one compiler error and one warning.</item>
 /// <item>Targets/Targets.csproj, outside the solution, for net10.0 and netstandard2.0.</item>
@@ -212,7 +212,7 @@ internal sealed class SampleSolution
         }
     }
 
-    /// <summary>Base 1.0.0, then Greetings 1.0.0 and 2.0.0: 2.0.0 makes Hello obsolete, removes Bye and adds Hi.</summary>
+    /// <summary>Base 1.0.0, then Greetings 1.0.0, 2.0.0 and 3.0.0-beta: 2.0.0 makes Hello obsolete, removes Bye and adds Hi; 3.0.0-beta is the same.</summary>
     private async Task PackAsync()
     {
         var @base = Write($"packages-src/Base/{BaseId}.csproj", """
@@ -249,7 +249,7 @@ internal sealed class SampleSolution
               </ItemGroup>
             </Project>
             """);
-        foreach (var (version, members) in new[] { ("1.0.0", GreetingsV1), ("2.0.0", GreetingsV2) })
+        foreach (var (version, members) in new[] { ("1.0.0", GreetingsV1), ("2.0.0", GreetingsV2), ("3.0.0-beta", GreetingsV2) })
         {
             Write("packages-src/Greetings/Greeter.cs", GreeterSource(members));
             await DotnetAsync("pack", greetings, "-o", Feed, $"-p:Version={version}");

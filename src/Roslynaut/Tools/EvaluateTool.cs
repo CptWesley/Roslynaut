@@ -27,6 +27,8 @@ public sealed class EvaluateTool(WorkspaceService workspace, AssemblyLoader asse
     {
         if (!string.Equals(Environment.GetEnvironmentVariable(AllowVariable), "true", StringComparison.OrdinalIgnoreCase))
             throw new McpException($"evaluate runs code, so it is off; start the server with the environment variable {AllowVariable}=true to allow it.");
+        if (timeoutSeconds < 1)
+            throw new McpException("timeoutSeconds must be at least 1.");
 
         var references = new List<string>();
         foreach (var project in (await workspace.GetAsync(projectPath)).Solution.Projects)
@@ -45,7 +47,20 @@ public sealed class EvaluateTool(WorkspaceService workspace, AssemblyLoader asse
             throw new McpException($"The script host is missing: {HostPath}");
 
         var input = JsonSerializer.Serialize(new { Code = code, References = references.ToArray() });
-        var (_, output) = await DotnetCli.RunAsync(["exec", HostPath], timeout, cancellationToken, input);
+        string output;
+        using (var stop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+        {
+            // Timed out here rather than in DotnetCli, whose message would be about dotnet exec rather than the code.
+            stop.CancelAfter(timeout);
+            try
+            {
+                (_, output) = await DotnetCli.RunAsync(["exec", HostPath], Timeout.InfiniteTimeSpan, stop.Token, input);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                throw new McpException($"The code did not finish within {timeout.TotalSeconds:0} seconds, so it was stopped.");
+            }
+        }
 
         // The host ends with one line of JSON; anything else is the runtime failing.
         var result = output.Split('\n').Select(line => line.Trim()).LastOrDefault(line => line.StartsWith('{'));

@@ -2,6 +2,7 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Loader;
+using System.Text;
 
 namespace Roslynaut.JitHost;
 
@@ -14,8 +15,14 @@ public static class Program
 {
     public static int Main(string[] args)
     {
+        // In UTF-8, as the server writes and reads it, rather than the console's code page, which cannot spell every path.
+        var utf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+        using var input = new StreamReader(Console.OpenStandardInput(), utf8);
+        Console.SetOut(new StreamWriter(Console.OpenStandardOutput(), utf8) { AutoFlush = true });
+        Console.SetError(new StreamWriter(Console.OpenStandardError(), utf8) { AutoFlush = true });
+
         var dependencies = new Dictionary<string, string>();
-        while (Console.ReadLine()?.Split('\t') is [var name, var path])
+        while (input.ReadLine()?.Split('\t') is [var name, var path])
             dependencies[name] = path;
 
         Module module;

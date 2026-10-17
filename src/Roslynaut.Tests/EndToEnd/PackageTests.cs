@@ -54,6 +54,30 @@ public class PackageTests : EndToEndTest
         info.Versions.Should().Equal("2.0.0", "1.0.0");
     }
 
+    [Test]
+    public async Task PackageInfo_OfAnEarlierVersion_AndOfPrereleases()
+    {
+        var first = await Server.CallAsync<PackageInfo>("package_info", new() { ["projectPath"] = Sample.AppProject, ["id"] = Greetings, ["version"] = "1.0.0" });
+        var beta = await Server.CallAsync<PackageInfo>("package_info", new() { ["projectPath"] = Sample.AppProject, ["id"] = Greetings, ["prerelease"] = true });
+
+        (first.Version, first.Versions).Should().BeEquivalentTo(("1.0.0", new[] { "2.0.0", "1.0.0" }), options => options.WithStrictOrdering());
+        first.Dependencies.Should().BeEquivalentTo(new Dictionary<string, string[]> { ["net10.0"] = [$"{Base} (>= 1.0.0)"] });
+        (beta.Version, beta.Versions).Should().BeEquivalentTo(("3.0.0-beta", new[] { "3.0.0-beta", "2.0.0", "1.0.0" }), options => options.WithStrictOrdering());
+        (await Server.CallFailingAsync("package_info", new() { ["projectPath"] = Sample.AppProject, ["id"] = Greetings, ["version"] = "9.9.9" }))
+            .Should().Be($"An error occurred invoking 'package_info': Package {Greetings} has no version 9.9.9.");
+    }
+
+    [Test]
+    public async Task PackageSearch_WithPrereleases()
+    {
+        var results = await Server.CallAsync<PagedResult<PackageSearchResult>>("package_search", new()
+        {
+            ["projectPath"] = Sample.AppProject, ["query"] = "Roslynaut.E2E.Greetings", ["prerelease"] = true,
+        });
+
+        results.Items.Should().ContainSingle().Which.Should().Match<PackageSearchResult>(result => result.Id == Greetings && result.Version == "3.0.0-beta");
+    }
+
     // Greetings embeds its PDB, with all its sources; packing sets the paths to obj of a Release build.
     [Test]
     public async Task PackageAssembly_PerFramework_WithItsSymbols()

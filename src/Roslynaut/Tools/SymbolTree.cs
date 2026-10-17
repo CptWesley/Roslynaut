@@ -129,11 +129,21 @@ internal static class SymbolTree
 
     private static string NameOf(string segment) => segment.Split('(', '<')[0].Trim();
 
+    // Types by their names only, as code usually writes them: Classify(IShape) for Classify(Shapes.IShape).
+    private static readonly SymbolDisplayFormat ShortFormat = new(
+        typeQualificationStyle: SymbolDisplayTypeQualificationStyle.NameOnly,
+        genericsOptions: SymbolDisplayGenericsOptions.IncludeTypeParameters,
+        memberOptions: SymbolDisplayMemberOptions.IncludeParameters,
+        parameterOptions: SymbolDisplayParameterOptions.IncludeType | SymbolDisplayParameterOptions.IncludeParamsRefOut,
+        miscellaneousOptions: SymbolDisplayMiscellaneousOptions.UseSpecialTypes | SymbolDisplayMiscellaneousOptions.IncludeNullableReferenceTypeModifier);
+
+    /// <summary>Whether a symbol has a segment's name, and its parameter or type argument list if any, with types qualified fully or not at all.</summary>
     private static bool Matches(ISymbol symbol, string segment)
     {
         var name = NameOf(segment);
         return symbol.Name.Equals(name, StringComparison.OrdinalIgnoreCase)
-            && (name.Length == segment.Length || Compact(symbol.ToDisplayString()).EndsWith(Compact(segment), StringComparison.OrdinalIgnoreCase));
+            && (name.Length == segment.Length || new[] { symbol.ToDisplayString(), symbol.ToDisplayString(ShortFormat) }
+                .Any(display => Compact(display).EndsWith(Compact(segment), StringComparison.OrdinalIgnoreCase)));
     }
 
     private static string Compact(string text) => string.Concat(text.Where(c => !char.IsWhiteSpace(c)));

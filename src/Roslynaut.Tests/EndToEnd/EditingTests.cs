@@ -12,16 +12,6 @@ public class EditingTests : EndToEndTest
     /// <summary>A file as is: the sample's files have \n line ends, which edits have to keep.</summary>
     private static string Read(string file) => File.ReadAllText(file);
 
-    /// <summary>Waits until a condition on what the server sees holds, as its file watchers bring changes in a moment after they happen.</summary>
-    private static async Task EventuallyAsync(Func<Task<bool>> condition, string because)
-    {
-        for (var attempt = 0; !await condition(); attempt++)
-        {
-            attempt.Should().BeLessThan(60, because);
-            await Task.Delay(500);
-        }
-    }
-
     private const string Counter = """
         namespace Edits;
 
@@ -81,6 +71,42 @@ public class EditingTests : EndToEndTest
         result.ChangedFiles.Should().BeEquivalentTo(FileOf(project, "Counter.cs"), FileOf(project, "Uses.cs"));
         Read(FileOf(project, "Counter.cs")).Should().Be(Counter.Replace("Add(", "Increase(").ReplaceLineEndings("\n"));
         Read(FileOf(project, "Uses.cs")).Should().Be(Uses.Replace("Add(", "Increase(").ReplaceLineEndings("\n"));
+    }
+
+    // As an editor on Windows saves them: CRLF line ends and a UTF-8 byte order mark. Edits keep both, also in the code they add.
+    [Test]
+    public async Task Edits_KeepTheFilesLineEndsAndByteOrderMark()
+    {
+        var project = Sample.NewProject("WindowsFiles");
+        var (counter, uses) = (FileOf(project, "Counter.cs"), FileOf(project, "Uses.cs"));
+        var utf8 = new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: true);
+        File.WriteAllText(counter, Counter.ReplaceLineEndings("\r\n"), utf8);
+        File.WriteAllText(uses, Uses.ReplaceLineEndings("\r\n"), utf8);
+
+        await Server.CallAsync<RenameSymbolTool.RenameResult>("rename_symbol", new() { ["projectPath"] = project, ["symbol"] = "Edits.Counter.Count", ["newName"] = "Total" });
+        await Server.CallAsync<EditResult>("insert_after_symbol", new() { ["projectPath"] = project, ["symbol"] = "Edits.Counter.Total", ["code"] = "\n    public int Peak { get; private set; }" });
+
+        File.ReadAllBytes(counter).Take(3).Should().Equal(utf8.Preamble.ToArray());
+        File.ReadAllBytes(uses).Take(3).Should().Equal(utf8.Preamble.ToArray());
+        File.ReadAllText(counter).Should().Be(Counter.Replace(" Count ", " Total ").Replace("set; }\n", "set; }\n\n    public int Peak { get; private set; }\n").ReplaceLineEndings("\r\n"));
+        File.ReadAllText(uses).Should().Be(Uses.Replace(".Count;", ".Total;").ReplaceLineEndings("\r\n"));
+    }
+
+    // Spaces and letters outside ASCII in the paths, through MSBuild, the compiler's messages and an edit.
+    [Test]
+    public async Task PathsWithSpacesAndAccents_BuildAndEdit()
+    {
+        var project = Sample.NewProject("Spaced Ünïcode", ("Café Menu.cs", "namespace Edits;\n\npublic static class Menu\n{\n    public static void Order()\n    {\n        int unused;\n    }\n}\n"));
+        var file = FileOf(project, "Café Menu.cs");
+
+        var build = await Server.CallAsync<BuildTool.BuildResult>("build", new() { ["projectPath"] = project });
+        var renamed = await Server.CallAsync<RenameSymbolTool.RenameResult>("rename_symbol", new() { ["projectPath"] = project, ["symbol"] = "Edits.Menu.Order", ["newName"] = "Serve" });
+
+        var (line, column) = Sample.Find(file, "unused");
+        build.Should().BeEquivalentTo(new BuildTool.BuildResult(true, 0, 1,
+            [new BuildTool.BuildMessage("Warning", "CS0168", "The variable 'unused' is declared but never used", file, line, column, project)], null));
+        renamed.ChangedFiles.Should().Equal(file);
+        Read(file).Should().Contain("public static void Serve()");
     }
 
     [Test]
@@ -206,6 +232,23 @@ public class EditingTests : EndToEndTest
     }
 
     [Test]
+    public async Task ApplyCodeAction_AfterTheCodeChanged_AsksForTheActionsAgain()
+    {
+        var project = Sample.NewProject("StaleAction", ("Leftover.cs", "namespace Edits;\n\npublic static class Leftover\n{\n    public static void Run()\n    {\n        int a;\n    }\n}\n"));
+        var file = FileOf(project, "Leftover.cs");
+        var actions = await Server.CallAsync<PagedResult<CodeActionEntry>>("code_actions", new() { ["projectPath"] = project, ["filePath"] = file, ["line"] = Sample.LineOf(file, "int a;") });
+        var remove = actions.Items.Should().ContainSingle(action => action.Title == "Remove unused variable").Subject;
+
+        File.WriteAllText(file, Read(file).Replace("int a;", "int a, b;"));
+        await EventuallyAsync(async () => (await Server.CallAsync<List<SymbolSourceTool.SymbolSource>>("symbol_source", new() { ["projectPath"] = project, ["symbol"] = "Leftover.Run" }))
+            .Single().Source.Contains("int a, b;"), "the server should see the change");
+
+        (await Server.CallFailingAsync("apply_code_action", new() { ["projectPath"] = project, ["id"] = remove.Id })).Should().Be(
+            $"An error occurred invoking 'apply_code_action': No code action {remove.Id} for the current code: the code changed since code_actions found it, or the id is wrong. Ask code_actions again.");
+        Read(file).Should().Contain("int a, b;");
+    }
+
+    [Test]
     public async Task FixAll_FixesEveryOccurrenceInTheProject()
     {
         var project = Sample.NewProject("FixAll", ("Leftovers.cs", """
@@ -242,6 +285,40 @@ public class EditingTests : EndToEndTest
                 }
             }
             """.ReplaceLineEndings("\n"));
+    }
+
+    [Test]
+    public async Task FixAll_InOneFile_LeavesTheOthers()
+    {
+        const string leftover = "namespace Edits;\n\npublic static class {0}\n{{\n    public static void Run()\n    {{\n        int a;\n    }}\n}}\n";
+        var project = Sample.NewProject("FixAllFile", ("First.cs", string.Format(leftover, "First")), ("Second.cs", string.Format(leftover, "Second")));
+
+        var applied = await Server.CallAsync<ApplyCodeActionTool.AppliedCodeAction>("fix_all", new()
+        {
+            ["projectPath"] = project, ["diagnosticId"] = "CS0168", ["filePath"] = FileOf(project, "First.cs"),
+        });
+
+        applied.Should().BeEquivalentTo(new ApplyCodeActionTool.AppliedCodeAction("Remove unused variable", [FileOf(project, "First.cs")]));
+        Read(FileOf(project, "First.cs")).Should().NotContain("int a;");
+        Read(FileOf(project, "Second.cs")).Should().Be(string.Format(leftover, "Second"));
+        (await Server.CallFailingAsync("fix_all", new() { ["projectPath"] = project, ["diagnosticId"] = "CS0168", ["title"] = "Make it so" }))
+            .Should().Be("An error occurred invoking 'fix_all': No fix can fix all CS0168 diagnostics as 'Make it so'.");
+    }
+
+    [Test]
+    public async Task RenameSymbol_ByPosition_RenamesAParameter()
+    {
+        var project = Sample.NewProject("RenameParameter", ("Counter.cs", Counter));
+        var file = FileOf(project, "Counter.cs");
+        var (line, column) = Sample.Find(file, "amount)");
+
+        var result = await Server.CallAsync<RenameSymbolTool.RenameResult>("rename_symbol", new()
+        {
+            ["projectPath"] = project, ["filePath"] = file, ["line"] = line, ["column"] = column, ["newName"] = "by",
+        });
+
+        result.ChangedFiles.Should().Equal(file);
+        Read(file).Should().Be(Counter.Replace("amount", "by").ReplaceLineEndings("\n"));
     }
 
     private const string Messy = """
@@ -282,24 +359,61 @@ public class EditingTests : EndToEndTest
             """.ReplaceLineEndings("\n"));
     }
 
+    // The lines of the method; the class around it keeps its own lack of indentation.
+    [Test]
+    public async Task Format_ARangeOfLines()
+    {
+        var project = Sample.NewProject("FormatRange", ("Messy.cs", Messy));
+        var file = FileOf(project, "Messy.cs");
+
+        var result = await Server.CallAsync<EditResult>("format", new()
+        {
+            ["projectPath"] = project, ["filePath"] = file, ["startLine"] = Sample.LineOf(file, "public int Add"), ["endLine"] = Sample.LineOf(file, "return") + 1,
+        });
+
+        result.ChangedFiles.Should().Equal(file);
+        Read(file).Should().Be("""
+            namespace Edits;
+            public class Messy
+            {
+                public int Add(int a, int b)
+                {
+                    return a + b;
+                }
+            }
+            """.ReplaceLineEndings("\n"));
+    }
+
+    private const string Lists = """
+        using System.Text;
+        using System.Linq;
+        using System;
+        using System.Collections.Generic;
+
+        namespace Edits;
+
+        public static class Lists
+        {
+            public static List<int> Sorted(IEnumerable<int> values) => values.Order().ToList();
+
+            public static int Parse(string text) => Int32.Parse(text);
+        }
+        """;
+
+    [Test]
+    public async Task OrganizeUsings_WithoutRemoving_OnlySorts()
+    {
+        var project = Sample.NewProject("SortUsings", ("Lists.cs", Lists));
+
+        await Server.CallAsync<EditResult>("organize_usings", new() { ["projectPath"] = project, ["filePath"] = FileOf(project, "Lists.cs"), ["removeUnused"] = false });
+
+        Read(FileOf(project, "Lists.cs")).Should().StartWith("using System;\nusing System.Collections.Generic;\nusing System.Linq;\nusing System.Text;\n\nnamespace Edits;\n");
+    }
+
     [Test]
     public async Task OrganizeUsings_RemovesTheUnneededAndSortsTheRest()
     {
-        var project = Sample.NewProject("OrganizeUsings", ("Lists.cs", """
-            using System.Text;
-            using System.Linq;
-            using System;
-            using System.Collections.Generic;
-
-            namespace Edits;
-
-            public static class Lists
-            {
-                public static List<int> Sorted(IEnumerable<int> values) => values.Order().ToList();
-
-                public static int Parse(string text) => Int32.Parse(text);
-            }
-            """));
+        var project = Sample.NewProject("OrganizeUsings", ("Lists.cs", Lists));
 
         var result = await Server.CallAsync<EditResult>("organize_usings", new() { ["projectPath"] = project, ["filePath"] = FileOf(project, "Lists.cs") });
 
@@ -368,6 +482,25 @@ public class EditingTests : EndToEndTest
         Read(FileOf(project, "Widget.cs")).Should().Be(Widget.Replace("    public int Speed;", "    public int Speed;\n    public int Weight;").ReplaceLineEndings("\n"));
     }
 
+    // An agent edits in a row, each edit on what the one before wrote, without waiting for the file watchers.
+    [Test]
+    public async Task ConsecutiveEdits_EachSeeTheOneBefore([Range(1, 3)] int run)
+    {
+        var project = Sample.NewProject($"Consecutive{run}", ("Widget.cs", Widget));
+        var file = FileOf(project, "Widget.cs");
+
+        await Server.CallAsync<EditResult>("insert_after_symbol", new() { ["projectPath"] = project, ["symbol"] = "Widget.Speed", ["code"] = "    public int Weight;" });
+        await Server.CallAsync<EditResult>("insert_after_symbol", new() { ["projectPath"] = project, ["symbol"] = "Widget.Weight", ["code"] = "    public int Height;" });
+        await Server.CallAsync<RenameSymbolTool.RenameResult>("rename_symbol", new() { ["projectPath"] = project, ["symbol"] = "Widget.Speed", ["newName"] = "Pace" });
+        await Server.CallAsync<EditResult>("replace_symbol_body", new() { ["projectPath"] = project, ["symbol"] = "Widget.Faster", ["code"] = "    public int Faster() => Pace + Weight;" });
+
+        Read(file).Should().Be(Widget
+            .Replace("    public int Speed;", "    public int Speed;\n    public int Weight;\n    public int Height;")
+            .Replace("Speed", "Pace")
+            .Replace("Pace + 1", "Pace + Weight")
+            .ReplaceLineEndings("\n"));
+    }
+
     [Test]
     public async Task SafeDeleteSymbol_RefusesWhileReferenced_AndDeletesOnceNot()
     {
@@ -418,6 +551,43 @@ public class EditingTests : EndToEndTest
                 public string Hello(string name) => "Hello, " + name;
 
                 public static Greeter Default { get; } = new();
+            }
+            """.ReplaceLineEndings("\n"));
+    }
+
+    [Test]
+    public async Task ExtractInterface_NamedWithSomeMembers_InTheSameFile()
+    {
+        var project = Sample.NewProject("ExtractInterfaceOptions", ("Greeter.cs", """
+            namespace Edits;
+
+            public class Greeter
+            {
+                public string Hello(string name) => "Hello, " + name;
+
+                public string Bye(string name) => "Bye, " + name;
+            }
+            """));
+
+        var result = await Server.CallAsync<ChangedFiles>("extract_interface", new()
+        {
+            ["projectPath"] = project, ["symbol"] = "Edits.Greeter", ["name"] = "IHello", ["members"] = new[] { "Hello" }, ["sameFile"] = true,
+        });
+
+        result.Files.Should().Equal(FileOf(project, "Greeter.cs"));
+        Read(FileOf(project, "Greeter.cs")).Should().Be("""
+            namespace Edits;
+
+            public interface IHello
+            {
+                string Hello(string name);
+            }
+
+            public class Greeter : IHello
+            {
+                public string Hello(string name) => "Hello, " + name;
+
+                public string Bye(string name) => "Bye, " + name;
             }
             """.ReplaceLineEndings("\n"));
     }

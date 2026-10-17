@@ -130,6 +130,9 @@ internal static class JitDisassembler
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            StandardInputEncoding = DotnetCli.Utf8,
+            StandardOutputEncoding = DotnetCli.Utf8,
+            StandardErrorEncoding = DotnetCli.Utf8,
             Environment =
             {
                 ["DOTNET_JitDisasm"] = string.Join(' ', methods.Select(method => method.Pattern).Distinct()),

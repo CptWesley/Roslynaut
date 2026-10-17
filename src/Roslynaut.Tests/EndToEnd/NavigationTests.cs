@@ -191,6 +191,24 @@ public class NavigationTests : EndToEndTest
             "    public Rectangle Scale(double factor) => Scale(factor, factor);"));
     }
 
+    // Parameter types by their names as code writes them, or fully qualified as results give them.
+    [Test]
+    public async Task SymbolPaths_PickOverloadsByTheirParameterTypes()
+    {
+        async Task<IEnumerable<string>> SignaturesAsync(string symbol) =>
+            (await Server.CallAsync<List<SymbolSourceTool.SymbolSource>>("symbol_source", new() { ["projectPath"] = Sample.Solution, ["symbol"] = symbol })).Select(source => source.Signature);
+
+        const string totalArea = "Shapes.ShapeMath.TotalArea(System.Collections.Generic.IEnumerable<Shapes.IShape>)";
+        (await SignaturesAsync("ShapeMath.Classify(IShape)")).Should().Equal("Shapes.ShapeMath.Classify(Shapes.IShape)");
+        (await SignaturesAsync("ShapeMath.TotalArea(IEnumerable<IShape>)")).Should().Equal(totalArea);
+        (await SignaturesAsync(totalArea)).Should().Equal(totalArea);
+        (await SignaturesAsync("rectangle.scale(Double, Double)")).Should().Equal("Shapes.Rectangle.Scale(double, double)");
+        (await Server.CallAsync<PagedResult<ReferencesTool.ReferenceEntry>>("references", new() { ["projectPath"] = Sample.Solution, ["symbol"] = "ShapeMath.TotalArea(IEnumerable<IShape>).total" }))
+            .Items.Select(reference => reference.Access).Should().Equal("Write", "Read");
+        (await Server.CallFailingAsync("symbol_source", new() { ["projectPath"] = Sample.Solution, ["symbol"] = "ShapeMath.Classify(Circle)" }))
+            .Should().Be("An error occurred invoking 'symbol_source': No symbol found for 'ShapeMath.Classify(Circle)'.");
+    }
+
     [Test]
     public async Task SymbolSource_OfAPackageSymbol_ComesFromItsPdb()
     {

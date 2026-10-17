@@ -127,4 +127,23 @@ public class AssemblyTests : EndToEndTest
         evaluation.Should().Be(new EvaluateTool.Evaluation($"Square{Environment.NewLine}", "14", "System.Double", null));
         failure.Error.Should().Contain("System.FormatException").And.Contain("Unknown shape: triangle 1");
     }
+
+    [Test]
+    public async Task Evaluate_StopsCodeThatRunsTooLong_AndReportsCompileErrors()
+    {
+        var endless = await Server.CallFailingAsync("evaluate", new() { ["projectPath"] = Sample.Solution, ["code"] = "while (true) { }", ["timeoutSeconds"] = 5 });
+        var wrong = await Server.CallAsync<EvaluateTool.Evaluation>("evaluate", new() { ["projectPath"] = Sample.Solution, ["code"] = "new Shapes.Hexagon()" });
+
+        endless.Should().Be("An error occurred invoking 'evaluate': The code did not finish within 5 seconds, so it was stopped.");
+        wrong.Should().Match<EvaluateTool.Evaluation>(evaluation => evaluation.Value == null && evaluation.Error!.Contains("CS0234"));
+    }
+
+    // Text that no single-byte code page holds, both ways.
+    [Test]
+    public async Task Evaluate_KeepsTextThatIsNotAscii()
+    {
+        var evaluation = await Server.CallAsync<EvaluateTool.Evaluation>("evaluate", new() { ["projectPath"] = Sample.Solution, ["code"] = "Console.Write(\"Жук €\"); \"Größe\" + \"✓\"" });
+
+        evaluation.Should().Be(new EvaluateTool.Evaluation("Жук €", "\"Größe✓\"", "System.String", null));
+    }
 }

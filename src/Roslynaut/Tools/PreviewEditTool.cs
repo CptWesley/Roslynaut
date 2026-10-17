@@ -37,11 +37,14 @@ public sealed class PreviewEditTool(WorkspaceService workspace) : IMcpTool
             var document = WorkspaceService.GetDocument(edited, edit.FilePath);
             var text = await document.GetTextAsync(cancellationToken);
             var content = text.ToString();
-            var index = edit.OldText.Length == 0 ? -1 : content.IndexOf(edit.OldText, StringComparison.Ordinal);
-            if (index < 0 || content.IndexOf(edit.OldText, index + 1, StringComparison.Ordinal) >= 0)
+
+            // Clients write line ends as \n; a file with CRLF ones has those in its text.
+            var (oldText, newText) = (WorkspaceService.WithLineEndsOf(content, edit.OldText), WorkspaceService.WithLineEndsOf(content, edit.NewText));
+            var index = oldText.Length == 0 ? -1 : content.IndexOf(oldText, StringComparison.Ordinal);
+            if (index < 0 || content.IndexOf(oldText, index + 1, StringComparison.Ordinal) >= 0)
                 throw new McpException($"oldText must occur exactly once in {edit.FilePath}: {(index < 0 ? "it does not occur" : "it occurs more than once")}.");
 
-            edited = edited.WithDocumentText(document.Id, text.Replace(new TextSpan(index, edit.OldText.Length), edit.NewText));
+            edited = edited.WithDocumentText(document.Id, text.Replace(new TextSpan(index, oldText.Length), newText));
             projects.Add(document.Project.Id);
         }
 

@@ -48,6 +48,47 @@ public class ProjectTests : EndToEndTest
         ]);
     }
 
+    // In the classic format, with a solution folder, in a directory of its own, away from the projects; it lists the app first.
+    [Test]
+    public async Task ProjectGraph_OfAClassicSolution()
+    {
+        var solution = Sample.Write("edits/Classic/Classic.sln", """
+            Microsoft Visual Studio Solution File, Format Version 12.00
+            # Visual Studio Version 17
+            VisualStudioVersion = 17.0.31903.59
+            MinimumVisualStudioVersion = 10.0.40219.1
+            Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{3C3D4F7A-0000-4000-8000-000000000001}"
+            EndProject
+            Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Shapes.App", "..\..\src\Shapes.App\Shapes.App.csproj", "{3C3D4F7A-0000-4000-8000-000000000002}"
+            EndProject
+            Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Shapes", "..\..\src\Shapes\Shapes.csproj", "{3C3D4F7A-0000-4000-8000-000000000003}"
+            EndProject
+            Global
+            	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+            		Debug|Any CPU = Debug|Any CPU
+            	EndGlobalSection
+            	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+            		{3C3D4F7A-0000-4000-8000-000000000002}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+            		{3C3D4F7A-0000-4000-8000-000000000002}.Debug|Any CPU.Build.0 = Debug|Any CPU
+            		{3C3D4F7A-0000-4000-8000-000000000003}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+            		{3C3D4F7A-0000-4000-8000-000000000003}.Debug|Any CPU.Build.0 = Debug|Any CPU
+            	EndGlobalSection
+            	GlobalSection(NestedProjects) = preSolution
+            		{3C3D4F7A-0000-4000-8000-000000000002} = {3C3D4F7A-0000-4000-8000-000000000001}
+            		{3C3D4F7A-0000-4000-8000-000000000003} = {3C3D4F7A-0000-4000-8000-000000000001}
+            	EndGlobalSection
+            EndGlobal
+            """);
+
+        var graph = await Server.CallAsync<List<ProjectGraphTool.ProjectNode>>("project_graph", new() { ["projectPath"] = solution });
+
+        graph.Should().BeEquivalentTo(
+        [
+            new ProjectGraphTool.ProjectNode("Shapes", Sample.ShapesProject, "net10.0", "Library", [], ["Shapes.App"]),
+            new ProjectGraphTool.ProjectNode("Shapes.App", Sample.AppProject, "net10.0", "Exe", ["Shapes"], []),
+        ], options => options.WithStrictOrdering());
+    }
+
     // Loading the app loads the library it references too.
     [Test]
     public async Task MsBuildEvaluate_PropertiesAndItems_ByNameOrWildcard()
@@ -96,6 +137,29 @@ public class ProjectTests : EndToEndTest
         info.Should().ContainSingle().Which.Should().Match<ProjectInfoTool.ProjectSummary>(project =>
             project.TargetFramework == "netstandard2.0" && project.Properties["LangVersion"] == "7.3" && project.PackageReferences["NETStandard.Library"] == "2.0.3");
         reset.Should().BeEquivalentTo([new WorkspaceOptionsTool.LoadedProject(Sample.TargetsProject, "net10.0", ["net10.0", "netstandard2.0"], "Debug")]);
+        (await NameAsync()).Should().Be(before);
+    }
+
+    // Code under #if DEBUG shows by default; in Release, the other branch does.
+    [Test]
+    public async Task WorkspaceOptions_LoadAnotherConfiguration()
+    {
+        var project = Sample.NewProject("Configured", ("Mode.cs", "namespace Edits;\n\npublic static class Mode\n{\n#if DEBUG\n    public static string Name => \"debug\";\n#else\n    public static string Name => \"release\";\n#endif\n}\n"));
+        async Task<string> NameAsync() =>
+            (await Server.CallAsync<List<SymbolSourceTool.SymbolSource>>("symbol_source", new() { ["projectPath"] = project, ["symbol"] = "Mode.Name" })).Single().Source;
+
+        var before = await NameAsync();
+        var release = await Server.CallAsync<List<WorkspaceOptionsTool.LoadedProject>>("workspace_options", new() { ["projectPath"] = project, ["configuration"] = "Release" });
+        var during = await NameAsync();
+        var info = (await Server.CallAsync<List<ProjectInfoTool.ProjectSummary>>("project_info", new() { ["projectPath"] = project })).Single();
+        var reset = await Server.CallAsync<List<WorkspaceOptionsTool.LoadedProject>>("workspace_options", new() { ["projectPath"] = project });
+
+        before.Should().Be("    public static string Name => \"debug\";");
+        release.Should().BeEquivalentTo([new WorkspaceOptionsTool.LoadedProject(project, "net10.0", ["net10.0"], "Release")]);
+        during.Should().Be("    public static string Name => \"release\";");
+        (info.Properties["Configuration"], info.Properties["TargetPath"])
+            .Should().Be(("Release", Path.Combine(Path.GetDirectoryName(project)!, "bin", "Release", "net10.0", "Configured.dll")));
+        reset.Should().BeEquivalentTo([new WorkspaceOptionsTool.LoadedProject(project, "net10.0", ["net10.0"], "Debug")]);
         (await NameAsync()).Should().Be(before);
     }
 

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Microsoft.Diagnostics.NETCore.Client;
 using Roslynaut.Tools;
 
 namespace Roslynaut.Tests.EndToEnd;
@@ -111,6 +112,62 @@ public class ProcessTests : EndToEndTest
 
         roots.Should().ContainEquivalentOf(new ProcessInspection.RootPath("Stack", "Program.<Main>$(System.String[])", [$"Shapes.Circle @{circle.Address}"]))
             .And.OnlyContain(root => root.Chain.Last() == $"Shapes.Circle @{circle.Address}");
+    }
+
+    // A dump with the heap reads as the process does. It leaves out the code the JIT compiled, which maps a frame to its IL offset, so frames
+    // whose start is not near the stack have no source line; a full dump has them.
+    [Test]
+    public async Task Dump_WithTheHeap_HasTheThreadsObjectsAndRoots()
+    {
+        var dump = Sample.In("app-heap.dmp");
+        new DiagnosticsClient(app.Id).WriteDump(DumpType.WithHeap, dump);
+
+        var threads = await Server.CallAsync<List<ProcessInspection.ThreadEntry>>("process_threads", new() { ["dumpPath"] = dump });
+        var heap = await Server.CallAsync<ProcessInspection.HeapSummary>("process_heap", new() { ["dumpPath"] = dump, ["type"] = @"^Shapes\." });
+        var square = (await Server.CallAsync<List<ProcessInspection.ObjectEntry>>("process_objects", new() { ["dumpPath"] = dump, ["type"] = @"^Shapes\.Square$" })).Single();
+        var roots = await Server.CallAsync<List<ProcessInspection.RootPath>>("process_roots", new() { ["dumpPath"] = dump, ["address"] = square.Address });
+
+        threads.Should().ContainSingle(thread => thread.Stack.Any(frame => frame.StartsWith("Program.<Main>$"))).Which.Stack.Should().Contain("System.Console.ReadLine()");
+        heap.Types.Should().BeEquivalentTo(
+        [
+            new ProcessInspection.TypeStats("Shapes.IShape[]", 1, 48),
+            new ProcessInspection.TypeStats("Shapes.Circle", 1, 24),
+            new ProcessInspection.TypeStats("Shapes.Rectangle", 1, 32),
+            new ProcessInspection.TypeStats("Shapes.Square", 1, 32),
+        ]);
+        square.Fields.Select(field => field.Value).Should().Equal("4", "4");
+        roots.Should().NotBeEmpty().And.OnlyContain(root => root.Chain.Last() == $"Shapes.Square @{square.Address}");
+    }
+
+    // A minidump has the threads' stacks but not the heap.
+    [Test]
+    public async Task Dump_WithoutTheHeap_HasTheThreadsOnly()
+    {
+        var dump = Sample.In("app-mini.dmp");
+        new DiagnosticsClient(app.Id).WriteDump(DumpType.Normal, dump);
+
+        var threads = await Server.CallAsync<List<ProcessInspection.ThreadEntry>>("process_threads", new() { ["dumpPath"] = dump });
+
+        threads.Should().ContainSingle(thread => thread.Stack.Any(frame => frame.StartsWith("Program.<Main>$"))).Which.Stack.Should().Contain("System.Console.ReadLine()");
+        (await Server.CallFailingAsync("process_heap", new() { ["dumpPath"] = dump }))
+            .Should().Be("An error occurred invoking 'process_heap': The heap cannot be walked in this dump; take one with the heap, such as with dotnet-dump collect --type Heap.");
+        (await Server.CallFailingAsync("process_objects", new() { ["dumpPath"] = dump, ["type"] = "Square" }))
+            .Should().StartWith("An error occurred invoking 'process_objects': The heap cannot be walked");
+    }
+
+    [Test]
+    public async Task ProcessTools_SayWhatTheyNeed()
+    {
+        (await Server.CallFailingAsync("process_threads")).Should().Be("An error occurred invoking 'process_threads': Pass either a processId or a dumpPath.");
+        (await Server.CallFailingAsync("process_heap", Process(("dumpPath", Sample.In("app.dmp")))))
+            .Should().Be("An error occurred invoking 'process_heap': Pass either a processId or a dumpPath.");
+        (await Server.CallFailingAsync("process_objects", Process())).Should().Be("An error occurred invoking 'process_objects': Pass an address, or a type to find objects of.");
+        (await Server.CallFailingAsync("process_objects", Process(("address", "0xzz"))))
+            .Should().Be("An error occurred invoking 'process_objects': '0xzz' is not a hexadecimal address such as 0x1a2b3c.");
+        (await Server.CallFailingAsync("process_heap", Process(("compareTo", "none"))))
+            .Should().Be("An error occurred invoking 'process_heap': There is no snapshot none; only the last 20 are kept, until the server restarts.");
+        (await Server.CallFailingAsync("process_threads", new() { ["dumpPath"] = Sample.In("missing.dmp") }))
+            .Should().StartWith($"An error occurred invoking 'process_threads': Cannot inspect dump {Sample.In("missing.dmp")}: ");
     }
 
     [Test]

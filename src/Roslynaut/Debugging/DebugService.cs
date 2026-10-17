@@ -247,6 +247,8 @@ public sealed partial class DebugService(WorkspaceService workspace, PdbService 
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            StandardOutputEncoding = DotnetCli.Utf8,
+            StandardErrorEncoding = DotnetCli.Utf8,
             Environment =
             {
                 ["VSTEST_HOST_DEBUG"] = "1", ["TESTINGPLATFORM_WAIT_ATTACH_DEBUGGER"] = "1", ["DOTNET_CLI_UI_LANGUAGE"] = "en", ["DOTNET_NOLOGO"] = "1",

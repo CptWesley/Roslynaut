@@ -112,6 +112,64 @@ public class ProtocolTests : EndToEndTest
     }
 
     [Test]
+    public async Task ToolErrors_NameWhatTheyCannotFind()
+    {
+        (await Server.CallFailingAsync("document_symbols", new() { ["projectPath"] = Sample.ShapesProject, ["filePath"] = Sample.ProgramFile }))
+            .Should().Be($"An error occurred invoking 'document_symbols': '{Sample.ProgramFile}' is not part of the loaded project or solution.");
+        (await Server.CallFailingAsync("definition", new() { ["projectPath"] = Sample.Solution, ["filePath"] = Sample.CircleFile, ["line"] = 1000, ["column"] = 1 }))
+            .Should().Be($"An error occurred invoking 'definition': Position 1000:1 is outside '{Sample.CircleFile}'.");
+        (await Server.CallFailingAsync("definition", new() { ["projectPath"] = Sample.Solution, ["filePath"] = Sample.CircleFile }))
+            .Should().Be("An error occurred invoking 'definition': Pass a symbol path, or a filePath with a line and column.");
+        (await Server.CallFailingAsync("rename_symbol", new() { ["projectPath"] = Sample.Solution, ["symbol"] = "Rectangle.Scale", ["newName"] = "Resize" }))
+            .Should().Be("An error occurred invoking 'rename_symbol': The symbol path matches 2 symbols; pick one by adding a parameter list, or by position.");
+        (await Server.CallFailingAsync("format", new() { ["projectPath"] = Sample.Solution, ["filePath"] = Sample.CircleFile, ["startLine"] = 5, ["endLine"] = 2 }))
+            .Should().Be($"An error occurred invoking 'format': Lines 5 to 2 are outside '{Sample.CircleFile}'.");
+    }
+
+    // Clients spell paths their own way, such as with forward slashes, or on Windows with a lower case drive letter as VS Code does.
+    [Test]
+    public async Task Paths_AsClientsSpellThem_FindTheSameFiles()
+    {
+        async Task<PagedResult<SymbolEntry>> OutlineAsync(string project, string file) =>
+            await Server.CallAsync<PagedResult<SymbolEntry>>("document_symbols", new() { ["projectPath"] = project, ["filePath"] = file, ["depth"] = 0 });
+
+        var expected = await OutlineAsync(Sample.Solution, Sample.CircleFile);
+        (await OutlineAsync(Sample.Solution.Replace('\\', '/'), Sample.CircleFile.Replace('\\', '/'))).Items.Should().Equal(expected.Items);
+        if (OperatingSystem.IsWindows())
+        {
+            static string Lower(string path) => char.ToLowerInvariant(path[0]) + path[1..];
+            (await OutlineAsync(Lower(Sample.Solution), Lower(Sample.CircleFile))).Items.Should().Equal(expected.Items);
+            (await OutlineAsync(Sample.Solution, Sample.CircleFile.ToUpperInvariant())).Items.Should().Equal(expected.Items);
+        }
+    }
+
+    // The calls load the project at once; each waits for the one load, and gets what it gets on its own.
+    [Test]
+    public async Task ConcurrentCalls_OnAProjectNotLoadedYet_EachSucceed()
+    {
+        var project = Sample.NewProject("Concurrent", ("Counter.cs", "namespace Edits;\n\npublic class Counter\n{\n    public int Count { get; private set; }\n\n    public void Add() => Count++;\n}\n"));
+        var file = Path.Combine(Path.GetDirectoryName(project)!, "Counter.cs");
+        var calls = new (string Tool, Dictionary<string, object?> Arguments)[]
+        {
+            ("workspace_symbols", new() { ["projectPath"] = project, ["query"] = "Count" }),
+            ("document_symbols", new() { ["projectPath"] = project, ["filePath"] = file }),
+            ("references", new() { ["projectPath"] = project, ["symbol"] = "Counter.Count" }),
+            ("diagnostics", new() { ["projectPath"] = project }),
+            ("code_metrics", new() { ["projectPath"] = project }),
+            ("project_info", new() { ["projectPath"] = project }),
+            ("symbol_source", new() { ["projectPath"] = project, ["symbol"] = "Counter.Add" }),
+            ("search_pattern", new() { ["projectPath"] = project, ["pattern"] = "Count" }),
+        };
+
+        var together = await Task.WhenAll(calls.Select(call => Server.CallTextAsync(call.Tool, call.Arguments)));
+        var alone = new List<string>();
+        foreach (var (tool, arguments) in calls)
+            alone.Add(await Server.CallTextAsync(tool, arguments));
+
+        together.Should().Equal(alone);
+    }
+
+    [Test]
     public async Task UnknownTools_Fail()
     {
         await Server.Client.Awaiting(client => client.CallToolAsync("no_such_tool", new Dictionary<string, object?>())).Should().ThrowAsync<Exception>();

@@ -268,6 +268,35 @@ public class CodeInsightTests : EndToEndTest
         unused.Items.Should().Equal(new SymbolEntry("Unused", "Method", "Shapes.Internal.Registry.Unused()", "Shapes.Internal.Registry", Sample.Location(Sample.RegistryFile, "Unused()")));
     }
 
+    // Nothing in the sample uses ShapeFactory, Largest or one Scale overload. The test class is left out, as the test framework uses it.
+    [Test]
+    public async Task UnusedSymbols_WithPublicOnes_AndWithinAScope()
+    {
+        var all = await Server.CallAsync<PagedResult<SymbolEntry>>("unused_symbols", new() { ["projectPath"] = Sample.Solution, ["includePublic"] = true });
+        var rectangle = await Server.CallAsync<PagedResult<SymbolEntry>>("unused_symbols", new() { ["projectPath"] = Sample.Solution, ["includePublic"] = true, ["scope"] = "Shapes.Rectangle" });
+
+        all.Items.Select(symbol => symbol.Signature).Should().BeEquivalentTo(
+            "Shapes.ShapeFactory",
+            "Shapes.ShapeMath.Largest(System.Collections.Generic.IReadOnlyList<Shapes.IShape>)",
+            "Shapes.Rectangle.Scale(double)",
+            "Shapes.Internal.Registry.Unused()");
+        rectangle.Items.Select(symbol => symbol.Signature).Should().Equal("Shapes.Rectangle.Scale(double)");
+    }
+
+    [Test]
+    public async Task SearchPattern_IgnoresCase_UnlessAsked()
+    {
+        async Task<IEnumerable<int>> LinesAsync(bool caseSensitive) =>
+            (await Server.CallAsync<PagedResult<SearchPatternTool.TextMatch>>("search_pattern", new()
+            {
+                ["projectPath"] = Sample.Solution, ["pattern"] = "total", ["scope"] = Sample.ShapeMathFile, ["caseSensitive"] = caseSensitive,
+            })).Items.Select(match => match.Line);
+
+        int Line(string text) => Sample.LineOf(Sample.ShapeMathFile, text);
+        (await LinesAsync(false)).Should().Equal(Line("TotalArea("), Line("var total"), Line("total +="), Line("return total"));
+        (await LinesAsync(true)).Should().Equal(Line("var total"), Line("total +="), Line("return total"));
+    }
+
     [Test]
     public async Task GeneratedSources_ListsTheRegexGeneratorsOutput()
     {
@@ -297,6 +326,18 @@ public class CodeInsightTests : EndToEndTest
                 ["Shapes.Tests.ShapeTests -> Shapes.Circle", "Shapes.Tests.ShapeTests -> Shapes.Rectangle", "Shapes.Tests.ShapeTests -> Shapes.ShapeMath"]),
         ], options => options.WithStrictOrdering());
         graph.Cycles.Should().BeEquivalentTo([new[] { "Shapes", "Shapes.Internal" }], options => options.WithStrictOrdering());
+    }
+
+    // At depth 1 all namespaces are Shapes, which has no other namespace to depend on.
+    [Test]
+    public async Task NamespaceGraph_ByPrefix_AndToADepth()
+    {
+        var tests = await Server.CallAsync<NamespaceGraphTool.NamespaceGraph>("namespace_graph", new() { ["projectPath"] = Sample.Solution, ["prefix"] = "Shapes.Tests" });
+        var top = await Server.CallAsync<NamespaceGraphTool.NamespaceGraph>("namespace_graph", new() { ["projectPath"] = Sample.Solution, ["depth"] = 1 });
+
+        tests.Dependencies.Should().ContainSingle().Which.Should().Match<NamespaceGraphTool.NamespaceEdge>(edge => edge.From == "Shapes.Tests" && edge.To == "Shapes");
+        tests.Cycles.Should().BeEmpty();
+        (top.Dependencies, top.Cycles).Should().BeEquivalentTo((Array.Empty<NamespaceGraphTool.NamespaceEdge>(), Array.Empty<string[]>()));
     }
 
     [Test]
@@ -373,6 +414,28 @@ public class CodeInsightTests : EndToEndTest
         preview.Introduced.Should().ContainSingle().Which.Should().Match<DiagnosticsTool.DiagnosticEntry>(diagnostic =>
             diagnostic.Id == "CS0103" && diagnostic.Severity == "Error" && diagnostic.Message == "The name 'Missing' does not exist in the current context");
         File.ReadAllText(Sample.AccountFile).Should().Be(before);
+    }
+
+    // Clients send line ends as \n, whatever the file has: here CRLF, as on Windows.
+    [Test]
+    public async Task PreviewEdit_OfLinesOfAFileWithCrlfLineEnds()
+    {
+        var project = Sample.NewProject("PreviewCrlf");
+        var file = Path.Combine(Path.GetDirectoryName(project)!, "Account.cs");
+        File.WriteAllText(file, File.ReadAllText(Sample.AccountFile).ReplaceLineEndings("\r\n"));
+
+        var preview = await Server.CallAsync<PreviewEditTool.Preview>("preview_edit", new()
+        {
+            ["projectPath"] = project,
+            ["edits"] = new object[] { new { filePath = file, oldText = "    {\n        int unused;\n", newText = "    {\n" } },
+        });
+
+        preview.Resolved.Should().Equal(new DiagnosticsTool.DiagnosticEntry("CS0168", "Warning", "The variable 'unused' is declared but never used", Sample.Location(file, "unused")));
+        preview.Introduced.Should().BeEmpty();
+        (await Server.CallFailingAsync("preview_edit", new()
+        {
+            ["projectPath"] = project, ["edits"] = new object[] { new { filePath = file, oldText = "balance", newText = "total" } },
+        })).Should().Be($"An error occurred invoking 'preview_edit': oldText must occur exactly once in {file}: it occurs more than once.");
     }
 
     [Test]

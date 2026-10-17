@@ -48,4 +48,14 @@ public abstract class EndToEndTest
     internal static SampleSolution Sample => EndToEndSetup.Sample;
 
     internal static ServerProcess Server => EndToEndSetup.Server;
+
+    /// <summary>Waits until a condition on what the server sees holds, as its file watchers bring changes in a moment after they happen.</summary>
+    internal static async Task EventuallyAsync(Func<Task<bool>> condition, string because)
+    {
+        for (var attempt = 0; !await condition(); attempt++)
+        {
+            attempt.Should().BeLessThan(60, because);
+            await Task.Delay(500);
+        }
+    }
 }

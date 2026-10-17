@@ -26,6 +26,7 @@ Tests use NUnit with AwesomeAssertions (`.Should()`). Both are global usings.
 **Projects.** `Roslynaut` is the server. `Roslynaut.JitHost` and `Roslynaut.ScriptHost` are small helper executables. `Roslynaut.csproj` references them so their DLLs land in the server's output directory. The server runs them with `dotnet exec` through `DotnetCli`, which uses the `dotnet` of the runtime that runs the server. Commands on a project (build, test, restore) run from its directory, because `dotnet` reads global.json (SDK version, test runner) from the working directory.
 - JitHost JIT-compiles methods without running them, with `DOTNET_JitDisasm` set (`JitDisassembler`). The runtime reads that setting at process start, so this needs a separate process. JitHost targets the oldest supported .NET and runs with a generated runtimeconfig.json on the runtime the assembly is built for.
 - ScriptHost runs C# scripts for `evaluate`, isolated from the server. JSON goes in on stdin and comes back on stdout.
+- Child processes' standard streams are UTF-8 (`DotnetCli.Utf8`): the dotnet CLI, MSBuild and git write it when redirected, and the hosts read and write it. Windows would otherwise use the console's code page, which garbles paths outside ASCII.
 
 **Tool pattern.** Every MCP tool is a class that implements `IMcpTool` and is registered by hand in `Program.cs` (`.AddSingleton<IMcpTool, XTool>()`). A new tool that is not registered there is not exposed. `Handler` returns a private method. That method's `[McpServerTool(Name = "snake_case", ReadOnly/Destructive = ...)]` and `[Description]` attributes define the tool's MCP name and schema. Reuse the shared parameter descriptions in `ToolDefaults` (`IMcpTool.cs`). Keep handlers thin: put the logic in an `internal static` method that takes a `Solution`, for example `ReferencesTool.FindAsync`. Tests call that method directly (`InternalsVisibleTo`). Throw `McpException` for errors the client should see as they are. `McpServerService` wraps every tool in `ExplainingTool`, which reports missing arguments and arguments of the wrong type by name, and other exceptions with their type and message, where the SDK would only say that an error occurred.
 
@@ -60,11 +61,11 @@ Tests use NUnit with AwesomeAssertions (`.Should()`). Both are global usings.
 
 `TestSolution.Create(code)` builds an in-memory `AdhocWorkspace` solution, so most tests run without MSBuild. Tests that need real builds or processes (`TestToolsTests`, `ProcessInspectionTests`, `DebugTests`) are `[NonParallelizable]`. They write a temporary project in `[OneTimeSetUp]`.
 
-The end-to-end tests (`EndToEnd/`, category `EndToEnd`, about two minutes) run the server as a client does and call every tool through MCP.
+The end-to-end tests (`EndToEnd/`, category `EndToEnd`, about three minutes) run the server as a client does and call every tool through MCP.
 - `EndToEndSetup` writes `SampleSolution` to a temporary git repository: a library, a console app and an NUnit project, plus a local feed with two versions of a package that embeds its PDB and sources. It starts one stdio server for all of them and builds the sample through the server's `build` tool, whose binary log the `build_*` tests read.
 - Packages restore into the sample's own packages folder, falling back on the machine's global packages folder, so no package is downloaded that the test project's own restore did not already download.
 - Tests read results into the server's own records (`ServerProcess.CallAsync<T>`) and compare them with what `SampleSolution.Location` finds in the files, so a change to the sample moves the expected positions along.
-- Tests that change code do so in a project of their own (`SampleSolution.NewProject`). `TransportTests` start HTTP and SSE servers of their own. `DebugTests` need netcoredbg, as above.
+- Tests that change code do so in a project of their own (`SampleSolution.NewProject`); `EventuallyAsync` waits for the file watchers to bring a change in. `WorkspaceSyncTests` change files behind the server's back, as editors and git do. `TransportTests` start HTTP and SSE servers of their own. `DebugTests` need netcoredbg, as above.
 - Run only them with `--filter "TestCategory=EndToEnd"`, or leave them out with `--filter "TestCategory!=EndToEnd"`.
 
 ## Conventions

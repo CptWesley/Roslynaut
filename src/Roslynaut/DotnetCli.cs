@@ -10,6 +10,12 @@ internal static class DotnetCli
     public static readonly string Executable = Path.GetFullPath(Path.Combine(
         Path.GetDirectoryName(typeof(object).Assembly.Location)!, "..", "..", "..", OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet"));
 
+    /// <summary>
+    /// What the dotnet CLI, MSBuild and git write when their output is redirected, and what the helper hosts read and write; without a byte
+    /// order mark, which would start standard input. Windows otherwise reads child processes in the console's code page, such as 850.
+    /// </summary>
+    public static readonly Encoding Utf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+
     /// <summary>Returns the exit code and the combined standard output and error.</summary>
     /// <param name="input">What to write to standard input, if anything.</param>
     /// <param name="workingDirectory">
@@ -32,6 +38,9 @@ internal static class DotnetCli
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            StandardInputEncoding = Utf8,
+            StandardOutputEncoding = Utf8,
+            StandardErrorEncoding = Utf8,
 
             // Output gets parsed, so keep it in English.
             Environment = { ["DOTNET_CLI_UI_LANGUAGE"] = "en", ["DOTNET_NOLOGO"] = "1" },

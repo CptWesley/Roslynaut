@@ -100,6 +100,17 @@ public class BuildTests : EndToEndTest
             $"Output file \"{Path.Combine("obj", "Debug", "net10.0", "buildinfo.txt")}\" does not exist.");
     }
 
+    // Pack is in the SDK's targets, but nothing asked for it.
+    [Test]
+    public async Task BuildTargetWhy_InOneProject_AndOfATargetThatNeverRan()
+    {
+        var app = await Server.CallAsync<List<BuildTargetWhyTool.TargetRun>>("build_target_why", new() { ["binlogPath"] = BuildLog, ["target"] = "CoreCompile", ["project"] = "Shapes.App" });
+        var pack = await Server.CallAsync<List<BuildTargetWhyTool.TargetRun>>("build_target_why", new() { ["binlogPath"] = BuildLog, ["target"] = "Pack" });
+
+        app.Should().ContainSingle().Which.Project.Should().Be("Shapes.App.csproj (net10.0)");
+        pack.Should().BeEmpty();
+    }
+
     [Test]
     public async Task BuildPropertyTrace_FromEvaluationThroughTheTargets()
     {
@@ -120,6 +131,14 @@ public class BuildTests : EndToEndTest
         targets.Should().Equal(new BuildLogSearchTool.LogMatch("Target", "Target Name=WriteBuildInfo Project=Shapes.App.csproj", "Shapes.App.csproj (net10.0)", "WriteBuildInfo", null));
         // The log names a Message task after its text.
         messages.Should().Equal(new BuildLogSearchTool.LogMatch("Message", "Flavor plain;built", "Shapes.App.csproj (net10.0)", "WriteBuildInfo", "Message: Flavor plain;built"));
+    }
+
+    [Test]
+    public async Task BuildLogSearch_StopsAtMaxResults()
+    {
+        var targets = await Server.CallAsync<List<BuildLogSearchTool.LogMatch>>("build_log_search", new() { ["binlogPath"] = BuildLog, ["query"] = "$target", ["maxResults"] = 3 });
+
+        targets.Should().HaveCount(3).And.OnlyContain(match => match.Kind == "Target");
     }
 
     // Compiler arguments only compare where both builds compiled, so a changed source makes the debug build, which is up to date, compile again.
