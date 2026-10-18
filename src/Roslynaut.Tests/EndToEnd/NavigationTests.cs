@@ -346,8 +346,8 @@ public class NavigationTests : EndToEndTest
 
         // A lambda has no name to show, so a reference in one is in the member the lambda is written in.
         references.Items.Should().Equal(
-            new ReferencesTool.ReferenceEntry(Sample.Location(Sample.ProgramFile, "shapes);"), "<top-level-statements-entry-point>", "Read"),
-            new ReferencesTool.ReferenceEntry(Sample.Location(Sample.ProgramFile, "shapes))"), "<top-level-statements-entry-point>", "Read"));
+            new ReferencesTool.ReferenceEntry(Sample.Location(Sample.ProgramFile, "shapes);"), path, "Read"),
+            new ReferencesTool.ReferenceEntry(Sample.Location(Sample.ProgramFile, "shapes))"), path, "Read"));
     }
 
     // A position on a declaration or on a use targets what the symbol's path does: the interface in a base list, a base type, a call.

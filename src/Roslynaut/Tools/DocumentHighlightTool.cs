@@ -27,7 +27,7 @@ public sealed class DocumentHighlightTool(WorkspaceService workspace) : IMcpTool
     {
         var tree = await document.GetSyntaxTreeAsync(cancellationToken);
         var entries = SymbolTree.PartsOf(symbol).SelectMany(part => part.Locations).Where(location => location.SourceTree == tree)
-            .Select(location => new ReferencesTool.ReferenceEntry(SourceLocation.From(location), symbol.ContainingSymbol?.ToDisplayString(), "Declaration"))
+            .Select(location => new ReferencesTool.ReferenceEntry(SourceLocation.From(location), symbol.ContainingSymbol is { } container ? SymbolEntry.PathOf(container) : null, "Declaration"))
             .ToList();
         foreach (var reference in await SymbolFinder.FindReferencesAsync(symbol, document.Project.Solution, ImmutableHashSet.Create(document), cancellationToken))
         {

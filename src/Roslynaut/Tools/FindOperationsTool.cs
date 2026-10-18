@@ -58,7 +58,7 @@ public sealed class FindOperationsTool(WorkspaceService workspace, ResultCache c
                     continue;
 
                 var container = ReferencesTool.EnclosingMemberOf(model, operation.Syntax.SpanStart, cancellationToken);
-                found.Add(new(SourceLocation.From(operation.Syntax.GetLocation()), container?.ToDisplayString(), targetName, operation.IsImplicit));
+                found.Add(new(SourceLocation.From(operation.Syntax.GetLocation()), container is null ? null : SymbolEntry.PathOf(container), targetName, operation.IsImplicit));
             }
         }
 
@@ -75,7 +75,7 @@ public sealed class FindOperationsTool(WorkspaceService workspace, ResultCache c
         _ => operation.Type?.ToDisplayString(),
     };
 
-    /// <param name="Container">The member the operation is in.</param>
+    /// <param name="Container">The member the operation is in, as a symbol path.</param>
     /// <param name="Target">What the operation calls, creates, throws or converts, or else its type.</param>
     /// <param name="Implicit">Whether the compiler added it, such as an implicit conversion.</param>
     public sealed record OperationEntry(SourceLocation Location, string? Container, string? Target, bool Implicit);

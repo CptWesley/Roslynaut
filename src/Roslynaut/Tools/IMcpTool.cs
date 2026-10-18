@@ -54,7 +54,7 @@ public sealed record SymbolEntry(string Name, string Kind, string Signature, str
     /// A container as a symbol path names it, so that the path plus a name is one: a lambda by the member it is in, a local function within
     /// its member, and top-level statements as Program.&lt;Main&gt;$.
     /// </summary>
-    private static string PathOf(ISymbol container) => container switch
+    public static string PathOf(ISymbol container) => container switch
     {
         IMethodSymbol { MethodKind: MethodKind.AnonymousFunction } lambda => PathOf(lambda.ContainingSymbol),
         IMethodSymbol { MethodKind: MethodKind.LocalFunction } function => $"{PathOf(function.ContainingSymbol)}.{function.ToDisplayString()}",

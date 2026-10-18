@@ -50,7 +50,7 @@ public sealed class ReferencesTool(WorkspaceService workspace, ResultCache cache
         var model = (await location.Document.GetSemanticModelAsync(cancellationToken))!;
         var container = ContainerOf(model, location.Location.SourceSpan, definition, cancellationToken);
         var access = IsWrite(model, location.Location, cancellationToken) ? "Write" : definition is IMethodSymbol ? "Call" : "Read";
-        return new(SourceLocation.From(location.Location), container?.ToDisplayString(), access);
+        return new(SourceLocation.From(location.Location), container is null ? null : SymbolEntry.PathOf(container), access);
     }
 
     /// <summary>
@@ -98,7 +98,7 @@ public sealed class ReferencesTool(WorkspaceService workspace, ResultCache cache
         };
     }
 
-    /// <param name="Container">The member or type the reference is in.</param>
+    /// <param name="Container">The member or type the reference is in, as a symbol path.</param>
     /// <param name="Access">Read, Write or Call; Declaration in document_highlight.</param>
     public sealed record ReferenceEntry(SourceLocation Location, string? Container, string Access);
 }

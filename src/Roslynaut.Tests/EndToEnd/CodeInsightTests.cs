@@ -438,7 +438,7 @@ public class CodeInsightTests : EndToEndTest
         creations.Items.Should().BeEquivalentTo(
         [
             new FindOperationsTool.OperationEntry(Sample.Location(Sample.RegistryFile, "new Circle(size)"), "Shapes.Internal.Registry.Factories", "Shapes.Circle", false),
-            new FindOperationsTool.OperationEntry(Sample.Location(Sample.ProgramFile, "new Circle(1)"), "<top-level-statements-entry-point>", "Shapes.Circle", false),
+            new FindOperationsTool.OperationEntry(Sample.Location(Sample.ProgramFile, "new Circle(1)"), "Program.<Main>$", "Shapes.Circle", false),
             new FindOperationsTool.OperationEntry(Sample.Location(Sample.TestsFile, "new Circle(2)"), "Shapes.Tests.ShapeTests.Circle_Area_IsPiTimesRadiusSquared()", "Shapes.Circle", false),
         ]);
         throws.Items.Should().BeEquivalentTo(
