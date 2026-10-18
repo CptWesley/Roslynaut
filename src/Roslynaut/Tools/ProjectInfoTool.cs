@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using Buildalyzer;
 using ModelContextProtocol.Server;
 
 namespace Roslynaut.Tools;
@@ -22,9 +23,14 @@ public sealed class ProjectInfoTool(WorkspaceService workspace) : IMcpTool
             result.TargetFramework,
             Properties.ToDictionary(name => name, name => (string?)result.GetProperty(name)),
             result.ProjectReferences,
-            result.PackageReferences.ToDictionary(package => package.Key, package => package.Value.GetValueOrDefault("Version")),
+            result.PackageReferences.ToDictionary(package => package.Key, package => package.Value.GetValueOrDefault("VersionOverride") ?? package.Value.GetValueOrDefault("Version")
+                ?? CentralVersion(result, package.Key)),
             result.SourceFiles.Length,
             loaded.LoadErrors.GetValueOrDefault(result.ProjectFilePath)));
+
+    /// <summary>The version central package management gives a package, in a PackageVersion item of Directory.Packages.props.</summary>
+    private static string? CentralVersion(IAnalyzerResult result, string id) =>
+        result.Items.GetValueOrDefault("PackageVersion")?.FirstOrDefault(item => item.ItemSpec.Equals(id, StringComparison.OrdinalIgnoreCase))?.Metadata.GetValueOrDefault("Version");
 
     /// <param name="LoadErrors">For a project that did not load, and so has no sources, the MSBuild errors of its design-time build.</param>
     public sealed record ProjectSummary(

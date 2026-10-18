@@ -631,6 +631,22 @@ public class NavigationTests : EndToEndTest
         (await DefineAsync("Text.extension(string).text")).Should().Equal(Sample.Location(file, "text)"));
     }
 
+    // Results write a name that is a keyword with the @ that code writes it with; a path takes it with or without.
+    [Test]
+    public async Task SymbolPaths_TakeKeywordNamesWithTheirAt()
+    {
+        var project = Sample.NewProject("Keywords", ("Words.cs", "namespace Edits;\n\npublic class @class\n{\n    public int @event { get; set; }\n}\n"));
+        var file = Sample.In("edits", "Keywords", "Words.cs");
+        async Task<IEnumerable<SourceLocation>> DefineAsync(string symbol) =>
+            (await Server.CallAsync<List<DefinitionTool.Definition>>("definition", new() { ["projectPath"] = project, ["symbol"] = symbol })).SelectMany(definition => definition.Locations);
+
+        var member = (await Server.CallAsync<PagedResult<SymbolEntry>>("list_symbols", new() { ["projectPath"] = project, ["symbol"] = "Edits.@class" })).Items.Single();
+
+        (member.Signature, member.Container).Should().Be(("Edits.@class.@event", "Edits.@class"));
+        (await DefineAsync(member.Signature)).Should().Equal(Sample.Location(file, "@event"));
+        (await DefineAsync("Edits.class.event")).Should().Equal(Sample.Location(file, "@event"));
+    }
+
     // Where results put a conversion operator, on the type it converts to, a position finds it, though no name is there. A local comes with
     // its type, as a result lists it.
     [Test]

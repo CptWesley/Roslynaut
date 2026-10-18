@@ -837,6 +837,129 @@ public class EditingTests : EndToEndTest
         Read(FileOf(project, "Global.cs")).Should().Be("global using System.Text;\n\nnamespace Edits;\n");
     }
 
+    private const string Modes = """
+        namespace Edits;
+
+        public class Modes
+        {
+        #if DEBUG
+            public static string Debug() => "debug";
+        #else
+            public static string Release() => "release";
+        #endif
+
+            /// <summary>Always.</summary>
+            public static string Always() => "always";
+
+            #region Helpers
+            public static int One() => 1;
+            #endregion
+
+            public static int Two() => 2;
+        }
+
+        public enum Kind
+        {
+            A,
+        #if SPECIAL
+            Q,
+        #endif
+            B,
+            C,
+        }
+        """;
+
+    // The directives before a declaration, and the code #if leaves out between them, go with the code before it: an insertion goes after
+    // them, and a deletion keeps them, as the #else branch of the #if around the member before.
+    [Test]
+    public async Task SymbolEdits_AfterDirectives_KeepTheCodeUnderThem()
+    {
+        var (inserted, deleted) = (Sample.NewProject("DirectivesInsert", ("Modes.cs", Modes)), Sample.NewProject("DirectivesDelete", ("Modes.cs", Modes)));
+
+        await Server.CallAsync<EditResult>("insert_before_symbol", new() { ["projectPath"] = inserted, ["symbol"] = "Edits.Modes.Always", ["code"] = "    public static int Zero() => 0;" });
+        await Server.CallAsync<EditResult>("insert_before_symbol", new() { ["projectPath"] = inserted, ["symbol"] = "Edits.Modes.Two", ["code"] = "    public static int Three() => 3;" });
+        foreach (var symbol in new[] { "Edits.Modes.Always", "Edits.Modes.Two", "Edits.Kind.B" })
+        {
+            (await Server.CallAsync<SafeDeleteSymbolTool.SafeDeleteResult>("safe_delete_symbol", new() { ["projectPath"] = deleted, ["symbol"] = symbol }))
+                .Deleted.Should().BeTrue(symbol);
+        }
+
+        Read(FileOf(inserted, "Modes.cs")).Should().Be(Modes.ReplaceLineEndings("\n")
+            .Replace("#endif\n\n", "#endif\n\n    public static int Zero() => 0;\n")
+            .Replace("#endregion\n\n", "#endregion\n\n    public static int Three() => 3;\n"));
+        Read(FileOf(deleted, "Modes.cs")).Should().Be(Modes.ReplaceLineEndings("\n")
+            .Replace("    /// <summary>Always.</summary>\n    public static string Always() => \"always\";\n\n", "")
+            .Replace("\n\n    public static int Two() => 2;", "")
+            .Replace("    B,\n", ""));
+        (await Server.CallAsync<PagedResult<DiagnosticsTool.DiagnosticEntry>>("diagnostics", new() { ["projectPath"] = deleted })).Items.Should().BeEmpty();
+    }
+
+    // The load compiles one framework of the two, so code under #if for the other is only text to it: a rename leaves that code as it is and
+    // lists where it has the old name, within what can see the symbol; safe delete refuses while such code names the symbol.
+    [Test]
+    public async Task RenameAndSafeDelete_InAProjectForTwoFrameworks_HeedTheCodeForTheOther()
+    {
+        var project = Sample.Write("edits/TwoFrameworks/TwoFrameworks.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <TargetFrameworks>net10.0;netstandard2.0</TargetFrameworks>
+              </PropertyGroup>
+            </Project>
+            """);
+        const string platform = """
+            namespace Edits
+            {
+                public static class Platform
+                {
+                    public static string Name => "x";
+
+                    public static string Tag => "t";
+
+                    private static int Count() => 1;
+
+                    public static int Run()
+                    {
+                        var i = 1;
+            #if NETSTANDARD2_0
+                        return Name.Length + Count() + i;
+            #else
+                        return i;
+            #endif
+                    }
+                }
+            }
+            """;
+        Sample.Write("edits/TwoFrameworks/Platform.cs", platform);
+        var other = Sample.Write("edits/TwoFrameworks/Other.cs", """
+            namespace Edits
+            {
+                public static class Other
+                {
+            #if NETSTANDARD2_0
+                    public static string Describe() => Platform.Tag + Platform.Name;
+            #endif
+                }
+            }
+            """);
+        var machine = FileOf(project, "Machine.cs");
+        async Task<IReadOnlyList<SourceLocation>> RenameAsync(string symbol, string newName) =>
+            (await Server.CallAsync<RenameSymbolTool.RenameResult>("rename_symbol", new() { ["projectPath"] = project, ["symbol"] = symbol, ["newName"] = newName })).InactiveCode;
+
+        var type = await RenameAsync("Edits.Platform", "Machine");
+        var local = await RenameAsync("Edits.Machine.Run.i", "j");
+        var @private = await RenameAsync("Edits.Machine.Count", "Total");
+        var @public = await RenameAsync("Edits.Machine.Name", "Title");
+        var deleted = await Server.CallAsync<SafeDeleteSymbolTool.SafeDeleteResult>("safe_delete_symbol", new() { ["projectPath"] = project, ["symbol"] = "Edits.Machine.Tag" });
+
+        local.Should().Equal(Sample.Location(machine, "i;\n#else"));
+        @private.Should().Equal(Sample.Location(machine, "Count() + i"));
+        @public.Should().BeEquivalentTo([Sample.Location(machine, "Name.Length"), Sample.Location(other, "Name;")]);
+        type.Should().Equal(Sample.Location(other, "Platform.Tag"), Sample.Location(other, "Platform.Name"));
+        deleted.Should().BeEquivalentTo(new SafeDeleteSymbolTool.SafeDeleteResult(false, [], [Sample.Location(other, "Tag +")]));
+        Read(machine).Should().Be(platform.ReplaceLineEndings("\n").Replace("class Platform", "class Machine").Replace("Name =>", "Title =>")
+            .Replace("Count() =>", "Total() =>").Replace("var i", "var j").Replace("return i;", "return j;"));
+    }
+
     // The regex generator writes a part of each partial type with a [GeneratedRegex] method. That part cannot be edited, so edits go to the part
     // people wrote without a position to pick it; and deleting that part takes the generator's along.
     [Test]

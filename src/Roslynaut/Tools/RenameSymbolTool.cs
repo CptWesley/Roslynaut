@@ -1,7 +1,9 @@
 using System.ComponentModel;
+using System.Text.RegularExpressions;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Rename;
+using Microsoft.CodeAnalysis.Text;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
 
@@ -13,7 +15,8 @@ public sealed class RenameSymbolTool(WorkspaceService workspace) : IMcpTool
 
     [McpServerTool(Name = "rename_symbol", Destructive = true)]
     [Description("Renames a symbol declared in source, with all its references across the solution, and the file of a type that has its name. "
-        + "Writes the changed files to disk and returns their paths.")]
+        + "Writes the changed files to disk and returns their paths, and the lines under #if that the load leaves out and that have the old name, "
+        + "which it does not change.")]
     private async Task<RenameResult> RenameSymbolAsync(
         [Description(ToolDefaults.ProjectPath)] string projectPath,
         [Description("The new name.")] string newName,
@@ -26,7 +29,55 @@ public sealed class RenameSymbolTool(WorkspaceService workspace) : IMcpTool
     {
         var (solution, symbols) = await workspace.ResolveAsync(projectPath, symbol, filePath, line, column, cancellationToken);
         var renamed = await RenameAsync(solution, symbols, newName, overloads, cancellationToken);
-        return new(await WorkspaceService.WriteChangesAsync(solution, renamed, cancellationToken));
+        var changed = await WorkspaceService.WriteChangesAsync(solution, renamed, cancellationToken);
+
+        // A rename changes no lines that #if leaves out, nor the number of lines; only the path of a renamed file.
+        var inactive = (await InactiveMentionsAsync(solution, symbols[0], cancellationToken))
+            .Select(location => solution.GetDocumentIdsWithFilePath(location.FilePath).FirstOrDefault() is { } id && renamed.GetDocument(id)?.FilePath is { } path
+                ? location with { FilePath = path }
+                : location);
+        return new(changed, [.. inactive]);
+    }
+
+    /// <summary>
+    /// Where code that #if leaves out of this load, such as another target framework's or configuration's, has a symbol's name: the compiler
+    /// does not read it, so finding references cannot tell whether it uses the symbol. Within the member or type that alone sees the symbol,
+    /// for a local, parameter or private member; else in its project and the projects that depend on it.
+    /// </summary>
+    internal static async Task<IReadOnlyList<SourceLocation>> InactiveMentionsAsync(Solution solution, ISymbol symbol, CancellationToken cancellationToken)
+    {
+        var name = symbol is IMethodSymbol { MethodKind: MethodKind.Constructor or MethodKind.StaticConstructor or MethodKind.Destructor } ? symbol.ContainingType.Name : symbol.Name;
+        var word = new Regex($@"(?<![\w@])@?{Regex.Escape(name)}(?!\w)");
+        var within = symbol.Kind is SymbolKind.Local or SymbolKind.Parameter or SymbolKind.TypeParameter or SymbolKind.RangeVariable or SymbolKind.Label
+            ? symbol.ContainingSymbol
+            : symbol.DeclaredAccessibility == Accessibility.Private ? symbol.ContainingType : null;
+
+        IEnumerable<(SyntaxTree Tree, TextSpan Span)> scope;
+        if (within is not null)
+            scope = within.DeclaringSyntaxReferences.Select(reference => (reference.SyntaxTree, reference.Span));
+        else if (solution.GetProject(symbol.ContainingAssembly, cancellationToken) is { } project)
+        {
+            var trees = await Task.WhenAll(solution.GetProjectDependencyGraph().GetProjectsThatTransitivelyDependOnThisProject(project.Id).Prepend(project.Id)
+                .SelectMany(id => solution.GetProject(id)!.Documents).Select(document => document.GetSyntaxTreeAsync(cancellationToken)));
+            scope = trees.OfType<SyntaxTree>().Select(tree => (tree, tree.GetRoot(cancellationToken).FullSpan));
+        }
+        else
+            scope = [];
+
+        var mentions = new List<SourceLocation>();
+        foreach (var (tree, span) in scope)
+        {
+            var root = await tree.GetRootAsync(cancellationToken);
+            if (!root.ContainsDirectives)
+                continue;
+            foreach (var trivia in root.DescendantTrivia(span).Where(trivia => trivia.IsKind(SyntaxKind.DisabledTextTrivia) && span.Contains(trivia.Span)))
+            {
+                foreach (Match match in word.Matches(trivia.ToString()))
+                    mentions.Add(SourceLocation.From(Location.Create(tree, new TextSpan(trivia.SpanStart + match.Index, match.Length))));
+            }
+        }
+
+        return [.. mentions.Distinct()];
     }
 
     internal static async Task<Solution> RenameAsync(Solution solution, IReadOnlyList<ISymbol> symbols, string newName, bool overloads, CancellationToken cancellationToken)
@@ -66,5 +117,9 @@ public sealed class RenameSymbolTool(WorkspaceService workspace) : IMcpTool
         return renamed;
     }
 
-    public sealed record RenameResult(IReadOnlyList<string> ChangedFiles);
+    /// <param name="InactiveCode">
+    /// Where code that #if leaves out of this load, such as another target framework's, has the old name: the rename cannot tell whether it uses
+    /// the symbol, so it left it as it was. Check those lines and edit the uses among them by hand.
+    /// </param>
+    public sealed record RenameResult(IReadOnlyList<string> ChangedFiles, IReadOnlyList<SourceLocation> InactiveCode);
 }

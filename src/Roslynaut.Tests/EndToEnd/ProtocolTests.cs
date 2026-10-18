@@ -91,6 +91,18 @@ public class ProtocolTests : EndToEndTest
         (await Server.CallTextAsync("debug_stop")).Should().Be("Stopped.");
     }
 
+    // A source file or a solution filter would not load, with no more than an XML error to say why.
+    [Test]
+    public async Task ProjectPaths_ThatNameNoProjectOrSolution_SaySo()
+    {
+        var filter = Sample.Write("edits/Filter/Shapes.slnf", """{ "solution": { "path": "../../Shapes.slnx", "projects": [] } }""");
+        async Task<string> ErrorAsync(string path) => await Server.CallFailingAsync("project_info", new() { ["projectPath"] = path });
+
+        (await ErrorAsync(filter)).Should().Be($"An error occurred invoking 'project_info': {filter} is not a project or solution; pass a .csproj, .sln or .slnx file.");
+        (await ErrorAsync(Sample.CircleFile)).Should().Be($"An error occurred invoking 'project_info': {Sample.CircleFile} is not a project or solution; pass a .csproj, .sln or .slnx file.");
+        (await ErrorAsync(Sample.In("src", "Shapes"))).Should().Be($"An error occurred invoking 'project_info': {Sample.In("src", "Shapes")} is a directory; pass the .csproj, .sln or .slnx file in it.");
+    }
+
     [Test]
     public async Task ToolCalls_WithoutTheirRequiredArguments_SayWhich()
     {

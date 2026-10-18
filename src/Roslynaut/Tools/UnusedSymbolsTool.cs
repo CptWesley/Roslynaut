@@ -10,8 +10,9 @@ public sealed class UnusedSymbolsTool(WorkspaceService workspace, ResultCache ca
     public Delegate Handler => FindUnusedAsync;
 
     [McpServerTool(Name = "unused_symbols", ReadOnly = true)]
-    [Description("Finds types and members declared in source that nothing references; the members of an unused type are left out, and so is "
-        + "generated code. Public ones are left out unless asked for, as they can be used from outside. So are overrides, interface implementations, "
+    [Description("Finds types and members declared in source that nothing references, not even the code under #if that the load leaves out; "
+        + "the members of an unused type are left out, and so is generated code. Public ones are left out unless asked for, as they can be used "
+        + "from outside. So are overrides, interface implementations, "
         + "constructors, entry points and their types, and symbols with attributes, as frameworks, serializers or reflection may use those. Paged.")]
     private async Task<PagedResult<SymbolEntry>> FindUnusedAsync(
         [Description(ToolDefaults.ProjectPath)] string projectPath,
@@ -59,7 +60,9 @@ public sealed class UnusedSymbolsTool(WorkspaceService workspace, ResultCache ca
             if (!IsCandidate(solution, symbol, includePublic) || entryPoints.Contains(symbol) || unused.Contains(symbol.ContainingType, SymbolEqualityComparer.Default))
                 continue;
 
-            if (!await IsReferencedAsync(symbol, solution, cancellationToken) && !await AreExtensionsUsedAsync(symbol, solution, cancellationToken))
+            // Code that #if leaves out of this load, such as another target framework's, may use it too.
+            if (!await IsReferencedAsync(symbol, solution, cancellationToken) && !await AreExtensionsUsedAsync(symbol, solution, cancellationToken)
+                && (await RenameSymbolTool.InactiveMentionsAsync(solution, symbol, cancellationToken)).Count == 0)
                 unused.Add(symbol);
         }
 

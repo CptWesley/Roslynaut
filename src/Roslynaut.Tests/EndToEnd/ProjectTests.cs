@@ -6,6 +6,39 @@ namespace Roslynaut.Tests.EndToEnd;
 /// <summary>What MSBuild makes of the projects: their properties, references and graph, where a property comes from, other frameworks, and NuGet's configuration.</summary>
 public class ProjectTests : EndToEndTest
 {
+    // Under central package management, the references leave their versions to Directory.Packages.props, unless they override them.
+    [Test]
+    public async Task ProjectInfo_UnderCentralPackageManagement_GivesTheVersionsItResolves()
+    {
+        Sample.Write("edits/Central/Directory.Packages.props", $"""
+            <Project>
+              <PropertyGroup>
+                <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+              </PropertyGroup>
+              <ItemGroup>
+                <PackageVersion Include="{SampleSolution.GreetingsId}" Version="2.0.0" />
+                <PackageVersion Include="{SampleSolution.BaseId}" Version="1.0.0" />
+              </ItemGroup>
+            </Project>
+            """);
+        var project = Sample.Write("edits/Central/Central.csproj", $"""
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <TargetFramework>net10.0</TargetFramework>
+              </PropertyGroup>
+              <ItemGroup>
+                <PackageReference Include="{SampleSolution.GreetingsId}" VersionOverride="1.0.0" />
+                <PackageReference Include="{SampleSolution.BaseId}" />
+              </ItemGroup>
+            </Project>
+            """);
+        await Sample.DotnetAsync("restore", project);
+
+        var info = await Server.CallAsync<List<ProjectInfoTool.ProjectSummary>>("project_info", new() { ["projectPath"] = project });
+
+        info.Single().PackageReferences.Should().BeEquivalentTo(new Dictionary<string, string?> { [SampleSolution.GreetingsId] = "1.0.0", [SampleSolution.BaseId] = "1.0.0" });
+    }
+
     [Test]
     public async Task ProjectInfo_OfEachProjectOfTheSolution()
     {

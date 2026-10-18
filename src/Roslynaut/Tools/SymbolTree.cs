@@ -179,7 +179,10 @@ internal static class SymbolTree
     private static bool IsDeclared(ISymbol symbol) =>
         !symbol.IsImplicitlyDeclared && symbol is not (IMethodSymbol { AssociatedSymbol: not null } or INamedTypeSymbol { IsTupleType: true } or IFieldSymbol { ContainingType.IsTupleType: true });
 
-    /// <summary>Splits on dots outside parameter and type argument lists; a constructor's name keeps its dot, as in "Point..ctor(int)".</summary>
+    /// <summary>
+    /// Splits on dots outside parameter and type argument lists; a constructor's name keeps its dot, as in "Point..ctor(int)". A name may
+    /// start with the @ that escapes a keyword, as signatures give it: @class is class.
+    /// </summary>
     private static List<string> Split(string path)
     {
         var segments = new List<string>();
@@ -189,12 +192,12 @@ internal static class SymbolTree
             depth += path[i] switch { '(' or '<' or '[' => 1, ')' or '>' or ']' => -1, _ => 0 };
             if (path[i] == '.' && depth == 0 && i > start)
             {
-                segments.Add(path[start..i].Trim());
+                segments.Add(path[start..i].Trim().TrimStart('@'));
                 start = i + 1;
             }
         }
 
-        segments.Add(path[start..].Trim());
+        segments.Add(path[start..].Trim().TrimStart('@'));
         return segments;
     }
 

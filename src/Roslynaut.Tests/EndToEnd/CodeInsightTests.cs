@@ -543,6 +543,34 @@ public class CodeInsightTests : EndToEndTest
         (await UnusedAsync(Sample.In("src", "Shapes", "ShapeFactory.cs"))).Should().Equal("Shapes.ShapeFactory");
     }
 
+    // Code under #if that the load leaves out, such as for another configuration, is only text to the compiler; what it names may be in use.
+    [Test]
+    public async Task UnusedSymbols_LeaveOutWhatCodeUnderIfNames()
+    {
+        var project = Sample.NewProject("UnusedUnderIf", ("Log.cs", """
+            namespace Edits;
+
+            public static class Log
+            {
+                private static string Stamp() => "now";
+
+                private static string Never() => "never";
+
+                public static string Write(string text)
+                {
+            #if TIMED
+                    text = Stamp() + text;
+            #endif
+                    return text;
+                }
+            }
+            """));
+
+        var unused = await Server.CallAsync<PagedResult<SymbolEntry>>("unused_symbols", new() { ["projectPath"] = project });
+
+        unused.Items.Select(symbol => symbol.Signature).Should().Equal("Edits.Log.Never()");
+    }
+
     [Test]
     public async Task SearchPattern_IgnoresCase_UnlessAsked()
     {

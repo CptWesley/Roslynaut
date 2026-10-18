@@ -91,12 +91,28 @@ internal static class SymbolEdits
             .Select(SourceLocation.From)
             .Distinct()
             .ToList();
+
+        // So may code that #if leaves out of this load, such as another target framework's.
+        references.AddRange((await RenameSymbolTool.InactiveMentionsAsync(solution, symbol, cancellationToken)).Where(mention => !declarations.Any(declaration =>
+            declaration.SyntaxTree.FilePath == mention.FilePath && declaration.SyntaxTree.GetLineSpan(declaration.Span) is var span
+            && span.StartLinePosition.Line < mention.Line && mention.Line <= span.EndLinePosition.Line + 1)));
         if (references.Count > 0)
             return (null, references);
 
         var editor = new SolutionEditor(solution);
         foreach (var declaration in editable)
-            (await editor.GetDocumentEditorAsync(solution.GetDocumentId(declaration.SyntaxTree)!, cancellationToken)).RemoveNode(declaration);
+        {
+            var document = await editor.GetDocumentEditorAsync(solution.GetDocumentId(declaration.SyntaxTree)!, cancellationToken);
+            if (ForeignTrivia(declaration) is 0)
+            {
+                document.RemoveNode(declaration);
+                continue;
+            }
+
+            // Removing a node keeps only the directives of its trivia, which would delete the disabled code between them.
+            document.ReplaceNode(declaration, (current, _) => current.WithLeadingTrivia(current.GetLeadingTrivia().Take(ForeignTrivia(current))));
+            document.RemoveNode(declaration, SyntaxRemoveOptions.KeepLeadingTrivia | SyntaxRemoveOptions.KeepUnbalancedDirectives | SyntaxRemoveOptions.AddElasticMarker);
+        }
 
         // A file that declared only a deleted type goes with it, unless it still says something, such as a global using.
         var deleted = editor.GetChangedSolution();
@@ -195,9 +211,25 @@ internal static class SymbolEdits
 
     /// <summary>Where a declaration starts with its documentation and other comments.</summary>
     private static int StartIncludingComments(SyntaxNode node) =>
-        node.GetLeadingTrivia().FirstOrDefault(trivia => !trivia.IsKind(SyntaxKind.WhitespaceTrivia) && !trivia.IsKind(SyntaxKind.EndOfLineTrivia)) is { RawKind: not 0 } first
+        node.GetLeadingTrivia().Skip(ForeignTrivia(node)).FirstOrDefault(trivia => !trivia.IsKind(SyntaxKind.WhitespaceTrivia) && !trivia.IsKind(SyntaxKind.EndOfLineTrivia)) is { RawKind: not 0 } first
             ? first.SpanStart
             : node.SpanStart;
+
+    /// <summary>
+    /// How many of a declaration's leading trivia go with the code before it: those up to its last directive or disabled code, such as the
+    /// #else branch of an #if around the member before it, or the #endregion of a region before it.
+    /// </summary>
+    private static int ForeignTrivia(SyntaxNode node)
+    {
+        var trivia = node.GetLeadingTrivia();
+        for (var index = trivia.Count - 1; index >= 0; index--)
+        {
+            if (trivia[index].IsDirective || trivia[index].IsKind(SyntaxKind.DisabledTextTrivia))
+                return index + 1;
+        }
+
+        return 0;
+    }
 }
 
 public sealed class ReplaceSymbolBodyTool(WorkspaceService workspace) : IMcpTool
@@ -271,7 +303,8 @@ public sealed class SafeDeleteSymbolTool(WorkspaceService workspace) : IMcpTool
 
     [McpServerTool(Name = "safe_delete_symbol", Destructive = true)]
     [Description("Deletes a symbol's declaration, but only if nothing else references it; otherwise deletes nothing and returns the references, "
-        + "or the code that would no longer compile without it, such as the uses of an implicit conversion. "
+        + "or the code that would no longer compile without it, such as the uses of an implicit conversion, or the lines under #if that the load "
+        + "leaves out and that have its name. "
         + "Writes the changed files to disk, and deletes a file that declared nothing but a deleted type.")]
     private async Task<SafeDeleteResult> DeleteAsync(
         [Description(ToolDefaults.ProjectPath)] string projectPath,

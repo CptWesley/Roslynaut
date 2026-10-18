@@ -47,23 +47,27 @@ public sealed class WorkspaceService
 
     public Task<LoadedWorkspace> GetAsync(string projectPath)
     {
-        var path = Path.GetFullPath(projectPath);
-        if (!File.Exists(path))
-            throw new McpException($"Project or solution not found: {path}");
-
-        var workspace = _workspaces.GetOrAdd(path, key => new TrackedWorkspace(key));
+        var workspace = _workspaces.GetOrAdd(ProjectOrSolution(projectPath), key => new TrackedWorkspace(key));
         return Task.Run(workspace.Sync);
     }
 
     /// <summary>Reloads a project or solution with other settings, which later calls with its path then get.</summary>
     public Task<LoadedWorkspace> ConfigureAsync(string projectPath, LoadSettings settings)
     {
-        var path = Path.GetFullPath(projectPath);
-        if (!File.Exists(path))
-            throw new McpException($"Project or solution not found: {path}");
-
+        var path = ProjectOrSolution(projectPath);
         _workspaces.GetOrAdd(path, key => new TrackedWorkspace(key)).Configure(settings);
         return GetAsync(path);
+    }
+
+    // Anything else, such as a source file or a solution filter, fails to load with no more than an XML error.
+    private static string ProjectOrSolution(string projectPath)
+    {
+        var path = Path.GetFullPath(projectPath);
+        if (!File.Exists(path))
+            throw new McpException(Directory.Exists(path) ? $"{path} is a directory; pass the .csproj, .sln or .slnx file in it." : $"Project or solution not found: {path}");
+        return LanguageOf(path) is not null || Path.GetExtension(path).ToLowerInvariant() is ".sln" or ".slnx"
+            ? path
+            : throw new McpException($"{path} is not a project or solution; pass a .csproj, .sln or .slnx file.");
     }
 
     public async Task<Document> GetDocumentAsync(string projectPath, string filePath, CancellationToken cancellationToken = default)
