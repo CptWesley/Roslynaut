@@ -54,6 +54,9 @@ public sealed class SignatureHelpTool(WorkspaceService workspace) : IMcpTool
         var argument = arguments.Arguments.FirstOrDefault(argument => argument.FullSpan.Contains(position) || argument.FullSpan.End == position);
         var index = arguments.Arguments.GetSeparators().Count(separator => separator.SpanStart < position);
         var chosen = bound.Symbol ?? (bound.CandidateSymbols.Length == 1 ? bound.CandidateSymbols[0] : null);
+        // The call binds a generic method with its type arguments, Map<int>, which the overloads list as Map<TResult>.
+        if (chosen is IMethodSymbol { IsGenericMethod: true } generic)
+            chosen = generic.ConstructedFrom;
 
         return overloads.Select(overload =>
         {

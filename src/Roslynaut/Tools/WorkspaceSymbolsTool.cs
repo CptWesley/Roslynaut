@@ -24,7 +24,9 @@ public sealed class WorkspaceSymbolsTool(WorkspaceService workspace, ResultCache
             () => SearchAsync(solution, query, cancellationToken));
     }
 
+    // A file linked into several projects declares its symbols in each.
     internal static async Task<IEnumerable<SymbolEntry>> SearchAsync(Solution solution, string query, CancellationToken cancellationToken) =>
-        (await SymbolFinder.FindSourceDeclarationsWithPatternAsync(solution, query, SymbolFilter.TypeAndMember, cancellationToken))
-            .Select(symbol => SymbolEntry.From(symbol));
+        [.. (await SymbolFinder.FindSourceDeclarationsWithPatternAsync(solution, query, SymbolFilter.TypeAndMember, cancellationToken))
+            .Select(symbol => SymbolEntry.From(symbol))
+            .Distinct()];
 }

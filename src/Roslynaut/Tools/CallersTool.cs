@@ -40,7 +40,8 @@ public sealed class CallersTool(WorkspaceService workspace, ResultCache cache) :
                 callers.Add(new(SymbolEntry.From(caller), [SourceLocation.From(call)]));
         }
 
-        return callers;
+        // A caller in a file linked into several projects is one in each.
+        return [.. callers.GroupBy(caller => caller.Symbol).Select(group => new Caller(group.Key, [.. group.SelectMany(caller => caller.Calls).Distinct()]))];
     }
 
     /// <summary>

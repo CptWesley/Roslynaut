@@ -540,4 +540,116 @@ public class NavigationTests : EndToEndTest
         references.Items.Should().BeEquivalentTo(uses);
         highlights.Should().Equal([new(Sample.Location(file, "_first, _second;"), "Edits.Pair", "Declaration"), .. uses]);
     }
+
+    // Every result of a search through code of all kinds has a path that leads back to it, and a tuple, which declares a type and fields
+    // of its own, is no result.
+    [Test]
+    public async Task SymbolPaths_OfEveryKindOfDeclaration_FindIt()
+    {
+        var project = Sample.NewProject("PathKinds", ("Kinds.cs", SampleSolution.Kinds));
+
+        var all = await Server.CallAsync<PagedResult<SymbolEntry>>("find_symbols", new() { ["projectPath"] = project, ["pageSize"] = 1000 });
+
+        all.Items.Select(TestSolution.PathOf).Should().Contain(
+        [
+            "Edits.Box<T>.T", "Edits.Box<T>.System.IDisposable.Dispose", "Edits.Box<T>.Finalize", "Edits.Box<T>.Map<TResult>(System.Func<T?, TResult>).TResult",
+            "Edits.Money.op_Addition", "Edits.Money.operator +(Edits.Money, Edits.Money).a", "Edits.Money.op_Implicit",
+            "Edits.Money.implicit operator (decimal, string)(Edits.Money).money",
+            "Edits.Text.extension(string)", "Edits.Text.extension(string).text", "Edits.Text.extension(string).IsBlank", "Edits.Text.extension(string).Shout",
+        ]);
+        all.Items.Should().NotContain(entry => entry.Name == "ValueTuple" || entry.Container != null && entry.Container.StartsWith('('));
+        foreach (var entry in all.Items)
+        {
+            var definitions = await Server.CallAsync<List<DefinitionTool.Definition>>("definition", new() { ["projectPath"] = project, ["symbol"] = TestSolution.PathOf(entry) });
+            definitions.Should().Contain(definition => definition.Locations.Contains(entry.Location), TestSolution.PathOf(entry));
+        }
+    }
+
+    // Operators, conversions and finalizers by their declarations, an explicit implementation by the name of what it implements, and the
+    // members of an extension block by the class, as calls name them.
+    [Test]
+    public async Task SymbolPaths_NameMembersAsCodeDeclaresThem()
+    {
+        var project = Sample.NewProject("CodeNames", ("Kinds.cs", SampleSolution.Kinds));
+        var file = Sample.In("edits", "CodeNames", "Kinds.cs");
+        async Task<IEnumerable<SourceLocation>> DefineAsync(string symbol) =>
+            (await Server.CallAsync<List<DefinitionTool.Definition>>("definition", new() { ["projectPath"] = project, ["symbol"] = symbol })).SelectMany(definition => definition.Locations);
+
+        (await DefineAsync("Money.operator +")).Should().Equal(Sample.Location(file, "+(Money a"));
+        (await DefineAsync("Money.operator+(Money, Money).b")).Should().Equal(Sample.Location(file, "b) =>"));
+        (await DefineAsync("Money.implicit operator (decimal, string)")).Should().Equal(Sample.Location(file, "(decimal, string)(Money"));
+        (await DefineAsync("Box.~Box")).Should().Equal(Sample.Location(file, "Box() { }"));
+        (await DefineAsync("Box.Dispose")).Should().Equal(Sample.Location(file, "Dispose() { }"));
+        (await DefineAsync("Box.T")).Should().Equal(Sample.Location(file, "T> : IDisposable"));
+        (await DefineAsync("Text.Shout")).Should().Equal(Sample.Location(file, "Shout() =>"));
+        (await DefineAsync("Text.IsBlank")).Should().Equal(Sample.Location(file, "IsBlank =>"));
+        (await DefineAsync("Text.extension(string).text")).Should().Equal(Sample.Location(file, "text)"));
+    }
+
+    // Where results put a conversion operator, on the type it converts to, a position finds it, though no name is there. A local comes with
+    // its type, as a result lists it.
+    [Test]
+    public async Task Definition_AtAConversionsLocation_AndOfALocal()
+    {
+        var project = Sample.NewProject("ConversionPosition", ("Kinds.cs", SampleSolution.Kinds));
+        var file = Sample.In("edits", "ConversionPosition", "Kinds.cs");
+        var (line, column) = Sample.Find(file, "(decimal, string)(Money");
+
+        var conversion = await Server.CallAsync<List<DefinitionTool.Definition>>("definition", new() { ["projectPath"] = project, ["filePath"] = file, ["line"] = line, ["column"] = column });
+        var local = await Server.CallAsync<List<DefinitionTool.Definition>>("definition", new() { ["projectPath"] = project, ["symbol"] = "Use.Run.pair" });
+
+        conversion.Select(definition => definition.Signature).Should().Equal("Edits.Money.implicit operator (decimal, string)(Edits.Money)");
+        local.Select(definition => (definition.Kind, definition.Signature)).Should().Equal(("Local", "(decimal, string) pair"));
+    }
+
+    // The extension modifier takes in the members of extension blocks, which are no methods with a this parameter.
+    [Test]
+    public async Task FindSymbols_OfExtensions_IncludeTheMembersOfExtensionBlocks()
+    {
+        var project = Sample.NewProject("ExtensionKinds", ("Kinds.cs", SampleSolution.Kinds));
+
+        var extensions = await Server.CallAsync<PagedResult<SymbolEntry>>("find_symbols", new() { ["projectPath"] = project, ["modifiers"] = new[] { "extension" } });
+
+        extensions.Items.Select(TestSolution.PathOf).Should().BeEquivalentTo("Edits.Text.Twice", "Edits.Text.extension(string).IsBlank", "Edits.Text.extension(string).Shout");
+    }
+
+    // What code calls is constructed, Box<string> for Box<T>: the type arguments stand for the type parameters in a path.
+    [Test]
+    public async Task Callees_OfGenericTypes_HavePathsThatFindThem()
+    {
+        var project = Sample.NewProject("GenericCallees", ("Kinds.cs", SampleSolution.Kinds));
+
+        var callees = await Server.CallAsync<PagedResult<CallersTool.Caller>>("callees", new() { ["projectPath"] = project, ["symbol"] = "Use.Run" });
+
+        var inSource = callees.Items.Select(callee => callee.Symbol).Where(symbol => symbol.Location is not null).ToList();
+        inSource.Select(TestSolution.PathOf).Should().Contain(["Edits.Box<string>..ctor", "Edits.Box<string>.Map", "Edits.Text.extension(string).Shout"]);
+        foreach (var symbol in inSource)
+        {
+            var definitions = await Server.CallAsync<List<DefinitionTool.Definition>>("definition", new() { ["projectPath"] = project, ["symbol"] = TestSolution.PathOf(symbol) });
+            definitions.Should().Contain(definition => definition.Locations.Contains(symbol.Location), TestSolution.PathOf(symbol));
+        }
+    }
+
+    // A file linked into two projects declares its symbols in each, as copies of one declaration: a path finds it once, and searches give it,
+    // its callers and its lines once.
+    [Test]
+    public async Task AFileLinkedIntoTwoProjects_DeclaresItsSymbolsOnce()
+    {
+        const string shared = "namespace Edits;\n\npublic static class Flag\n{\n    public static string Say() => \"hi\";\n\n    public static string Twice() => Say() + Say();\n}\n";
+        var solution = Sample.NewLinkedSolution("LinkedNavigation", shared, "namespace Edits;\n\npublic static class Use\n{\n    public static string Run() => Flag.Say();\n}\n");
+        var (file, use) = (Sample.In("edits", "LinkedNavigation", "Common", "Shared.cs"), Sample.In("edits", "LinkedNavigation", "One", "Use.cs"));
+        Dictionary<string, object?> Arguments(string name, object value) => new() { ["projectPath"] = solution, [name] = value };
+
+        var definitions = await Server.CallAsync<List<DefinitionTool.Definition>>("definition", Arguments("symbol", "Flag.Say"));
+        var callers = await Server.CallAsync<PagedResult<CallersTool.Caller>>("callers", Arguments("symbol", "Flag.Say"));
+        var symbols = await Server.CallAsync<PagedResult<SymbolEntry>>("workspace_symbols", Arguments("query", "Twice"));
+        var matches = await Server.CallAsync<PagedResult<SearchPatternTool.TextMatch>>("search_pattern", Arguments("pattern", "Say"));
+        var unused = await Server.CallAsync<PagedResult<SymbolEntry>>("unused_symbols", Arguments("includePublic", true));
+
+        definitions.SelectMany(definition => definition.Locations).Should().Equal(Sample.Location(file, "Say()"));
+        callers.Items.Select(caller => (caller.Symbol.Signature, caller.Calls.Count)).Should().BeEquivalentTo([("Edits.Flag.Twice()", 2), ("Edits.Use.Run()", 1)]);
+        symbols.Items.Should().ContainSingle();
+        matches.Items.Select(match => (match.FilePath, match.Line)).Should().BeEquivalentTo([(file, 5), (file, 7), (use, 5)]);
+        unused.Items.Select(symbol => symbol.Signature).Should().BeEquivalentTo("Edits.Flag.Twice()", "Edits.Use");
+    }
 }

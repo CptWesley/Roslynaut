@@ -224,6 +224,19 @@ public class CodeInsightTests : EndToEndTest
         (await HelpAsync("size)\n")).Should().BeEquivalentTo(constructors, options => options.WithStrictOrdering());
     }
 
+    // A call binds a generic method with the type arguments it infers, Map<int>; the overload listed, Map<TResult>, is the one chosen.
+    [Test]
+    public async Task SignatureHelp_OfAGenericMethod_ChoosesItsOverload()
+    {
+        var project = Sample.NewProject("GenericSignatures", ("Kinds.cs", SampleSolution.Kinds));
+        var file = Sample.In("edits", "GenericSignatures", "Kinds.cs");
+        var (line, column) = Sample.Find(file, "item => item?.Length");
+
+        var signatures = await Server.CallAsync<List<SignatureHelpTool.Signature>>("signature_help", new() { ["projectPath"] = project, ["filePath"] = file, ["line"] = line, ["column"] = column });
+
+        signatures.Select(signature => (signature.Display, signature.ActiveParameter, signature.Chosen)).Should().Equal(("Edits.Box<string>.Map<TResult>(System.Func<string?, TResult>)", (int?)0, true));
+    }
+
     [Test]
     public async Task Completion_AfterADot_ListsTheMembers()
     {
@@ -487,6 +500,24 @@ public class CodeInsightTests : EndToEndTest
         rectangle.Items.Select(symbol => symbol.Signature).Should().Equal("Shapes.Rectangle.Scale(double)");
     }
 
+    // Calls of extension members name neither their class nor their extension block, which are used all the same.
+    [Test]
+    public async Task UnusedSymbols_TakeCallsOfExtensions_AsUsesOfTheirClass()
+    {
+        const string extensions = "namespace Edits;\n\ninternal static class Strings\n{\n    public static int Twice(this int value) => value * 2;\n\n"
+            + "    extension(string text)\n    {\n        public string Shout() => text + \"!\";\n\n        public bool IsBlank => text.Length == 0;\n    }\n}\n\n"
+            + "internal static class Numbers\n{\n    public static int Half(this int value) => value / 2;\n}\n";
+        var project = Sample.NewProject("UnusedExtensions", ("Strings.cs", extensions),
+            ("Use.cs", "namespace Edits;\n\npublic static class Use\n{\n    public static string Run() => \"a\".Shout() + 2.Twice();\n}\n"));
+        var file = Sample.In("edits", "UnusedExtensions", "Strings.cs");
+
+        var unused = await Server.CallAsync<PagedResult<SymbolEntry>>("unused_symbols", new() { ["projectPath"] = project });
+
+        unused.Items.Should().Equal(
+            new SymbolEntry("Numbers", "Class", "Edits.Numbers", "Edits", Sample.Location(file, "Numbers")),
+            new SymbolEntry("IsBlank", "Property", "Edits.Strings.extension(string).IsBlank", "Edits.Strings.extension(string)", Sample.Location(file, "IsBlank")));
+    }
+
     [Test]
     public async Task UnusedSymbols_WithinAFile()
     {
@@ -571,6 +602,7 @@ public class CodeInsightTests : EndToEndTest
             .Should().Be($"An error occurred invoking 'format': '{generated.FilePath}' is the output of a source generator, which cannot be edited.");
     }
 
+    // The top-level statements are code of Program, in the global namespace.
     [Test]
     public async Task NamespaceGraph_FindsTheCycle()
     {
@@ -578,6 +610,8 @@ public class CodeInsightTests : EndToEndTest
 
         graph.Dependencies.Should().BeEquivalentTo(
         [
+            new NamespaceGraphTool.NamespaceEdge("<global>", "Shapes", 5, ["Program -> Shapes.Circle", "Program -> Shapes.IShape", "Program -> Shapes.Rectangle"]),
+            new NamespaceGraphTool.NamespaceEdge("<global>", "Shapes.App", 1, ["Program -> Shapes.App.Spinner"]),
             new NamespaceGraphTool.NamespaceEdge("Shapes", "Shapes.Internal", 1, ["Shapes.ShapeFactory -> Shapes.Internal.Registry"]),
             new NamespaceGraphTool.NamespaceEdge("Shapes.App", "Shapes", 1, ["Shapes.App.Spinner -> Shapes.IShape"]),
             new NamespaceGraphTool.NamespaceEdge("Shapes.Internal", "Shapes", 3,
@@ -588,7 +622,7 @@ public class CodeInsightTests : EndToEndTest
         graph.Cycles.Should().BeEquivalentTo([new[] { "Shapes", "Shapes.Internal" }], options => options.WithStrictOrdering());
     }
 
-    // At depth 1 all namespaces are Shapes, which has no other namespace to depend on.
+    // At depth 1 all namespaces are Shapes, which depends on no other namespace; only Program, in the global one, depends on it.
     [Test]
     public async Task NamespaceGraph_ByPrefix_AndToADepth()
     {
@@ -597,7 +631,8 @@ public class CodeInsightTests : EndToEndTest
 
         tests.Dependencies.Should().ContainSingle().Which.Should().Match<NamespaceGraphTool.NamespaceEdge>(edge => edge.From == "Shapes.Tests" && edge.To == "Shapes");
         tests.Cycles.Should().BeEmpty();
-        (top.Dependencies, top.Cycles).Should().BeEquivalentTo((Array.Empty<NamespaceGraphTool.NamespaceEdge>(), Array.Empty<string[]>()));
+        top.Dependencies.Should().ContainSingle().Which.Should().Match<NamespaceGraphTool.NamespaceEdge>(edge => edge.From == "<global>" && edge.To == "Shapes" && edge.Types == 6);
+        top.Cycles.Should().BeEmpty();
     }
 
     [Test]

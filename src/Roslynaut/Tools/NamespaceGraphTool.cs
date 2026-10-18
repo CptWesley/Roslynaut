@@ -36,7 +36,7 @@ public sealed class NamespaceGraphTool(WorkspaceService workspace) : IMcpTool
             {
                 var symbol = model.GetSymbolInfo(name, cancellationToken).Symbol;
                 if ((symbol as INamedTypeSymbol ?? symbol?.ContainingType)?.OriginalDefinition is not { } used || !used.Locations.Any(location => location.IsInSource)
-                    || name.FirstAncestorOrSelf<BaseTypeDeclarationSyntax>() is not { } declaration || model.GetDeclaredSymbol(declaration, cancellationToken) is not { } user)
+                    || UserOf(name, model, cancellationToken) is not { } user)
                     continue;
 
                 var (from, to) = (NamespaceOf(user, depth), NamespaceOf(used, depth));
@@ -57,6 +57,15 @@ public sealed class NamespaceGraphTool(WorkspaceService workspace) : IMcpTool
                 [.. edge.Value.Order().Take(MaxExamples).Select(pair => $"{pair.From} -> {pair.To}")]))],
             Cycles(uses.Keys));
     }
+
+    /// <summary>The type whose code a name is in: its type declaration, a delegate, or for top-level statements their Program.</summary>
+    private static INamedTypeSymbol? UserOf(SimpleNameSyntax name, SemanticModel model, CancellationToken cancellationToken) =>
+        name.FirstAncestorOrSelf<SyntaxNode>(node => node is BaseTypeDeclarationSyntax or DelegateDeclarationSyntax or GlobalStatementSyntax) switch
+        {
+            GlobalStatementSyntax => model.GetEnclosingSymbol(name.SpanStart, cancellationToken)?.ContainingType,
+            { } declaration => model.GetDeclaredSymbol(declaration, cancellationToken) as INamedTypeSymbol,
+            null => null,
+        };
 
     private static string NamespaceOf(INamedTypeSymbol type, int? depth)
     {

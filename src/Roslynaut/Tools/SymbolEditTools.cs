@@ -64,6 +64,9 @@ internal static class SymbolEdits
         // A primary constructor is declared by its type, which deleting its declaration would delete.
         if (symbol is IMethodSymbol { MethodKind: MethodKind.Constructor } && declarations.Any(declaration => declaration is TypeDeclarationSyntax))
             throw new McpException($"{symbol.ToDisplayString()} is the primary constructor of {symbol.ContainingType.ToDisplayString()}: edit the type's parameter list instead.");
+        // So is a record's positional property, by a parameter that calls pass too.
+        if (declarations.Any(declaration => declaration is ParameterSyntax))
+            throw new McpException($"{symbol.ToDisplayString()} is declared by a parameter of the primary constructor of {symbol.ContainingType.ToDisplayString()}, which calls pass: remove it with change_signature, which updates them.");
 
         // Overrides and explicit implementations of it, and the interface or abstract members it implements, need it as much as references do:
         // without it, they do not compile.
@@ -147,9 +150,23 @@ internal static class SymbolEdits
 
         var node = await reference.GetSyntaxAsync(cancellationToken);
 
-        // A field or event declares its symbols in variable declarators; edit the whole declaration.
-        if (node is VariableDeclaratorSyntax { Parent.Parent: BaseFieldDeclarationSyntax field })
-            node = field;
+        // A field, event or local declares its symbols in variable declarators; edit the whole declaration.
+        if (node is VariableDeclaratorSyntax { Parent.Parent: BaseFieldDeclarationSyntax or LocalDeclarationStatementSyntax } declarator)
+            node = declarator.Parent.Parent;
+        if (symbol is IMethodSymbol { MethodKind: MethodKind.Constructor } && node is TypeDeclarationSyntax)
+            throw new McpException($"{symbol.ToDisplayString()} is the primary constructor of {symbol.ContainingType.ToDisplayString()}: edit the type's parameter list instead.");
+
+        // The edits go by whole lines, which would cut through code beside the declaration on its lines.
+        var text = await node.SyntaxTree.GetTextAsync(cancellationToken);
+        var (first, last) = (text.Lines.GetLineFromPosition(node.SpanStart), text.Lines.GetLineFromPosition(node.Span.End));
+        var after = text.ToString(TextSpan.FromBounds(node.Span.End, last.End)).TrimStart(',', ';').Trim();
+        if (!string.IsNullOrWhiteSpace(text.ToString(TextSpan.FromBounds(first.Start, node.SpanStart))) || after.Length > 0 && !after.StartsWith("//", StringComparison.Ordinal))
+        {
+            throw new McpException(node is ParameterSyntax
+                ? $"{symbol.ToDisplayString()} is declared in a parameter list: change it with change_signature."
+                : $"{symbol.ToDisplayString()} shares its lines with other code, which edits by line would cut through: edit the declaration around it instead.");
+        }
+
         return (solution.GetDocument(node.SyntaxTree)!, node);
     }
 

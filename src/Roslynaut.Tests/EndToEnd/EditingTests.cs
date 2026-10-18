@@ -971,4 +971,81 @@ public class EditingTests : EndToEndTest
         diff.Removed.Should().Equal("public static int Edits.Calc.Sub(int a, int b)");
         diff.Added.Should().Equal("public static int Edits.Calc.Minus(int a, int b)");
     }
+
+    // The edits replace or insert whole lines: a declaration that shares its lines with other code, as a parameter or a type parameter does,
+    // is refused rather than cut through, and so is a primary constructor, which its type declares. A record's positional property is a
+    // parameter that calls pass, which safe_delete_symbol does not see as references.
+    [Test]
+    public async Task SymbolEdits_OfDeclarationsWithinALine_ChangeNothing()
+    {
+        var project = Sample.NewProject("EditsWithinALine", ("Kinds.cs", SampleSolution.Kinds));
+        async Task<string> RefusedAsync(string tool, string symbol, bool withCode = true)
+        {
+            var arguments = new Dictionary<string, object?> { ["projectPath"] = project, ["symbol"] = symbol };
+            if (withCode)
+                arguments["code"] = "    public int Added => 1;";
+            return (await Server.CallFailingAsync(tool, arguments))[$"An error occurred invoking '{tool}': ".Length..];
+        }
+
+        (await RefusedAsync("insert_after_symbol", "Money.Amount")).Should().Be("Edits.Money.Amount is declared in a parameter list: change it with change_signature.");
+        (await RefusedAsync("replace_symbol_body", "Text.extension(string).text")).Should().Be("string text is declared in a parameter list: change it with change_signature.");
+        (await RefusedAsync("insert_before_symbol", "Box.T")).Should().Be("T shares its lines with other code, which edits by line would cut through: edit the declaration around it instead.");
+        (await RefusedAsync("replace_symbol_body", "Money..ctor")).Should().Be("Edits.Money.Money(decimal) is the primary constructor of Edits.Money: edit the type's parameter list instead.");
+        (await RefusedAsync("safe_delete_symbol", "Money.Amount", withCode: false)).Should().Be(
+            "Edits.Money.Amount is declared by a parameter of the primary constructor of Edits.Money, which calls pass: remove it with change_signature, which updates them.");
+        Read(FileOf(project, "Kinds.cs")).Should().Be(SampleSolution.Kinds.ReplaceLineEndings("\n"));
+    }
+
+    // A local's declaration is its whole statement, as a field's is.
+    [Test]
+    public async Task ReplaceSymbolBody_OfALocal_ReplacesItsStatement()
+    {
+        var project = Sample.NewProject("ReplaceLocal", ("Kinds.cs", SampleSolution.Kinds));
+
+        await Server.CallAsync<EditResult>("replace_symbol_body", new() { ["projectPath"] = project, ["symbol"] = "Use.Run.pair", ["code"] = "        (decimal, string) pair = (3, \"USD\");" });
+
+        Read(FileOf(project, "Kinds.cs")).Should().Be(SampleSolution.Kinds
+            .Replace("(decimal, string) pair = new Money(1) + new Money(2);", "(decimal, string) pair = (3, \"USD\");").ReplaceLineEndings("\n"));
+    }
+
+    // Paths name the members of an extension block by its class, as calls do, and reach its parameter and a type's type parameters. An
+    // operator has no name to rename.
+    [Test]
+    public async Task RenameSymbol_OfExtensionMembersAndTypeParameters_AndOfAnOperator()
+    {
+        var project = Sample.NewProject("RenameKinds", ("Kinds.cs", SampleSolution.Kinds));
+        async Task RenameAsync(string symbol, string newName) =>
+            await Server.CallAsync<RenameSymbolTool.RenameResult>("rename_symbol", new() { ["projectPath"] = project, ["symbol"] = symbol, ["newName"] = newName });
+
+        await RenameAsync("Text.Shout", "Yell");
+        await RenameAsync("Text.extension(string).text", "value");
+        await RenameAsync("Box.T", "TItem");
+        var refused = await Server.CallFailingAsync("rename_symbol", new() { ["projectPath"] = project, ["symbol"] = "Money.operator +", ["newName"] = "Plus" });
+
+        refused.Should().Be("An error occurred invoking 'rename_symbol': Edits.Money.operator +(Edits.Money, Edits.Money) is an operator, which has no name to rename.");
+        Read(FileOf(project, "Kinds.cs")).Should().Be(SampleSolution.Kinds
+            .Replace("Shout", "Yell")
+            .Replace("string text)", "string value)").Replace("IsNullOrWhiteSpace(text)", "IsNullOrWhiteSpace(value)").Replace("text.ToUpperInvariant()", "value.ToUpperInvariant()")
+            .Replace("Box<T>", "Box<TItem>").Replace("where T :", "where TItem :").Replace("T? Item", "TItem? Item").Replace("Func<T?", "Func<TItem?")
+            .ReplaceLineEndings("\n"));
+    }
+
+    // A file linked into two projects is one file, whose symbols paths find once: edits by path change it once, and the calls in either
+    // project follow a rename.
+    [Test]
+    public async Task SymbolEdits_InAFileLinkedIntoTwoProjects()
+    {
+        const string shared = "namespace Edits;\n\npublic static class Flag\n{\n    public static string Say() => \"hi\";\n\n    public static string Twice() => Say() + Say();\n}\n";
+        const string use = "namespace Edits;\n\npublic static class Use\n{\n    public static string Run() => Flag.Say();\n}\n";
+        var solution = Sample.NewLinkedSolution("LinkedEdits", shared, use);
+        var (sharedFile, useFile) = (Sample.In("edits", "LinkedEdits", "Common", "Shared.cs"), Sample.In("edits", "LinkedEdits", "One", "Use.cs"));
+
+        var renamed = await Server.CallAsync<RenameSymbolTool.RenameResult>("rename_symbol", new() { ["projectPath"] = solution, ["symbol"] = "Flag.Say", ["newName"] = "Speak" });
+        var inserted = await Server.CallAsync<EditResult>("insert_after_symbol", new() { ["projectPath"] = solution, ["symbol"] = "Flag.Speak", ["code"] = "\n    public static int Three => 3;" });
+
+        renamed.ChangedFiles.Should().BeEquivalentTo(sharedFile, useFile);
+        inserted.ChangedFiles.Should().Equal(sharedFile);
+        Read(sharedFile).Should().Be(shared.Replace("Say", "Speak").Replace("\"hi\";\n", "\"hi\";\n\n    public static int Three => 3;\n"));
+        Read(useFile).Should().Be(use.Replace("Say", "Speak"));
+    }
 }

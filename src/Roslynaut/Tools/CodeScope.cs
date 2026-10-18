@@ -25,7 +25,8 @@ internal static class CodeScope
                 documents.AddRange((await project.GetSourceGeneratedDocumentsAsync(cancellationToken)).Select(document => ((Document)document, (TextSpan?)null)));
             }
 
-            return documents;
+            // A file linked into several projects is a document of each; search it once.
+            return [.. documents.DistinctBy(entry => entry.Item1 is SourceGeneratedDocument ? entry.Item1.Id : (object?)entry.Item1.FilePath ?? entry.Item1.Id)];
         }
 
         var declarations = new List<(Document, TextSpan?)>();

@@ -54,11 +54,14 @@ public sealed class SymbolIlTool(WorkspaceService workspace, AssemblyLoader asse
     {
         ISymbol?[] members = symbol switch
         {
+            // The members of an extension block compile to skeletons; their code goes into static methods of the class.
+            INamedTypeSymbol { IsExtension: true } block => [.. block.GetMembers().OfType<IMethodSymbol>()],
+            IMethodSymbol { AssociatedExtensionImplementation: { } implementation } => [implementation],
             INamedTypeSymbol or IMethodSymbol => [symbol],
             IPropertySymbol property => [property.GetMethod, property.SetMethod],
             IEventSymbol @event => [@event.AddMethod, @event.RemoveMethod],
             _ => [],
         };
-        return members.OfType<ISymbol>();
+        return members.OfType<ISymbol>().SelectMany(member => SymbolEqualityComparer.Default.Equals(member, symbol) ? [member] : MembersWithIL(member));
     }
 }

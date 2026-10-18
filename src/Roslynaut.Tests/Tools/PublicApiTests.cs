@@ -77,4 +77,28 @@ public class PublicApiTests
         diff.Removed.Should().BeEquivalentTo("public Lib.Circle.Circle(double radius)", "public enum Lib.Color", "Lib.Color.Red = 0", "Lib.Color.Green = 5");
         diff.Added.Should().Equal("public Lib.Circle.Circle(double radius, string label = \"\")");
     }
+
+    // As code declares them: a type's constraints after its supertypes, without the supertypes' own; a struct's readonly and ref once. A record
+    // struct reads as a struct, which is all metadata tells.
+    [Test]
+    public async Task Types_ReadAsDeclared()
+    {
+        var (source, metadata) = await BothAsync("""
+            namespace Lib
+            {
+                public interface IRepo<T> where T : class { }
+                public class Repo<T> : IRepo<T> where T : class, new() { }
+                public readonly struct Fixed { }
+                public readonly ref struct Both { }
+                public readonly record struct Size(int Width);
+            }
+            """);
+
+        source.Should().Equal(metadata);
+        source.Should().Contain("public interface Lib.IRepo<T> where T : class")
+            .And.Contain("public class Lib.Repo<T> : Lib.IRepo<T> where T : class, new()")
+            .And.Contain("public readonly struct Lib.Fixed")
+            .And.Contain("public readonly ref struct Lib.Both")
+            .And.Contain("public readonly struct Lib.Size : System.IEquatable<Lib.Size>");
+    }
 }

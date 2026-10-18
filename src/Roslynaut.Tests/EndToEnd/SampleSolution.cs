@@ -128,6 +128,31 @@ internal sealed class SampleSolution
         return project;
     }
 
+    /// <summary>
+    /// A solution of its own in edits/{name}, whose projects One and Two both compile Common/Shared.cs as a linked file, and One also Use.cs:
+    /// the file declares its symbols in each project. Returns the solution's path.
+    /// </summary>
+    public string NewLinkedSolution(string name, string shared, string use)
+    {
+        foreach (var project in new[] { "One", "Two" })
+        {
+            Write($"edits/{name}/{project}/{project}.csproj", """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net10.0</TargetFramework>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <Compile Include="..\Common\Shared.cs" Link="Shared.cs" />
+                  </ItemGroup>
+                </Project>
+                """);
+        }
+
+        Write($"edits/{name}/Common/Shared.cs", shared);
+        Write($"edits/{name}/One/Use.cs", use);
+        return Write($"edits/{name}/{name}.slnx", "<Solution>\n  <Project Path=\"One/One.csproj\" />\n  <Project Path=\"Two/Two.csproj\" />\n</Solution>\n");
+    }
+
     /// <summary>The location tools report for the first occurrence of a text in a file: where the text starts, with its whole line.</summary>
     public SourceLocation Location(string file, string text, int occurrence = 1)
     {
@@ -288,6 +313,57 @@ internal sealed class SampleSolution
             /// <summary>Says hi to someone.</summary>
             /// <param name="name">Who to greet.</param>
             public static string Hi(string name) => "Hi, " + name + Punctuation.Exclamation;
+        """;
+
+    /// <summary>
+    /// Declarations whose names code writes otherwise than metadata does, for tests to copy into a project of their own: a generic type, an
+    /// explicit interface implementation, a finalizer, a record with an operator and a conversion (whose body declares a tuple), and a C# 14
+    /// extension block beside an extension method.
+    /// </summary>
+    public const string Kinds = """
+        using System;
+
+        namespace Edits;
+
+        public class Box<T> : IDisposable where T : class
+        {
+            public T? Item { get; set; }
+
+            public TResult Map<TResult>(Func<T?, TResult> map) => map(Item);
+
+            void IDisposable.Dispose() { }
+
+            ~Box() { }
+        }
+
+        public record Money(decimal Amount)
+        {
+            public static Money operator +(Money a, Money b) => new(a.Amount + b.Amount);
+
+            public static implicit operator (decimal, string)(Money money) => (money.Amount, "EUR");
+        }
+
+        public static class Text
+        {
+            public static int Twice(this int value) => value * 2;
+
+            extension(string text)
+            {
+                public bool IsBlank => string.IsNullOrWhiteSpace(text);
+
+                public string Shout() => text.ToUpperInvariant() + "!";
+            }
+        }
+
+        public static class Use
+        {
+            public static string Run()
+            {
+                using var box = new Box<string> { Item = "a" };
+                (decimal, string) pair = new Money(1) + new Money(2);
+                return "x".IsBlank ? box.Map(item => item?.Length ?? 2.Twice()).ToString() : "x".Shout() + pair.Item2;
+            }
+        }
         """;
 
     private static readonly (string Path, string Text)[] Files =

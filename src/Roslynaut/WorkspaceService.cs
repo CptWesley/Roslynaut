@@ -170,7 +170,8 @@ public sealed class WorkspaceService
             }
         }
 
-        return written;
+        // A file linked into several projects is a document of each.
+        return [.. written.Distinct(StringComparer.OrdinalIgnoreCase)];
     }
 
     /// <summary>
@@ -233,6 +234,7 @@ public sealed class WorkspaceService
     {
         var position = PositionOf(await document.GetTextAsync(cancellationToken), line, column, document.FilePath);
         var symbol = await SymbolFinder.FindSymbolAtPositionAsync(document, position, cancellationToken)
+            ?? await DeclaredAtAsync(document, position, cancellationToken)
             ?? throw new McpException($"No symbol found at {document.FilePath}:{line}:{column}.");
 
         // A name in a tuple, as in (a, b) = (b, a), also declares the tuple's element of that name; what it refers to is meant.
@@ -241,6 +243,18 @@ public sealed class WorkspaceService
             && (await document.GetSemanticModelAsync(cancellationToken))!.GetSymbolInfo(name, cancellationToken).Symbol is { } referenced)
             return referenced;
         return symbol;
+    }
+
+    /// <summary>
+    /// The declaration whose location is at a position where no name is, as results give a conversion operator's location by its type, such
+    /// as the tuple of implicit operator (int, int).
+    /// </summary>
+    private static async Task<ISymbol?> DeclaredAtAsync(Document document, int position, CancellationToken cancellationToken)
+    {
+        var model = (await document.GetSemanticModelAsync(cancellationToken))!;
+        return (await document.GetSyntaxRootAsync(cancellationToken))!.FindToken(position).Parent?.AncestorsAndSelf()
+            .Select(node => model.GetDeclaredSymbol(node, cancellationToken))
+            .FirstOrDefault(declared => declared?.Locations.Any(location => location.SourceTree == model.SyntaxTree && location.SourceSpan.Contains(position)) == true);
     }
 
     /// <summary>The offset of a 1-based line and column in a text.</summary>

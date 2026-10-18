@@ -64,7 +64,8 @@ internal static class SymbolFilters
         "async" => symbol => symbol is IMethodSymbol { IsAsync: true },
         "readonly" => symbol => symbol is IFieldSymbol { IsReadOnly: true } or IPropertySymbol { IsReadOnly: true } or ITypeSymbol { IsReadOnly: true } or IMethodSymbol { IsReadOnly: true },
         "const" => symbol => symbol is IFieldSymbol { IsConst: true },
-        "extension" => symbol => symbol is IMethodSymbol { IsExtensionMethod: true },
+        // A this-parameter method, or a member of an extension block.
+        "extension" => symbol => symbol is IMethodSymbol { IsExtensionMethod: true } || symbol is IMethodSymbol or IPropertySymbol && symbol.ContainingSymbol is INamedTypeSymbol { IsExtension: true },
         "generic" => symbol => symbol is INamedTypeSymbol { IsGenericType: true } or IMethodSymbol { IsGenericMethod: true },
         _ => throw new McpException($"Unknown modifier '{modifier}': use {Modifiers}."),
     };

@@ -28,7 +28,10 @@ internal static class PublicApi
         miscellaneousOptions: SymbolDisplayMiscellaneousOptions.UseSpecialTypes | SymbolDisplayMiscellaneousOptions.IncludeNullableReferenceTypeModifier
             | SymbolDisplayMiscellaneousOptions.EscapeKeywordIdentifiers);
 
-    private static readonly SymbolDisplayFormat SupertypeFormat = Format.RemoveKindOptions(SymbolDisplayKindOptions.IncludeTypeKeyword);
+    // A type's constraints go after its supertypes, as code declares them; a supertype's are the declaring type's business.
+    private static readonly SymbolDisplayFormat HeaderFormat = Format.RemoveGenericsOptions(SymbolDisplayGenericsOptions.IncludeTypeConstraints);
+
+    private static readonly SymbolDisplayFormat SupertypeFormat = HeaderFormat.RemoveKindOptions(SymbolDisplayKindOptions.IncludeTypeKeyword);
 
     public static IEnumerable<string> Of(IAssemblySymbol assembly) => Of(assembly.GlobalNamespace).Order(StringComparer.Ordinal);
 
@@ -90,7 +93,7 @@ internal static class PublicApi
             TypeKind.Class when type.IsStatic => "static ",
             TypeKind.Class when type.IsAbstract => "abstract ",
             TypeKind.Class when type.IsSealed => "sealed ",
-            TypeKind.Struct => (type.IsReadOnly ? "readonly " : "") + (type.IsRefLikeType ? "ref " : ""),
+            // The type keyword brings a struct's readonly and ref.
             _ => "",
         };
         IEnumerable<INamedTypeSymbol> bases = type.TypeKind is TypeKind.Class && type.BaseType is { SpecialType: not SpecialType.System_Object } baseType ? [baseType] : [];
@@ -100,7 +103,12 @@ internal static class PublicApi
         var supertypes = bases.Select(supertype => supertype.ToDisplayString(SupertypeFormat))
             .Concat(interfaces.Select(supertype => supertype.ToDisplayString(SupertypeFormat)).Order(StringComparer.Ordinal))
             .ToList();
-        return $"{SyntaxFacts.GetText(type.DeclaredAccessibility)} {modifiers}{type.ToDisplayString(Format)}" + (supertypes.Count == 0 ? "" : " : " + string.Join(", ", supertypes));
+        var header = type.ToDisplayString(HeaderFormat);
+        var constraints = type.ToDisplayString(Format)[header.Length..];
+        // Metadata does not tell a record struct from a struct, as it does a record class by its <Clone>$.
+        if (type is { IsRecord: true, TypeKind: TypeKind.Struct })
+            header = header.Replace("record struct ", "struct ");
+        return $"{SyntaxFacts.GetText(type.DeclaredAccessibility)} {modifiers}{header}" + (supertypes.Count == 0 ? "" : " : " + string.Join(", ", supertypes)) + constraints;
     }
 
     /// <summary>The project a tool works on: by name in a solution, or the one at the project path.</summary>

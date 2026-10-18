@@ -27,23 +27,51 @@ internal static class SymbolTree
             .Concat(own.SelectMany(assembly => assembly.GlobalNamespace.GetTypeMembers(WellKnownMemberNames.TopLevelStatementsEntryPointTypeName)))
             .Where(symbol => Matches(symbol, segments[0]))
             .Distinct(SymbolEqualityComparer.Default);
-        foreach (var segment in segments.Skip(1))
+        // Each symbol with the index of the segment its children have to match. A name can span segments, as an explicit interface
+        // implementation's does (System.IDisposable.Dispose).
+        var pending = symbols.Select(symbol => (Symbol: symbol, Next: 1)).ToList();
+        var resolved = new List<ISymbol>();
+        while (pending.Count > 0)
         {
-            var children = new List<ISymbol>();
-            foreach (var symbol in symbols)
+            var next = new List<(ISymbol Symbol, int Next)>();
+            foreach (var (symbol, index) in pending)
             {
-                children.AddRange((await GetChildrenAsync(solution, symbol, cancellationToken)).Where(child => Matches(child, segment)));
+                if (index == segments.Count)
+                {
+                    resolved.Add(symbol);
+                    continue;
+                }
+
+                var children = (await GetChildrenAsync(solution, symbol, cancellationToken)).ToList();
                 // What the initializer of a field, property or local declares, such as a lambda's parameters, is in it too.
                 if (symbol is IFieldSymbol or IPropertySymbol { IsIndexer: false } or ILocalSymbol)
-                    children.AddRange((await GetDeclaredChildrenAsync(solution, symbol, cancellationToken)).Where(child => Matches(child, segment)));
+                    children.AddRange(await GetDeclaredChildrenAsync(solution, symbol, cancellationToken));
+                // Code names the members of an extension block by its class, as in Extensions.Shout.
+                children.AddRange(children.OfType<INamedTypeSymbol>().Where(type => type.IsExtension).SelectMany(block => block.GetMembers().Where(IsDeclared)).ToList());
+                // A type that declares no constructor has the compiler's, which code calls, as callees give it.
+                if (symbol is INamedTypeSymbol { InstanceConstructors: [{ IsImplicitlyDeclared: true } constructor] })
+                    children.Add(constructor);
+                for (var end = index + 1; end <= segments.Count; end++)
+                {
+                    var segment = string.Join('.', segments[index..end]);
+                    next.AddRange(children.Where(child => Matches(child, segment)).Select(child => (child, end)));
+                }
             }
 
-            symbols = children;
+            pending = next;
         }
 
-        var resolved = symbols.Distinct(SymbolEqualityComparer.Default).ToList();
+        resolved = [.. resolved.Distinct(SymbolEqualityComparer.Default).DistinctBy(DeclarationKey)];
         return resolved.Count > 0 ? resolved : throw new McpException($"No symbol found for '{path}'.");
     }
+
+    /// <summary>
+    /// What tells declarations apart: a file linked into several projects declares its symbols in each, as copies with the same locations,
+    /// which are one declaration to whoever names it; Roslyn's references and renames take the linked copies along. Else the symbol itself.
+    /// </summary>
+    public static object DeclarationKey(ISymbol symbol) => symbol.Locations is [{ IsInSource: true }, ..]
+        ? (symbol.Kind, string.Join('|', symbol.Locations.Select(location => $"{location.SourceTree?.FilePath}@{location.SourceSpan.Start}")))
+        : symbol;
 
     /// <summary>
     /// For a namespace, the parts of it that the projects' own assemblies declare. A project's namespace also holds what its references declare
@@ -61,7 +89,8 @@ internal static class SymbolTree
     public static async IAsyncEnumerable<ISymbol> GetDescendantsAsync(
         Solution solution, IEnumerable<ISymbol> roots, bool includeLocals, [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        var seen = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
+        // By declaration, so the copies of a linked file's symbols come once.
+        var seen = new HashSet<object>();
         var pending = new Queue<ISymbol>(roots);
         while (pending.TryDequeue(out var symbol))
         {
@@ -70,7 +99,7 @@ internal static class SymbolTree
 
             foreach (var child in await GetDeclaredChildrenAsync(solution, symbol, cancellationToken))
             {
-                if (!seen.Add(child))
+                if (!seen.Add(DeclarationKey(child)))
                     continue;
 
                 yield return child;
@@ -132,6 +161,10 @@ internal static class SymbolTree
     {
         // Namespaces also hold every referenced assembly's types; keep the ones from source.
         INamespaceSymbol ns => ns.GetMembers().Where(member => member.Locations.Any(location => location.IsInSource)),
+        // A generic type declares its type parameters, as a method does in its syntax, and an extension block its parameter; not so the
+        // type of a variable, such as a Dictionary<string, int>.
+        INamedTypeSymbol type when SymbolEqualityComparer.Default.Equals(type, type.OriginalDefinition) && type.Locations.Any(location => location.IsInSource) =>
+            [.. type.TypeParameters, .. type.ExtensionParameter is { } parameter ? [parameter] : Array.Empty<ISymbol>(), .. type.GetMembers().Where(IsDeclared)],
         ITypeSymbol type => type.GetMembers().Where(IsDeclared),
         // The entry point of top-level statements is declared by their files, which can declare types too. Of a partial member, the
         // implementation, its last part, declares the locals; both parts declare the parameters.
@@ -139,8 +172,12 @@ internal static class SymbolTree
             .SelectMany(node => node is CompilationUnitSyntax file ? file.Members.OfType<GlobalStatementSyntax>() : (IEnumerable<SyntaxNode>)[node]), cancellationToken),
     };
 
-    /// <summary>Excludes compiler-generated symbols and property/event accessors.</summary>
-    private static bool IsDeclared(ISymbol symbol) => !symbol.IsImplicitlyDeclared && symbol is not IMethodSymbol { AssociatedSymbol: not null };
+    /// <summary>
+    /// Excludes compiler-generated symbols, property/event accessors, and tuples: a tuple such as (p.X, p.Y) declares its type and elements,
+    /// which no path reaches.
+    /// </summary>
+    private static bool IsDeclared(ISymbol symbol) =>
+        !symbol.IsImplicitlyDeclared && symbol is not (IMethodSymbol { AssociatedSymbol: not null } or INamedTypeSymbol { IsTupleType: true } or IFieldSymbol { ContainingType.IsTupleType: true });
 
     /// <summary>Splits on dots outside parameter and type argument lists; a constructor's name keeps its dot, as in "Point..ctor(int)".</summary>
     private static List<string> Split(string path)
@@ -172,9 +209,14 @@ internal static class SymbolTree
         parameterOptions: SymbolDisplayParameterOptions.IncludeType | SymbolDisplayParameterOptions.IncludeParamsRefOut,
         miscellaneousOptions: SymbolDisplayMiscellaneousOptions.UseSpecialTypes | SymbolDisplayMiscellaneousOptions.IncludeNullableReferenceTypeModifier);
 
+    // A member's name as code declares it, without its type or parameters: operator +, implicit operator int, ~Shape, extension(string).
+    private static readonly SymbolDisplayFormat NameFormat = new(miscellaneousOptions: SymbolDisplayMiscellaneousOptions.UseSpecialTypes);
+
     /// <summary>
     /// Whether a symbol has a segment's name, and its parameter or type argument list if any, with types qualified fully or not at all.
-    /// A constructor goes by its metadata name, as results give it (.ctor), or by its type's, as code writes it.
+    /// A constructor goes by its metadata name, as results give it (.ctor), or by its type's, as code writes it; an operator or a finalizer
+    /// by its metadata name (op_Addition, Finalize) or as code declares it; an explicit interface implementation by its name or by the
+    /// name of what it implements.
     /// </summary>
     private static bool Matches(ISymbol symbol, string segment)
     {
@@ -185,12 +227,39 @@ internal static class SymbolTree
                 .Any(display => Compact(display).EndsWith(Compact(segment), StringComparison.OrdinalIgnoreCase));
         }
 
-        var name = NameOf(segment);
-        var named = symbol.Name.Equals(name, StringComparison.OrdinalIgnoreCase)
-            || symbol is IMethodSymbol { MethodKind: MethodKind.Constructor or MethodKind.StaticConstructor } && symbol.ContainingType.Name.Equals(name, StringComparison.OrdinalIgnoreCase);
-        return named && (name.Length == segment.Length || new[] { symbol.ToDisplayString(), symbol.ToDisplayString(ShortFormat) }
-            .Any(display => Compact(display).EndsWith(Compact(segment[name.Length..]), StringComparison.OrdinalIgnoreCase)));
+        // Compact, as code can space "operator +" and "implicit operator (int, int)" either way.
+        var compact = Compact(segment);
+        return NamesOf(symbol).Select(Compact).Any(name => name.Length > 0 && compact.StartsWith(name, StringComparison.OrdinalIgnoreCase)
+            && (compact.Length == name.Length || compact[name.Length] is '(' or '<' && (new[] { symbol.ToDisplayString(), symbol.ToDisplayString(ShortFormat) }
+                .Any(display => Compact(display).EndsWith(compact[name.Length..], StringComparison.OrdinalIgnoreCase)) || IsConstructionOf(symbol, compact[name.Length..]))));
     }
+
+    /// <summary>Whether type arguments construct a generic type, as results give a type that code uses, such as Box&lt;string&gt; for Box&lt;T&gt;.</summary>
+    private static bool IsConstructionOf(ISymbol symbol, string arguments)
+    {
+        if (symbol is not INamedTypeSymbol { Arity: > 0 } type || arguments is not ['<', .. var list, '>'])
+            return false;
+
+        var (depth, count) = (0, 1);
+        foreach (var c in list)
+        {
+            depth += c switch { '(' or '<' or '[' => 1, ')' or '>' or ']' => -1, _ => 0 };
+            count += c == ',' && depth == 0 ? 1 : 0;
+        }
+
+        return count == type.Arity;
+    }
+
+    private static IEnumerable<string> NamesOf(ISymbol symbol) => symbol switch
+    {
+        IMethodSymbol { MethodKind: MethodKind.Constructor or MethodKind.StaticConstructor } => [symbol.Name, symbol.ContainingType.Name],
+        IMethodSymbol { MethodKind: MethodKind.UserDefinedOperator or MethodKind.Conversion or MethodKind.Destructor } => [symbol.Name, symbol.ToDisplayString(NameFormat)],
+        INamedTypeSymbol { IsExtension: true } => ["extension"],
+        IMethodSymbol { ExplicitInterfaceImplementations: [var implemented, ..] } => [symbol.Name, implemented.Name],
+        IPropertySymbol { ExplicitInterfaceImplementations: [var implemented, ..] } => [symbol.Name, implemented.Name],
+        IEventSymbol { ExplicitInterfaceImplementations: [var implemented, ..] } => [symbol.Name, implemented.Name],
+        _ => [symbol.Name],
+    };
 
     private static string Compact(string text) => string.Concat(text.Where(c => !char.IsWhiteSpace(c)));
 }

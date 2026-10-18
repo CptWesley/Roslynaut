@@ -59,12 +59,31 @@ public sealed class UnusedSymbolsTool(WorkspaceService workspace, ResultCache ca
             if (!IsCandidate(solution, symbol, includePublic) || entryPoints.Contains(symbol) || unused.Contains(symbol.ContainingType, SymbolEqualityComparer.Default))
                 continue;
 
-            var references = await SymbolFinder.FindReferencesAsync(symbol, solution, cancellationToken);
-            if (!references.Any(reference => reference.Locations.Any()))
+            if (!await IsReferencedAsync(symbol, solution, cancellationToken) && !await AreExtensionsUsedAsync(symbol, solution, cancellationToken))
                 unused.Add(symbol);
         }
 
         return unused.Select(symbol => SymbolEntry.From(symbol));
+    }
+
+    private static async Task<bool> IsReferencedAsync(ISymbol symbol, Solution solution, CancellationToken cancellationToken) =>
+        (await SymbolFinder.FindReferencesAsync(symbol, solution, cancellationToken)).Any(reference => reference.Locations.Any());
+
+    /// <summary>Whether code calls the extension members of a type, which it does without naming the type or its extension blocks.</summary>
+    private static async Task<bool> AreExtensionsUsedAsync(ISymbol symbol, Solution solution, CancellationToken cancellationToken)
+    {
+        if (symbol is not INamedTypeSymbol type)
+            return false;
+
+        var extensions = type.GetMembers().Where(member => type.IsExtension || member is IMethodSymbol { IsExtensionMethod: true })
+            .Concat(type.GetTypeMembers().Where(block => block.IsExtension).SelectMany(block => block.GetMembers()));
+        foreach (var extension in extensions)
+        {
+            if (await IsReferencedAsync(extension, solution, cancellationToken))
+                return true;
+        }
+
+        return false;
     }
 
     // Generated code is not for people to clean up, so only symbols declared in code people wrote count.

@@ -75,6 +75,23 @@ public class AssemblyTests : EndToEndTest
         methods.Items.Last().Method.Should().MatchRegex(@"^System\.Void Program/<>c__DisplayClass\w+::<<Main>\$>b__\w+\(\)$");
     }
 
+    // The members of an extension block compile to skeletons that only throw; their code is in static methods of the class, which take the
+    // block's parameter first.
+    [Test]
+    public async Task Il_OfExtensionMembers_IsTheirImplementations()
+    {
+        var project = Sample.NewProject("ExtensionIl", ("Kinds.cs", SampleSolution.Kinds));
+        async Task<IEnumerable<string>> MethodsAsync(string symbol) =>
+            (await Server.CallAsync<PagedResult<MethodIL>>("symbol_il", new() { ["projectPath"] = project, ["symbol"] = symbol })).Items.Select(method => method.Method);
+
+        var shout = await Server.CallAsync<PagedResult<MethodIL>>("symbol_il", new() { ["projectPath"] = project, ["symbol"] = "Text.Shout" });
+
+        shout.Items.Should().ContainSingle().Which.IL.Should().Contain("callvirt System.String System.String::ToUpperInvariant()");
+        shout.Items.Single().Method.Should().Be("System.String Edits.Text::Shout(System.String)");
+        (await MethodsAsync("Text.IsBlank")).Should().Equal("System.Boolean Edits.Text::get_IsBlank(System.String)");
+        (await MethodsAsync("Text.extension(string)")).Should().BeEquivalentTo("System.Boolean Edits.Text::get_IsBlank(System.String)", "System.String Edits.Text::Shout(System.String)");
+    }
+
     // The build output is a debug build, which the JIT does not optimize; symbol_asm compiles a release build, which inlines the getters.
     [Test]
     public async Task Asm_OfTheBuildOutput_AndOfTheSource()

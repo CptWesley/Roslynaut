@@ -52,7 +52,7 @@ public sealed class DefinitionTool(WorkspaceService workspace, AssemblyLoader as
 
             definitions.Add(new(
                 SymbolEntry.KindOf(target),
-                target.ToDisplayString(),
+                target.ToDisplayString(SymbolEntry.Format),
                 target.ContainingAssembly?.Name,
                 assemblyPath,
                 target.GetDocumentationCommentXml(cancellationToken: cancellationToken),

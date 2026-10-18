@@ -41,10 +41,11 @@ public sealed record SourceLocation(string FilePath, int Line, int Column, strin
 public sealed record SymbolEntry(string Name, string Kind, string Signature, string? Container, SourceLocation? Location)
 {
     // The default format omits the type of locals.
-    private static readonly SymbolDisplayFormat Format = SymbolDisplayFormat.CSharpErrorMessageFormat.AddLocalOptions(SymbolDisplayLocalOptions.IncludeType);
+    internal static readonly SymbolDisplayFormat Format = SymbolDisplayFormat.CSharpErrorMessageFormat.AddLocalOptions(SymbolDisplayLocalOptions.IncludeType);
 
     public static SymbolEntry From(ISymbol symbol, Location? location = null) => new(
-        symbol.Name,
+        // An extension block has no name; a path names it as its container does, extension(string).
+        symbol is INamedTypeSymbol { IsExtension: true, ContainingType: { } type } ? symbol.ToDisplayString()[(type.ToDisplayString().Length + 1)..] : symbol.Name,
         KindOf(symbol),
         symbol.ToDisplayString(Format),
         symbol.ContainingSymbol is { } container and not INamespaceSymbol { IsGlobalNamespace: true } ? PathOf(container) : null,
