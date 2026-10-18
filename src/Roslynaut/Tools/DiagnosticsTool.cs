@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.ComponentModel;
 using System.Text.Json.Serialization;
@@ -24,7 +25,8 @@ public sealed class DiagnosticsTool(WorkspaceService workspace, ResultCache cach
     [McpServerTool(Name = "diagnostics", ReadOnly = true)]
     [Description("Returns compiler and analyzer diagnostics (errors first) for the whole project/solution or a single file, "
         + "with the severities the project's .editorconfig and build settings give them; for a project that did not load, such as one "
-        + "whose restore failed, the MSBuild errors that say why. Paged.")]
+        + "whose restore failed, the MSBuild errors that say why; and warnings where the server's compiler is older than the SDK's: options it "
+        + "does not know, such as a newer language version, and analyzers or generators it cannot load. Paged.")]
     private async Task<PagedResult<DiagnosticEntry>> GetDiagnosticsAsync(
         [Description(ToolDefaults.ProjectPath)] string projectPath,
         [Description("Optional path of a C# file to limit diagnostics to.")] string? filePath = null,
@@ -36,12 +38,12 @@ public sealed class DiagnosticsTool(WorkspaceService workspace, ResultCache cach
     {
         var loaded = await workspace.GetAsync(projectPath);
         return await cache.GetPageAsync(loaded.Solution, $"diagnostics|{filePath}|{severity}|{analyzers}", page, pageSize,
-            () => CollectAsync(loaded.Solution, filePath, (DiagnosticSeverity)severity, analyzers, loaded.LoadErrors, cancellationToken));
+            () => CollectAsync(loaded.Solution, filePath, (DiagnosticSeverity)severity, analyzers, loaded.LoadErrors, loaded.Warnings, cancellationToken));
     }
 
     internal static async Task<IEnumerable<DiagnosticEntry>> CollectAsync(
         Solution solution, string? filePath, DiagnosticSeverity severity, bool analyzers, IReadOnlyDictionary<string, IReadOnlyList<string>> loadErrors,
-        CancellationToken cancellationToken)
+        IReadOnlyDictionary<string, ConcurrentQueue<Diagnostic>> warnings, CancellationToken cancellationToken)
     {
         var diagnostics = new List<Diagnostic>();
         var document = filePath is null ? null : await WorkspaceService.GetDocumentAsync(solution, filePath, cancellationToken);
@@ -51,6 +53,10 @@ public sealed class DiagnosticsTool(WorkspaceService workspace, ResultCache cach
         {
             if (project.FilePath is null || !loadErrors.ContainsKey(project.FilePath))
                 diagnostics.AddRange(await GetAsync(project, document, analyzers, cancellationToken));
+
+            // The project's own, of no file; once its compilation has loaded its analyzers and generators, with those that did not load.
+            if (document is null && project.FilePath is not null && warnings.TryGetValue(project.FilePath, out var projectWarnings))
+                diagnostics.AddRange(projectWarnings);
         }
 
         var unloaded = document is null ? loadErrors.SelectMany(project => project.Value.Select(error => LoadErrorOf(project.Key, error))) : [];

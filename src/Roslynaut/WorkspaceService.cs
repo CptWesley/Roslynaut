@@ -30,7 +30,13 @@ public sealed record LoadSettings(string? TargetFramework = null, string? Config
 /// The MSBuild errors of the projects whose design-time build gave no compiler command line, by project path. Such a project has no sources,
 /// so without these errors it just looks empty.
 /// </param>
-public sealed record LoadedWorkspace(Solution Solution, IReadOnlyList<IAnalyzerResult> Results, IReadOnlyDictionary<string, IReadOnlyList<string>> LoadErrors)
+/// <param name="Warnings">
+/// What the compiler warns of where this server's compiler sees a project otherwise than the SDK's does, by project path: options of its command
+/// line that it does not know, such as a newer language version, and analyzers or generators that do not load, which add theirs as they load.
+/// </param>
+public sealed record LoadedWorkspace(
+    Solution Solution, IReadOnlyList<IAnalyzerResult> Results, IReadOnlyDictionary<string, IReadOnlyList<string>> LoadErrors,
+    IReadOnlyDictionary<string, ConcurrentQueue<Diagnostic>> Warnings)
 {
     /// <summary>A sentence on the projects that did not load, to add to errors they may explain; empty if all loaded.</summary>
     public string LoadErrorNote => LoadErrors.Count == 0 ? "" :
@@ -595,7 +601,7 @@ public sealed class WorkspaceService
                 .Select(project => (Path: project, Build: Build(manager.GetProject(IOPath.Parse(project)), options, settings.TargetFramework)))
                 .ToList();
             foreach (var (project, (_, projectErrors)) in built.Where(project => project.Build.Result is not { CompilerArguments.Length: > 0 } && LanguageOf(project.Path) is not null))
-                errors[project] = projectErrors.Count > 0 ? projectErrors : ["The design-time build gave no compiler command line."];
+                errors[project] = projectErrors.Count > 0 ? projectErrors : [SdkProblemOf(project) ?? "The design-time build gave no compiler command line."];
 
             var analyzed = built.Select(project => project.Build.Result).OfType<IAnalyzerResult>().ToList();
             results.AddRange(analyzed);
@@ -629,9 +635,47 @@ public sealed class WorkspaceService
             return reference.WithProperties(properties);
         }
 
-        workspace.Set(projects.Aggregate(workspace.CurrentSolution, (solution, project) => solution.AddProject(ProjectOf(project.Result, project.Id, outputs, loader, Reference))));
-        return new(workspace.CurrentSolution, results, errors);
+        var warnings = projects.ToDictionary(project => project.Result.ProjectFilePath, _ => new ConcurrentQueue<Diagnostic>(), StringComparer.OrdinalIgnoreCase);
+        workspace.Set(projects.Aggregate(workspace.CurrentSolution, (solution, project) =>
+            solution.AddProject(ProjectOf(project.Result, project.Id, outputs, loader, Reference, warnings[project.Result.ProjectFilePath]))));
+        return new(workspace.CurrentSolution, results, errors, warnings);
     }
+
+    /// <summary>
+    /// Why dotnet does not run in a project's directory, such as a global.json that asks for an SDK that is not installed, which keeps MSBuild
+    /// from starting at all, so the build has no errors to tell; null if it runs.
+    /// </summary>
+    private static string? SdkProblemOf(string project)
+    {
+        var (exitCode, output) = DotnetCli.RunAsync(["--version"], TimeSpan.FromMinutes(1), CancellationToken.None, workingDirectory: Path.GetDirectoryName(project))
+            .GetAwaiter().GetResult();
+        if (exitCode == 0)
+            return null;
+
+        // Such as "Install the [8.0.100] .NET SDK or update [C:\src\global.json] to match an installed SDK."
+        return output.Split('\n').Select(line => line.Trim()).FirstOrDefault(line => line.StartsWith("Install the ", StringComparison.Ordinal)) is { } advice
+            ? $"A compatible .NET SDK was not found. {advice}"
+            : $"dotnet does not run in {Path.GetDirectoryName(project)}: {BuildTool.Tail(output)}";
+    }
+
+    private static readonly Version? CompilerVersion = typeof(Compilation).Assembly.GetName().Version;
+
+    /// <summary>
+    /// A reference to an analyzer assembly that warns, as the compiler does, when its analyzers and generators do not load, such as when it
+    /// is built for a newer compiler than this server's: Roslyn only raises an event as it loads them, and leaves them out.
+    /// </summary>
+    private static AnalyzerFileReference AnalyzerReferenceTo(string file, IAnalyzerAssemblyLoader loader, ConcurrentQueue<Diagnostic> warnings)
+    {
+        var reference = new AnalyzerFileReference(file, loader);
+        reference.AnalyzerLoadFailed += (_, e) => warnings.Enqueue(e.ErrorCode == AnalyzerLoadFailureEventArgs.FailureErrorCode.ReferencesNewerCompiler
+            ? Warning("CS9057", $"The analyzer assembly '{file}' references version '{e.ReferencedCompilerVersion}' of the compiler, which is newer than "
+                + $"Roslynaut's, version '{CompilerVersion}': its analyzers and source generators do not run here, so the code they generate is missing.")
+            : Warning("CS8034", $"Unable to load analyzer assembly {file}{(e.TypeName is null ? "" : $" ({e.TypeName})")}: {e.Message}"));
+        return reference;
+    }
+
+    private static Diagnostic Warning(string id, string message) =>
+        Diagnostic.Create(new DiagnosticDescriptor(id, id, "{0}", "Compiler", DiagnosticSeverity.Warning, isEnabledByDefault: true), Location.None, message);
 
     /// <summary>
     /// Roslyn's analyzer loader that shadow-copies analyzers and generators on Windows and loads them from streams elsewhere. The workspace's
@@ -657,8 +701,10 @@ public sealed class WorkspaceService
     /// </summary>
     /// <param name="outputs">The projects by the paths of their outputs, which their references to each other point to.</param>
     /// <param name="referenceTo">Makes the reference to a file, with properties.</param>
+    /// <param name="warnings">Takes what this server's compiler does not take as the SDK's does.</param>
     private static ProjectInfo ProjectOf(
-        IAnalyzerResult result, ProjectId id, Dictionary<string, ProjectId> outputs, IAnalyzerAssemblyLoader loader, Func<string, MetadataReferenceProperties, MetadataReference> referenceTo)
+        IAnalyzerResult result, ProjectId id, Dictionary<string, ProjectId> outputs, IAnalyzerAssemblyLoader loader, Func<string, MetadataReferenceProperties, MetadataReference> referenceTo,
+        ConcurrentQueue<Diagnostic> warnings)
     {
         var (name, language) = (Path.GetFileNameWithoutExtension(result.ProjectFilePath), LanguageOf(result.ProjectFilePath)!);
         var targetPath = result.GetProperty("TargetPath") is { Length: > 0 } target ? target : null;
@@ -669,6 +715,9 @@ public sealed class WorkspaceService
         var directory = Path.GetDirectoryName(result.ProjectFilePath)!;
         CommandLineParser parser = language == LanguageNames.CSharp ? CSharpCommandLineParser.Default : VisualBasicCommandLineParser.Default;
         var arguments = parser.Parse(result.CompilerArguments, directory, sdkDirectory: null, additionalReferenceDirectories: null);
+        // An SDK newer than this server's compiler can pass options it does not know, such as /langversion:15.0, which it leaves out.
+        foreach (var error in arguments.Errors.Where(error => error.Severity == DiagnosticSeverity.Error))
+            warnings.Enqueue(Warning(error.Id, $"{error.GetMessage(System.Globalization.CultureInfo.InvariantCulture)} Roslynaut's compiler, version '{CompilerVersion}', reads the project without it."));
         IEnumerable<DocumentInfo> Documents(IEnumerable<string> files) => files.Select(file => Path.GetFullPath(file, directory)).Where(File.Exists)
             .Select(file => DocumentInfo.Create(DocumentId.CreateNewId(id, file), Path.GetFileName(file), FoldersOf(result.ProjectFilePath, file),
                 loader: TextLoader.From(TextAndVersion.Create(Read(file), VersionStamp.Create(), file)), filePath: file));
@@ -690,7 +739,7 @@ public sealed class WorkspaceService
             .WithMetadataReferences(references.Where(reference => !outputs.ContainsKey(reference.Path) && File.Exists(reference.Path))
                 .Select(reference => referenceTo(reference.Path, reference.Properties)))
             .WithAnalyzerReferences(arguments.AnalyzerReferences.Select(reference => Path.GetFullPath(reference.FilePath, directory)).Where(File.Exists)
-                .Select(file => new AnalyzerFileReference(file, loader)))
+                .Select(file => AnalyzerReferenceTo(file, loader, warnings)))
             .WithDefaultNamespace(result.GetProperty("RootNamespace"));
     }
 

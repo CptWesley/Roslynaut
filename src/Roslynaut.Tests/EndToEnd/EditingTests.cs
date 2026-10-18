@@ -179,6 +179,29 @@ public class EditingTests : EndToEndTest
         Read(file).Should().Contain("public static void Serve()");
     }
 
+    // Quotes, #, %, &, brackets and parentheses mean something to MSBuild, to shells or in URIs: the design-time build, the build and the
+    // helper processes take such paths as they are.
+    [Test]
+    public async Task PathsWithCharactersThatToolsTreatSpecially_LoadBuildAndRun()
+    {
+        var project = Sample.Write("edits/It's (#1) & 50% [x]/Odd.csproj", "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <TargetFramework>net10.0</TargetFramework>\n  </PropertyGroup>\n</Project>\n");
+        var file = Sample.Write("edits/It's (#1) & 50% [x]/Thing.cs", "namespace Edits;\n\npublic class Thing\n{\n    public int Value() => 1;\n\n    public int Use() => Value();\n}\n");
+        var use = Sample.Location(file, "Value();");
+
+        var references = await Server.CallAsync<PagedResult<ReferencesTool.ReferenceEntry>>("references", new() { ["projectPath"] = project, ["symbol"] = "Thing.Value" });
+        var build = await Server.CallAsync<BuildTool.BuildResult>("build", new() { ["projectPath"] = project });
+        var asm = await Server.CallAsync<PagedResult<MethodAsm>>("symbol_asm", new() { ["projectPath"] = project, ["symbol"] = "Thing.Use" });
+        var evaluation = await Server.CallAsync<EvaluateTool.Evaluation>("evaluate", new() { ["projectPath"] = project, ["code"] = "new Edits.Thing().Use()" });
+        var renamed = await Server.CallAsync<RenameSymbolTool.RenameResult>("rename_symbol", new() { ["projectPath"] = project, ["symbol"] = "Thing.Value", ["newName"] = "Worth" });
+
+        references.Items.Should().Equal(new ReferencesTool.ReferenceEntry(use, "Edits.Thing.Use()", "Call"));
+        build.Should().BeEquivalentTo(new BuildTool.BuildResult(true, 0, 0, [], null));
+        asm.Items.Should().ContainSingle().Which.Asm.Should().Contain("; Assembly listing for method Edits.Thing:Use():int:this (FullOpts)");
+        (evaluation.Value, evaluation.Error).Should().Be(("1", null));
+        renamed.ChangedFiles.Should().Equal(file);
+        Read(file).Should().Contain("public int Use() => Worth();");
+    }
+
     [Test]
     public async Task RenameSymbol_ToAnInvalidName_ChangesNothing()
     {

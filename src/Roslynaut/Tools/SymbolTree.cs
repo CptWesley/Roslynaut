@@ -48,9 +48,13 @@ internal static class SymbolTree
                     children.AddRange(await GetDeclaredChildrenAsync(solution, symbol, cancellationToken));
                 // Code names the members of an extension block by its class, as in Extensions.Shout.
                 children.AddRange(children.OfType<INamedTypeSymbol>().Where(type => type.IsExtension).SelectMany(block => block.GetMembers().Where(IsDeclared)).ToList());
-                // A type that declares no constructor has the compiler's, which code calls, as callees give it.
+                // Code calls methods the compiler declares, as callees give them: the constructor of a type that declares none, a delegate's
+                // Invoke, a record's Equals, ToString, == or Deconstruct.
                 if (symbol is INamedTypeSymbol { InstanceConstructors: [{ IsImplicitlyDeclared: true } constructor] })
                     children.Add(constructor);
+                // Only a record's and a delegate's: a class with extension blocks has the compiler's implementations of their members too, by the same names.
+                if (symbol is INamedTypeSymbol named && (named.IsRecord || named.TypeKind == TypeKind.Delegate) && named.Locations.Any(location => location.IsInSource))
+                    children.AddRange(named.GetMembers().Where(member => member is IMethodSymbol { IsImplicitlyDeclared: true, AssociatedSymbol: null, MethodKind: not (MethodKind.Constructor or MethodKind.StaticConstructor) }));
                 for (var end = index + 1; end <= segments.Count; end++)
                 {
                     var segment = string.Join('.', segments[index..end]);
@@ -68,9 +72,10 @@ internal static class SymbolTree
     /// <summary>
     /// What tells declarations apart: a file linked into several projects declares its symbols in each, as copies with the same locations,
     /// which are one declaration to whoever names it; Roslyn's references and renames take the linked copies along. Else the symbol itself.
+    /// The methods the compiler declares for a record share its location, so its id tells them apart, as Equals(object) from Equals(Person).
     /// </summary>
     public static object DeclarationKey(ISymbol symbol) => symbol.Locations is [{ IsInSource: true }, ..]
-        ? (symbol.Kind, string.Join('|', symbol.Locations.Select(location => $"{location.SourceTree?.FilePath}@{location.SourceSpan.Start}")))
+        ? (symbol.Kind, symbol.GetDocumentationCommentId(), string.Join('|', symbol.Locations.Select(location => $"{location.SourceTree?.FilePath}@{location.SourceSpan.Start}")))
         : symbol;
 
     /// <summary>

@@ -93,6 +93,24 @@ public class AssemblyTests : EndToEndTest
         (await MethodsAsync("Text.extension(string)")).Should().BeEquivalentTo("System.Boolean Edits.Text::get_IsBlank(System.String)", "System.String Edits.Text::Shout(System.String)");
     }
 
+    // A type nested in a generic one is Outer`1/Inner in metadata; a path finds it in the source, and its C# name in the build output.
+    [Test]
+    public async Task IlAndDecompile_OfATypeNestedInAGenericOne()
+    {
+        var project = Sample.NewProject("NestedIl", ("Outer.cs", "namespace Edits;\n\npublic class Outer<T>\n{\n    public class Inner\n    {\n        public int Count() => 2;\n    }\n}\n"));
+        var build = await Server.CallAsync<BuildTool.BuildResult>("build", new() { ["projectPath"] = project });
+        var assembly = Path.Combine(Path.GetDirectoryName(project)!, "bin", "Debug", "net10.0", "NestedIl.dll");
+
+        var compiled = await Server.CallAsync<PagedResult<MethodIL>>("symbol_il", new() { ["projectPath"] = project, ["symbol"] = "Outer.Inner.Count" });
+        var built = await Server.CallAsync<PagedResult<MethodIL>>("assembly_il", new() { ["assemblyPath"] = assembly, ["name"] = "Outer.Inner.Count" });
+        var decompiled = await Server.CallAsync<PagedResult<DecompiledMember>>("decompile", new() { ["assemblyPath"] = assembly, ["name"] = "Edits.Outer`1+Inner" });
+
+        build.Succeeded.Should().BeTrue();
+        compiled.Items.Select(method => method.Method).Should().Equal("System.Int32 Edits.Outer`1/Inner::Count()");
+        built.Items.Should().Equal(compiled.Items);
+        decompiled.Items.Should().ContainSingle().Which.Code.Should().Contain("public class Inner").And.Contain("return 2;");
+    }
+
     // A local function compiles to a helper named after the member it is in, which has no symbol path of its own: it comes with that member.
     [Test]
     public async Task IlAndAsm_OfALocalFunction_AreThoseOfTheMemberItIsIn()

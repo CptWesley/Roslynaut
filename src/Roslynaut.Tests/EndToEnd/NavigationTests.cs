@@ -691,6 +691,41 @@ public class NavigationTests : EndToEndTest
         }
     }
 
+    // A record and a delegate have methods the compiler declares, which code calls: callees give them, and their paths find them.
+    [Test]
+    public async Task Callees_OfMethodsTheCompilerDeclares_HavePathsThatFindThem()
+    {
+        var project = Sample.NewProject("DeclaredCallees", ("Records.cs", """
+            namespace Edits;
+
+            public record Person(string Name, int Age);
+
+            public delegate int Op(int x);
+
+            public static class Use
+            {
+                public static string Run(Person p, Op op)
+                {
+                    var (name, age) = p;
+                    return name + p.ToString() + (p == p with { Age = age }) + p.Equals(null) + op.Invoke(age);
+                }
+            }
+            """));
+        var file = Path.Combine(Path.GetDirectoryName(project)!, "Records.cs");
+
+        var callees = await Server.CallAsync<PagedResult<CallersTool.Caller>>("callees", new() { ["projectPath"] = project, ["symbol"] = "Use.Run" });
+
+        callees.Items.Select(callee => TestSolution.PathOf(callee.Symbol)).Should().Contain(["Edits.Person.ToString", "Edits.Person.op_Equality", "Edits.Person.Equals", "Edits.Op.Invoke"]);
+        foreach (var symbol in callees.Items.Select(callee => callee.Symbol))
+        {
+            var definitions = await Server.CallAsync<List<DefinitionTool.Definition>>("definition", new() { ["projectPath"] = project, ["symbol"] = TestSolution.PathOf(symbol) });
+            definitions.Should().Contain(definition => definition.Signature == symbol.Signature, TestSolution.PathOf(symbol));
+        }
+
+        var references = await Server.CallAsync<PagedResult<ReferencesTool.ReferenceEntry>>("references", new() { ["projectPath"] = project, ["symbol"] = "Person.Deconstruct" });
+        references.Items.Should().ContainSingle().Which.Location.Line.Should().Be(Sample.LineOf(file, "var (name, age) = p;"));
+    }
+
     // A file linked into two projects declares its symbols in each, as copies of one declaration: a path finds it once, and searches give it,
     // its callers and its lines once.
     [Test]

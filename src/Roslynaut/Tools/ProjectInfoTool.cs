@@ -26,7 +26,10 @@ public sealed class ProjectInfoTool(WorkspaceService workspace) : IMcpTool
             result.PackageReferences.ToDictionary(package => package.Key, package => package.Value.GetValueOrDefault("VersionOverride") ?? package.Value.GetValueOrDefault("Version")
                 ?? CentralVersion(result, package.Key)),
             result.SourceFiles.Length,
-            loaded.LoadErrors.GetValueOrDefault(result.ProjectFilePath)));
+            loaded.LoadErrors.GetValueOrDefault(result.ProjectFilePath)))
+        // A build that does not start, such as for an SDK that is not installed, has no result.
+        .Concat(loaded.LoadErrors.Where(project => !loaded.Results.Any(result => string.Equals(result.ProjectFilePath, project.Key, StringComparison.OrdinalIgnoreCase)))
+            .Select(project => new ProjectSummary(project.Key, false, null, new(), [], new(), 0, project.Value)));
 
     /// <summary>The version central package management gives a package, in a PackageVersion item of Directory.Packages.props.</summary>
     private static string? CentralVersion(IAnalyzerResult result, string id) =>
@@ -36,7 +39,7 @@ public sealed class ProjectInfoTool(WorkspaceService workspace) : IMcpTool
     public sealed record ProjectSummary(
         string ProjectPath,
         bool BuildSucceeded,
-        string TargetFramework,
+        string? TargetFramework,
         Dictionary<string, string?> Properties,
         IEnumerable<string> ProjectReferences,
         Dictionary<string, string?> PackageReferences,

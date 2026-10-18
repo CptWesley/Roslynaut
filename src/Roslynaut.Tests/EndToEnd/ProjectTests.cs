@@ -88,6 +88,43 @@ public class ProjectTests : EndToEndTest
         diagnostics.Items.Should().BeEmpty();
     }
 
+    // A global.json that asks for an SDK that is not installed keeps MSBuild from starting, so the build has no errors that say why; dotnet does.
+    [Test]
+    public async Task AProjectForAnSdkThatIsNotInstalled_SaysWhichOneAndWhoAsks()
+    {
+        var project = Sample.NewProject("MissingSdk", ("Code.cs", "namespace Edits;\n\npublic static class Code\n{\n}\n"));
+        Sample.Write("edits/MissingSdk/global.json", """{ "sdk": { "version": "9.9.999", "rollForward": "disable" } }""");
+
+        var diagnostics = await Server.CallAsync<PagedResult<DiagnosticsTool.DiagnosticEntry>>("diagnostics", new() { ["projectPath"] = project });
+        var info = await Server.CallAsync<List<ProjectInfoTool.ProjectSummary>>("project_info", new() { ["projectPath"] = project });
+
+        const string error = "A compatible .NET SDK was not found. Install the [9.9.999] .NET SDK or update [";
+        diagnostics.Items.Should().ContainSingle().Which.Should().Match<DiagnosticsTool.DiagnosticEntry>(diagnostic => diagnostic.Id == "MSBuild" && diagnostic.Severity == "Error"
+            && diagnostic.Message.StartsWith(error) && diagnostic.Message.EndsWith("global.json] to match an installed SDK. MissingSdk.csproj did not load."));
+        info.Should().ContainSingle().Which.Should().Match<ProjectInfoTool.ProjectSummary>(summary => summary.ProjectPath == project && !summary.BuildSucceeded
+            && summary.LoadErrors!.Single().StartsWith(error));
+    }
+
+    // The server can run under a dotnet that set MSBuild up for its own SDK, as dotnet run and dotnet test do: a project that global.json pins to
+    // another SDK still loads and builds with that one.
+    [Test]
+    public async Task AProjectPinnedToAnotherSdk_LoadsAndBuildsWithIt()
+    {
+        var (_, current) = await DotnetCli.RunAsync(["--version"], TimeSpan.FromMinutes(1), CancellationToken.None, workingDirectory: Sample.Root);
+        var (_, installed) = await DotnetCli.RunAsync(["--list-sdks"], TimeSpan.FromMinutes(1), CancellationToken.None);
+        var other = installed.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).Select(line => line.Split(' ')[0])
+            .LastOrDefault(version => version != current.Trim() && int.TryParse(version.Split('.')[0], out var major) && major >= 10);
+        Assume.That(other, Is.Not.Null, "Another SDK for net10.0 is not installed.");
+        var project = Sample.NewProject("PinnedSdk", ("Code.cs", "namespace Edits;\n\npublic static class Code\n{\n}\n"));
+        Sample.Write("edits/PinnedSdk/global.json", $$"""{ "sdk": { "version": "{{other}}", "rollForward": "disable" } }""");
+
+        var evaluation = await Server.CallAsync<List<MsBuildEvaluateTool.Evaluation>>("msbuild_evaluate", new() { ["projectPath"] = project, ["names"] = new[] { "NETCoreSdkVersion" } });
+        var build = await Server.CallAsync<BuildTool.BuildResult>("build", new() { ["projectPath"] = project });
+
+        evaluation.Single().Properties["NETCoreSdkVersion"].Should().Be(other);
+        build.Should().BeEquivalentTo(new BuildTool.BuildResult(true, 0, 0, [], null));
+    }
+
     [Test]
     public async Task ProjectGraph_InBuildOrder()
     {

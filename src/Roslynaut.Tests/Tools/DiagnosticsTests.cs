@@ -19,7 +19,7 @@ public class DiagnosticsTests
     }
 
     private static async Task<List<string>> Collect(Solution solution, DiagnosticSeverity severity, bool analyzers) =>
-        [.. (await DiagnosticsTool.CollectAsync(solution, null, severity, analyzers, new Dictionary<string, IReadOnlyList<string>>(), CancellationToken.None)).Select(entry => $"{entry.Id} {entry.Severity}")];
+        [.. (await DiagnosticsTool.CollectAsync(solution, null, severity, analyzers, new Dictionary<string, IReadOnlyList<string>>(), new Dictionary<string, System.Collections.Concurrent.ConcurrentQueue<Diagnostic>>(), CancellationToken.None)).Select(entry => $"{entry.Id} {entry.Severity}")];
 
     [Test]
     public async Task Analyzers_ReportAtTheirDefaultSeverity()

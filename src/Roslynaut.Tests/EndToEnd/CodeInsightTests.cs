@@ -819,6 +819,41 @@ public class CodeInsightTests : EndToEndTest
             && diagnostic.Message.StartsWith("Unable to find package Roslynaut.E2E.Missing.") && diagnostic.Message.EndsWith(" Unrestored.csproj did not load.") && diagnostic.Location == null);
     }
 
+    // An SDK newer than the server's compiler passes options and analyzers for its own, such as /langversion:15.0 or the Razor generator: the
+    // server reads the project without them, so where the compiler would warn of them, the diagnostics do too.
+    [Test]
+    public async Task Diagnostics_TellWhatTheServersCompilerLeavesOut()
+    {
+        var project = Sample.NewProject("NewerCompiler", ("Code.cs", "namespace Edits;\n\npublic static class Code\n{\n}\n"));
+        static byte[] Emit(string name, string code, params byte[][] references)
+        {
+            var compilation = Microsoft.CodeAnalysis.CSharp.CSharpCompilation.Create(name, [Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree.ParseText(code)],
+                [Microsoft.CodeAnalysis.MetadataReference.CreateFromFile(typeof(object).Assembly.Location), .. references.Select(image => Microsoft.CodeAnalysis.MetadataReference.CreateFromImage(image))],
+                new(Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary));
+            using var stream = new MemoryStream();
+            compilation.Emit(stream).Success.Should().BeTrue();
+            return stream.ToArray();
+        }
+
+        // A generator built against a version of the compiler newer than any.
+        var compiler = Emit("Microsoft.CodeAnalysis", "[assembly: System.Reflection.AssemblyVersion(\"99.0.0.0\")]\nnamespace Microsoft.CodeAnalysis { public sealed class GeneratorAttribute : System.Attribute { } }");
+        var generator = Path.Combine(Path.GetDirectoryName(project)!, "NewerGenerator.dll");
+        File.WriteAllBytes(generator, Emit("NewerGenerator", "[Microsoft.CodeAnalysis.Generator] public sealed class NewerGenerator { }", compiler));
+        File.WriteAllText(project, File.ReadAllText(project).Replace("</PropertyGroup>",
+            "  <LangVersion>99.0</LangVersion>\n  </PropertyGroup>\n  <ItemGroup>\n    <Analyzer Include=\"NewerGenerator.dll\" />\n  </ItemGroup>"));
+
+        var diagnostics = await Server.CallAsync<PagedResult<DiagnosticsTool.DiagnosticEntry>>("diagnostics", new() { ["projectPath"] = project });
+
+        diagnostics.Items.Should().BeEquivalentTo(
+        [
+            new DiagnosticsTool.DiagnosticEntry("CS1617", "Warning", $"Invalid option '99.0' for /langversion. Use '/langversion:?' to list supported values. Roslynaut's compiler, version '{CompilerVersion}', reads the project without it.", null),
+            new DiagnosticsTool.DiagnosticEntry("CS9057", "Warning", $"The analyzer assembly '{generator}' references version '99.0.0.0' of the compiler, which is newer than Roslynaut's, "
+                + $"version '{CompilerVersion}': its analyzers and source generators do not run here, so the code they generate is missing.", null),
+        ]);
+    }
+
+    private static readonly Version? CompilerVersion = typeof(Microsoft.CodeAnalysis.Compilation).Assembly.GetName().Version;
+
     // The project's .editorconfig sets the severities, as for the build; a change to it applies at once.
     [Test]
     public async Task Diagnostics_TakeTheirSeveritiesFromEditorConfig()

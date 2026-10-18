@@ -16,6 +16,16 @@ internal static class DotnetCli
     /// </summary>
     public static readonly Encoding Utf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
 
+    /// <summary>
+    /// Leaves out what a dotnet process that started the server, such as dotnet run or dotnet test, sets for its own MSBuild: paths into its
+    /// SDK, which a dotnet command run from here would take over instead of the SDK that global.json picks for the project.
+    /// </summary>
+    public static void ForgetParentSdk(ProcessStartInfo start)
+    {
+        foreach (var name in (string[])["MSBuildSDKsPath", "MSBuildExtensionsPath", "MSBUILD_EXE_PATH"])
+            start.Environment.Remove(name);
+    }
+
     /// <summary>Returns the exit code and the combined standard output and error.</summary>
     /// <param name="input">What to write to standard input, if anything.</param>
     /// <param name="workingDirectory">
@@ -47,6 +57,7 @@ internal static class DotnetCli
         };
         foreach (var argument in arguments)
             start.ArgumentList.Add(argument);
+        ForgetParentSdk(start);
 
         using var process = Start(start);
         if (input is not null)

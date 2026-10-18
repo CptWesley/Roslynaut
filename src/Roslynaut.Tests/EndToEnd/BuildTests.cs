@@ -29,6 +29,21 @@ public class BuildTests : EndToEndTest
         ], null), options => options.WithStrictOrdering());
     }
 
+    // A client can cancel a call it no longer waits for: the server stops the build, and leaves nothing behind that keeps the next one from running.
+    [Test]
+    public async Task ACancelledBuild_Stops_AndTheNextOneRuns()
+    {
+        using (var cancel = new CancellationTokenSource(TimeSpan.FromMilliseconds(500)))
+        {
+            var building = () => Server.Client.CallToolAsync("build", new Dictionary<string, object?> { ["projectPath"] = Sample.ProblemsProject }, cancellationToken: cancel.Token).AsTask();
+            await building.Should().ThrowAsync<OperationCanceledException>();
+        }
+
+        var build = await Server.CallAsync<BuildTool.BuildResult>("build", new() { ["projectPath"] = Sample.ProblemsProject });
+
+        (build.Succeeded, build.Errors, build.Warnings).Should().Be((false, 1, 1));
+    }
+
     // The solution is built already, so this build skips most of its work; it still runs and times the projects and their targets.
     [Test]
     public async Task Build_WithTimings_TimesProjectsTargetsAndEvaluation()

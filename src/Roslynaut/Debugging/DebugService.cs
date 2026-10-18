@@ -256,6 +256,7 @@ public sealed partial class DebugService(WorkspaceService workspace, PdbService 
         };
         foreach (var argument in arguments)
             start.ArgumentList.Add(argument);
+        DotnetCli.ForgetParentSdk(start);
 
         var output = new StringBuilder();
         var processId = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
