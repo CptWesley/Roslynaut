@@ -92,6 +92,32 @@ public class AssemblyTests : EndToEndTest
         (await MethodsAsync("Text.extension(string)")).Should().BeEquivalentTo("System.Boolean Edits.Text::get_IsBlank(System.String)", "System.String Edits.Text::Shout(System.String)");
     }
 
+    // A local function compiles to a helper named after the member it is in, which has no symbol path of its own: it comes with that member.
+    [Test]
+    public async Task IlAndAsm_OfALocalFunction_AreThoseOfTheMemberItIsIn()
+    {
+        var project = Sample.NewProject("LocalIl", ("Local.cs", """
+            namespace Edits;
+
+            public static class Local
+            {
+                public static int Twice(int value)
+                {
+                    return Double(value);
+
+                    static int Double(int x) => x * 2;
+                }
+            }
+            """));
+
+        var il = await Server.CallAsync<PagedResult<MethodIL>>("symbol_il", new() { ["projectPath"] = project, ["symbol"] = "Local.Twice.Double" });
+        var asm = await Server.CallAsync<PagedResult<MethodAsm>>("symbol_asm", new() { ["projectPath"] = project, ["symbol"] = "Local.Twice.Double" });
+
+        il.Items.Select(method => method.Method).Should().Equal("System.Int32 Edits.Local::Twice(System.Int32)", "System.Int32 Edits.Local::<Twice>g__Double|0_0(System.Int32)");
+        il.Items.Last().IL.Should().Contain("mul");
+        asm.Items.Select(method => method.Method).Should().Equal(il.Items.Select(method => method.Method));
+    }
+
     // The build output is a debug build, which the JIT does not optimize; symbol_asm compiles a release build, which inlines the getters.
     [Test]
     public async Task Asm_OfTheBuildOutput_AndOfTheSource()
@@ -195,6 +221,18 @@ public class AssemblyTests : EndToEndTest
 
         endless.Should().Be("An error occurred invoking 'evaluate': The code did not finish within 5 seconds, so it was stopped.");
         wrong.Should().Match<EvaluateTool.Evaluation>(evaluation => evaluation.Value == null && evaluation.Error!.Contains("CS0234"));
+    }
+
+    // Code that ends the process leaves no result, nor what it wrote, to say why; and code that writes a lot would flood the client.
+    [Test]
+    public async Task Evaluate_OfCodeThatExits_OrWritesALot()
+    {
+        var exits = await Server.CallFailingAsync("evaluate", new() { ["projectPath"] = Sample.ShapesProject, ["code"] = "Environment.Exit(3);" });
+        var writes = await Server.CallAsync<EvaluateTool.Evaluation>("evaluate", new() { ["projectPath"] = Sample.ShapesProject, ["code"] = "Console.Write(new string('x', 1_000_000)); 1" });
+
+        exits.Should().Be("An error occurred invoking 'evaluate': The script host ended with exit code 3 before it gave a result, as when the code calls Environment.Exit.");
+        writes.Output.Should().Be(new string('x', EvaluateTool.MaxOutput) + "…");
+        writes.Value.Should().Be("1");
     }
 
     // Text that no single-byte code page holds, both ways.

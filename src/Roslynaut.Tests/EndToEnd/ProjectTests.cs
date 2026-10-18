@@ -35,6 +35,26 @@ public class ProjectTests : EndToEndTest
             }, references, packages, sources, null);
     }
 
+    // A C# project can reference a Visual Basic one, whose compiler command line names the VB runtime twice; a project cannot have a reference twice.
+    [Test]
+    public async Task ASolutionWithAVisualBasicProject_Loads()
+    {
+        Sample.Write("edits/VisualBasic/Greetings/Greetings.vbproj", "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <TargetFramework>net10.0</TargetFramework>\n  </PropertyGroup>\n</Project>\n");
+        Sample.Write("edits/VisualBasic/Greetings/Greeter.vb", "Public Class Greeter\n    Public Function Hello(name As String) As String\n        Return \"Hello, \" & name\n    End Function\nEnd Class\n");
+        Sample.Write("edits/VisualBasic/App/App.csproj",
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <TargetFramework>net10.0</TargetFramework>\n  </PropertyGroup>\n"
+            + "  <ItemGroup>\n    <ProjectReference Include=\"../Greetings/Greetings.vbproj\" />\n  </ItemGroup>\n</Project>\n");
+        var use = Sample.Write("edits/VisualBasic/App/Use.cs", "namespace App;\n\npublic static class Use\n{\n    public static string Run() => new Greetings.Greeter().Hello(\"you\");\n}\n");
+        var solution = Sample.Write("edits/VisualBasic/VisualBasic.slnx", "<Solution>\n  <Project Path=\"Greetings/Greetings.vbproj\" />\n  <Project Path=\"App/App.csproj\" />\n</Solution>\n");
+        await Sample.DotnetAsync("restore", solution);
+
+        var references = await Server.CallAsync<PagedResult<ReferencesTool.ReferenceEntry>>("references", new() { ["projectPath"] = solution, ["symbol"] = "Greetings.Greeter.Hello" });
+        var diagnostics = await Server.CallAsync<PagedResult<DiagnosticsTool.DiagnosticEntry>>("diagnostics", new() { ["projectPath"] = solution });
+
+        references.Items.Should().Equal(new ReferencesTool.ReferenceEntry(Sample.Location(use, "Hello("), "App.Use.Run()", "Call"));
+        diagnostics.Items.Should().BeEmpty();
+    }
+
     [Test]
     public async Task ProjectGraph_InBuildOrder()
     {

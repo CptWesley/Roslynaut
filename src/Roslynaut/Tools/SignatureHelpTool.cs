@@ -39,7 +39,8 @@ public sealed class SignatureHelpTool(WorkspaceService workspace) : IMcpTool
         var bound = model.GetSymbolInfo(call, cancellationToken);
         IEnumerable<ISymbol> overloads = call switch
         {
-            InvocationExpressionSyntax invocation => model.GetMemberGroup(invocation.Expression, cancellationToken),
+            // A delegate's invocation has no member group, only its Invoke method.
+            InvocationExpressionSyntax invocation when model.GetMemberGroup(invocation.Expression, cancellationToken) is { IsEmpty: false } group => group,
             BaseObjectCreationExpressionSyntax creation when model.GetTypeInfo(creation, cancellationToken).Type is INamedTypeSymbol type =>
                 type.InstanceConstructors.Where(constructor => model.IsAccessible(position, constructor)),
             ElementAccessExpressionSyntax access => model.GetIndexerGroup(access.Expression, cancellationToken),

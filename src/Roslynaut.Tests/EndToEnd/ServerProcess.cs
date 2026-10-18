@@ -61,7 +61,8 @@ internal sealed class ServerProcess : IAsyncDisposable
         return text;
     }
 
-    private async Task<(bool IsError, string Text)> CallRawAsync(string tool, Dictionary<string, object?>? arguments)
+    /// <summary>Calls a tool that may fail, and returns whether it did with the text it returns.</summary>
+    public async Task<(bool IsError, string Text)> CallRawAsync(string tool, Dictionary<string, object?>? arguments)
     {
         // A tool that hangs fails its test rather than the run.
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(10));

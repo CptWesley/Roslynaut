@@ -83,8 +83,15 @@ public sealed class FindTestsTool(WorkspaceService workspace, ResultCache cache)
             }
         }
 
-        return tests.Select(test => new TestEntry(SymbolEntry.From(test), solution.GetProject(test.ContainingAssembly, cancellationToken)?.FilePath, $"FullyQualifiedName~{TestName(test)}"));
+        return tests.Select(test => new TestEntry(SymbolEntry.From(test), solution.GetProject(test.ContainingAssembly, cancellationToken)?.FilePath, FilterOf(test)));
     }
+
+    /// <summary>
+    /// The filter that runs a test: by its exact name, as a filter by how its name starts would also run tests whose names start the same, such as
+    /// Adds_Negative for Adds. NUnit names each case of a test with parameters by its arguments, as in Twice(2), which no filter can spell: VSTest's
+    /// escaping of the parenthesis breaks NUnit's adapter. ponytail: those go by how their name starts, so they run such tests too.
+    /// </summary>
+    private static string FilterOf(IMethodSymbol test) => test.Parameters.Length == 0 ? $"FullyQualifiedName={TestName(test)}" : $"FullyQualifiedName~{TestName(test)}";
 
     private static bool IsTest(IMethodSymbol method) =>
         method.GetAttributes().Any(attribute => BaseTypes(attribute.AttributeClass).Any(type => TestAttributes.Contains(type.ToDisplayString())));

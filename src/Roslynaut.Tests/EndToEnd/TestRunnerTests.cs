@@ -8,7 +8,7 @@ public class TestRunnerTests : EndToEndTest
     private static FindTestsTool.TestEntry Test(string name) => new(
         new SymbolEntry(name, "Method", $"Shapes.Tests.ShapeTests.{name}()", "Shapes.Tests.ShapeTests", Sample.Location(Sample.TestsFile, $"{name}()")),
         Sample.TestsProject,
-        $"FullyQualifiedName~Shapes.Tests.ShapeTests.{name}");
+        $"FullyQualifiedName=Shapes.Tests.ShapeTests.{name}");
 
     [Test]
     public async Task FindTests_All_WithAFilterEach()
@@ -50,6 +50,60 @@ public class TestRunnerTests : EndToEndTest
         var tests = await Server.CallAsync<PagedResult<FindTestsTool.TestEntry>>("find_tests", new() { ["projectPath"] = Sample.Solution, ["symbol"] = "Shapes.Rectangle..ctor" });
 
         tests.Items.Should().BeEquivalentTo([Test("Square_Area_IsSideSquared"), Test("TotalArea_AddsTheAreas"), Test("Classify_UnitSquare_IsSmall")]);
+    }
+
+    // A filter by the name a test's name starts with would also run Add_Negative for Add. NUnit names each case of a test with parameters by its
+    // arguments, as in Twice(1), so the filter of such a test takes the name the cases start with.
+    [Test]
+    public async Task FindTests_GiveFiltersThatRunOnlyTheirTest()
+    {
+        var project = Sample.Write("edits/Filters/Filters.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <TargetFramework>net10.0</TargetFramework>
+              </PropertyGroup>
+              <ItemGroup>
+                <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.11.0" />
+                <PackageReference Include="NUnit" Version="5.0.0" />
+                <PackageReference Include="NUnit3TestAdapter" Version="6.3.1" />
+              </ItemGroup>
+            </Project>
+            """);
+        Sample.Write("edits/Filters/CalcTests.cs", """
+            using NUnit.Framework;
+
+            namespace Edits;
+
+            public class CalcTests
+            {
+                [Test]
+                public void Add() => Assert.That(1 + 1, Is.EqualTo(2));
+
+                [Test]
+                public void Add_Negative() => Assert.That(-1 + -1, Is.EqualTo(-2));
+
+                [TestCase(1)]
+                [TestCase(2)]
+                public void Twice(int x) => Assert.That(x * 2, Is.EqualTo(x + x));
+            }
+            """);
+        await Sample.DotnetAsync("restore", project);
+        async Task<RunTestsTool.TestRun> RunAsync(string filter) => await Server.CallAsync<RunTestsTool.TestRun>("run_tests", new() { ["projectPath"] = project, ["filter"] = filter });
+
+        var filters = (await Server.CallAsync<PagedResult<FindTestsTool.TestEntry>>("find_tests", new() { ["projectPath"] = project })).Items.ToDictionary(test => test.Test.Name, test => test.Filter);
+        var add = await RunAsync(filters["Add"]);
+        var twice = await RunAsync(filters["Twice"]);
+        var none = await RunAsync("FullyQualifiedName=Edits.CalcTests.Subtract");
+
+        filters.Should().BeEquivalentTo(new Dictionary<string, string>
+        {
+            ["Add"] = "FullyQualifiedName=Edits.CalcTests.Add", ["Add_Negative"] = "FullyQualifiedName=Edits.CalcTests.Add_Negative", ["Twice"] = "FullyQualifiedName~Edits.CalcTests.Twice",
+        });
+        (add.Succeeded, add.Total, add.Passed).Should().Be((true, 1, 1));
+        (twice.Succeeded, twice.Total, twice.Passed).Should().Be((true, 2, 2));
+        // Without a test to report, the end of the log tells what ran, as when the filter matched none or a test adapter failed.
+        none.Total.Should().Be(0);
+        none.Output.Should().Contain("A total of 1 test files matched the specified pattern.");
     }
 
     [Test]
@@ -136,7 +190,7 @@ public class TestRunnerTests : EndToEndTest
             affected.ChangedMembers.Should().Equal(new SymbolEntry("Classify", "Method", "Shapes.ShapeMath.Classify(Shapes.IShape)", "Shapes.ShapeMath",
                 Sample.Location(Sample.ShapeMathFile, "Classify(")));
             affected.Tests.Should().BeEquivalentTo([Test("Classify_UnitSquare_IsSmall")]);
-            affected.Filter.Should().Be("FullyQualifiedName~Shapes.Tests.ShapeTests.Classify_UnitSquare_IsSmall");
+            affected.Filter.Should().Be("FullyQualifiedName=Shapes.Tests.ShapeTests.Classify_UnitSquare_IsSmall");
 
             var run = await Server.CallAsync<RunTestsTool.TestRun>("run_tests", new() { ["projectPath"] = Sample.TestsProject, ["filter"] = affected.Filter });
             (run.Succeeded, run.Total, run.Passed).Should().Be((true, 1, 1));
@@ -180,7 +234,7 @@ public class TestRunnerTests : EndToEndTest
         var since = await Server.CallAsync<AffectedTestsTool.AffectedTests>("affected_tests", new() { ["projectPath"] = project, ["baseRef"] = "HEAD~1" });
 
         FindTestsTool.TestEntry Test(string name) =>
-            new(new SymbolEntry(name, "Method", $"Edits.CalcTests.{name}()", "Edits.CalcTests", Sample.Location(tests, $"{name}()")), project, $"FullyQualifiedName~Edits.CalcTests.{name}");
+            new(new SymbolEntry(name, "Method", $"Edits.CalcTests.{name}()", "Edits.CalcTests", Sample.Location(tests, $"{name}()")), project, $"FullyQualifiedName=Edits.CalcTests.{name}");
         SymbolEntry Member(string name) => new(name, "Method", $"Edits.Calc.{name}(int, int)", "Edits.Calc", Sample.Location(file, $"{name}("));
         SymbolEntry[] added = [new("Size", "Class", "Edits.Size", "Edits", Sample.Location(size, "Size")), new("Of", "Method", "Edits.Size.Of(int)", "Edits.Size", Sample.Location(size, "Of("))];
         head.ChangedMembers.Should().BeEquivalentTo([Member("Sub"), .. added]);

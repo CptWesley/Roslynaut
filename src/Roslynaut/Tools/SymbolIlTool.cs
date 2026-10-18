@@ -57,6 +57,8 @@ public sealed class SymbolIlTool(WorkspaceService workspace, AssemblyLoader asse
             // The members of an extension block compile to skeletons; their code goes into static methods of the class.
             INamedTypeSymbol { IsExtension: true } block => [.. block.GetMembers().OfType<IMethodSymbol>()],
             IMethodSymbol { AssociatedExtensionImplementation: { } implementation } => [implementation],
+            // A local function or lambda compiles to a helper named after the member it is in, which comes with that member's IL.
+            IMethodSymbol { MethodKind: MethodKind.LocalFunction or MethodKind.AnonymousFunction } local => [local.ContainingSymbol],
             INamedTypeSymbol or IMethodSymbol => [symbol],
             IPropertySymbol property => [property.GetMethod, property.SetMethod],
             IEventSymbol @event => [@event.AddMethod, @event.RemoveMethod],

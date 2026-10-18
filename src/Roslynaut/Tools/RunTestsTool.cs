@@ -233,7 +233,8 @@ public sealed partial class RunTestsTool(WorkspaceService workspace) : IMcpTool
             Count("total") - Count("executed"),
             [.. failures],
             buildErrors,
-            reports.Count == 0 && buildErrors.Count == 0 ? BuildTool.Tail(output) : null);
+            // Such as a test adapter that failed, or a filter that matched no test.
+            (reports.Count == 0 || Count("total") == 0) && buildErrors.Count == 0 ? BuildTool.Tail(output) : null);
     }
 
     /// <summary>The line coverage per source file from Cobertura reports, one per test project; a line counts as run if any test project ran it.</summary>

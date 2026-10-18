@@ -28,15 +28,15 @@ public class TestToolsTests
     public async Task FindTests_All_WithFilters()
     {
         (await FindTestsTool.FindAsync(Tests, null, CancellationToken.None)).Select(test => test.Filter).Should().BeEquivalentTo(
-            "FullyQualifiedName~App.Tests.CalcTests.AddsDirectly",
-            "FullyQualifiedName~App.Tests.CalcTests.AddsThroughHelper",
-            "FullyQualifiedName~App.Tests.CalcTests.Unrelated",
-            "FullyQualifiedName~App.Tests.CalcTests+Nested.Inner");
+            "FullyQualifiedName=App.Tests.CalcTests.AddsDirectly",
+            "FullyQualifiedName=App.Tests.CalcTests.AddsThroughHelper",
+            "FullyQualifiedName=App.Tests.CalcTests.Unrelated",
+            "FullyQualifiedName=App.Tests.CalcTests+Nested.Inner");
     }
 
     // Line 3 holds both Calc members, line 10 Helper, and lines 7 and 13 the braces of the test class, which change no member.
-    [TestCase(new[] { 10 }, new[] { "Helper" }, "FullyQualifiedName~App.Tests.CalcTests.AddsThroughHelper")]
-    [TestCase(new[] { 3 }, new[] { "Add", "Twice" }, "FullyQualifiedName~App.Tests.CalcTests.AddsDirectly|FullyQualifiedName~App.Tests.CalcTests.AddsThroughHelper")]
+    [TestCase(new[] { 10 }, new[] { "Helper" }, "FullyQualifiedName=App.Tests.CalcTests.AddsThroughHelper")]
+    [TestCase(new[] { 3 }, new[] { "Add", "Twice" }, "FullyQualifiedName=App.Tests.CalcTests.AddsDirectly|FullyQualifiedName=App.Tests.CalcTests.AddsThroughHelper")]
     [TestCase(new[] { 7, 13 }, new string[0], null)]
     public async Task AffectedTests_MapChangedLinesToMembersAndTests(int[] lines, string[] members, string? filter)
     {

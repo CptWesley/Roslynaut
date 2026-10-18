@@ -58,6 +58,55 @@ public class EditingTests : EndToEndTest
         }, "the server should see the renamed type in its new file");
     }
 
+    // Where file names ignore case, writing the file by its new name would keep the old one.
+    [Test]
+    public async Task RenameSymbol_OfATypeToAnotherCase_RenamesItsFile()
+    {
+        var project = Sample.NewProject("RenameCase", ("widget.cs", "namespace Edits;\n\npublic class widget { }\n"));
+
+        var result = await Server.CallAsync<RenameSymbolTool.RenameResult>("rename_symbol", new() { ["projectPath"] = project, ["symbol"] = "Edits.widget", ["newName"] = "Widget" });
+
+        result.ChangedFiles.Should().Equal(FileOf(project, "Widget.cs"));
+        Directory.EnumerateFiles(Path.GetDirectoryName(project)!, "*.cs").Select(Path.GetFileName).Should().Equal("Widget.cs");
+        Read(FileOf(project, "Widget.cs")).Should().Be("namespace Edits;\n\npublic class Widget { }\n");
+    }
+
+    // Roslyn would name the file Gadget_1.cs.
+    [Test]
+    public async Task RenameSymbol_OfAType_KeepsItsFile_WhenAnotherFileHasTheNewName()
+    {
+        const string gadget = "namespace Edits;\n\npublic class Other { }\n";
+        var project = Sample.NewProject("RenameOntoFile", ("Widget.cs", "namespace Edits;\n\npublic class Widget { }\n"), ("Gadget.cs", gadget));
+
+        var result = await Server.CallAsync<RenameSymbolTool.RenameResult>("rename_symbol", new() { ["projectPath"] = project, ["symbol"] = "Edits.Widget", ["newName"] = "Gadget" });
+
+        result.ChangedFiles.Should().Equal(FileOf(project, "Widget.cs"));
+        Directory.EnumerateFiles(Path.GetDirectoryName(project)!, "*.cs").Select(Path.GetFileName).Should().BeEquivalentTo("Gadget.cs", "Widget.cs");
+        Read(FileOf(project, "Widget.cs")).Should().Be("namespace Edits;\n\npublic class Gadget { }\n");
+        Read(FileOf(project, "Gadget.cs")).Should().Be(gadget);
+    }
+
+    // Agents call tools in parallel. Edits computed from one snapshot of a file would each undo the others when written, so an edit of files
+    // that changed since its snapshot writes nothing and says to try again.
+    [Test]
+    public async Task ConcurrentEdits_OfOneFile_KeepEachOthersChanges()
+    {
+        const string shapes = "namespace Edits;\n\npublic class One { }\n\npublic class Two { }\n\npublic class Three { }\n";
+        var project = Sample.NewProject("ConcurrentEdits", ("Shapes.cs", shapes));
+        var renames = new Dictionary<string, string> { ["Edits.One"] = "Uno", ["Edits.Two"] = "Dos", ["Edits.Three"] = "Tres" };
+        Task<(bool IsError, string Text)> RenameAsync(string symbol) =>
+            Server.CallRawAsync("rename_symbol", new() { ["projectPath"] = project, ["symbol"] = symbol, ["newName"] = renames[symbol] });
+
+        var results = await Task.WhenAll(renames.Keys.Select(RenameAsync));
+
+        var failed = renames.Keys.Zip(results).Where(rename => rename.Second.IsError).ToList();
+        failed.Should().AllSatisfy(rename => rename.Second.Text.Should().Be("An error occurred invoking 'rename_symbol': "
+            + $"'{FileOf(project, "Shapes.cs")}' changed after this edit read it, as by another edit or an editor at the same time, so nothing was written: try again."));
+        foreach (var (symbol, _) in failed)
+            await EventuallyAsync(async () => !(await RenameAsync(symbol)).IsError, "the edit should succeed on the file as it is now");
+        Read(FileOf(project, "Shapes.cs")).Should().Be(shapes.Replace("One", "Uno").Replace("Two", "Dos").Replace("Three", "Tres"));
+    }
+
     [Test]
     public async Task RenameSymbol_OfAnOverload_WithItsOverloads()
     {
@@ -385,6 +434,22 @@ public class EditingTests : EndToEndTest
             """.ReplaceLineEndings("\n"));
     }
 
+    // The project's .editorconfig shapes what the edits write: tabs, braces at the end of the line, and a file-scoped namespace in a new file.
+    [Test]
+    public async Task FormatAndGeneratedCode_FollowTheEditorConfig()
+    {
+        var project = Sample.NewProject("EditorConfig",
+            (".editorconfig", "root = true\n\n[*.cs]\nindent_style = tab\ncsharp_new_line_before_open_brace = none\ncsharp_style_namespace_declarations = file_scoped:warning\n"),
+            ("Greeter.cs", "namespace Edits;\n\npublic class Greeter {\n\tpublic string Hello(string name) => \"Hello, \" + name;\n}\n"),
+            ("Messy.cs", Messy));
+
+        await Server.CallAsync<EditResult>("format", new() { ["projectPath"] = project, ["filePath"] = FileOf(project, "Messy.cs") });
+        await Server.CallAsync<ChangedFiles>("extract_interface", new() { ["projectPath"] = project, ["symbol"] = "Edits.Greeter" });
+
+        Read(FileOf(project, "Messy.cs")).Should().Be("namespace Edits;\n\npublic class Messy {\n\tpublic int Add(int a, int b) {\n\t\treturn a + b;\n\t}\n}");
+        Read(FileOf(project, "IGreeter.cs")).Should().Be("namespace Edits;\n\npublic interface IGreeter {\n\tstring Hello(string name);\n}");
+    }
+
     // The lines of the method; the class around it keeps its own lack of indentation.
     [Test]
     public async Task Format_ARangeOfLines()
@@ -519,6 +584,19 @@ public class EditingTests : EndToEndTest
         Read(FileOf(project, "Widget.cs")).Should().Be(Widget.Replace("    public int Speed;", "    public int Speed;\n    public int Weight;").ReplaceLineEndings("\n"));
     }
 
+    [Test]
+    public async Task InsertAfterSymbol_OfTheLastEnumMember_GivesItItsComma()
+    {
+        const string color = "namespace Edits;\n\npublic enum Color\n{\n    Red,\n    Green\n}\n";
+        var project = Sample.NewProject("InsertAfterEnum", ("Color.cs", color));
+
+        await Server.CallAsync<EditResult>("insert_after_symbol", new() { ["projectPath"] = project, ["symbol"] = "Color.Green", ["code"] = "    Blue," });
+        await Server.CallAsync<EditResult>("insert_after_symbol", new() { ["projectPath"] = project, ["symbol"] = "Color.Red", ["code"] = "    Orange," });
+
+        Read(FileOf(project, "Color.cs")).Should().Be(color.Replace("    Red,\n    Green\n", "    Red,\n    Orange,\n    Green,\n    Blue,\n"));
+        (await Server.CallAsync<PagedResult<DiagnosticsTool.DiagnosticEntry>>("diagnostics", new() { ["projectPath"] = project })).Items.Should().BeEmpty();
+    }
+
     // A partial type has a declaration per part; a position picks one.
     [Test]
     public async Task InsertAfterSymbol_OfAPartialType_AfterThePartAtAPosition()
@@ -641,6 +719,19 @@ public class EditingTests : EndToEndTest
         refused.Should().BeEquivalentTo(new SafeDeleteSymbolTool.SafeDeleteResult(false, [], [Sample.Location(file, "Shape(\"dot\")")]));
         primary.Should().Be("An error occurred invoking 'safe_delete_symbol': Edits.Dot.Dot() is the primary constructor of Edits.Dot: edit the type's parameter list instead.");
         Read(file).Should().Be(shapes);
+    }
+
+    // Code converts with an implicit conversion without naming it, which finding references misses: deleting it would leave code that does not compile.
+    [Test]
+    public async Task SafeDeleteSymbol_OfAnImplicitConversion_RefusesWhileCodeConverts()
+    {
+        const string money = "namespace Edits;\n\npublic record Money(decimal Amount)\n{\n    public static implicit operator decimal(Money money) => money.Amount;\n}\n";
+        var project = Sample.NewProject("SafeDeleteConversion", ("Money.cs", money), ("Use.cs", "namespace Edits;\n\npublic static class Use\n{\n    public static decimal Total(Money money) => money;\n}\n"));
+
+        var refused = await Server.CallAsync<SafeDeleteSymbolTool.SafeDeleteResult>("safe_delete_symbol", new() { ["projectPath"] = project, ["symbol"] = "Money.op_Implicit" });
+
+        refused.Should().BeEquivalentTo(new SafeDeleteSymbolTool.SafeDeleteResult(false, [], [Sample.Location(FileOf(project, "Use.cs"), "money;")]));
+        Read(FileOf(project, "Money.cs")).Should().Be(money);
     }
 
     // Calls pass an argument for a parameter, and uses name a type argument for a type parameter, without referencing either: deleting one breaks them.
@@ -849,6 +940,20 @@ public class EditingTests : EndToEndTest
                 public static Greeter Default { get; } = new();
             }
             """.ReplaceLineEndings("\n"));
+    }
+
+    // Roslyn names the new file after the interface, even when the project has a file of that name: writing it would lose what that file declares.
+    [Test]
+    public async Task ExtractInterface_IntoAFileThatExists_WritesNothing()
+    {
+        const string greeter = "namespace Edits;\n\npublic class Greeter\n{\n    public string Hello(string name) => \"Hello, \" + name;\n}\n";
+        const string other = "namespace Edits;\n\npublic class Other { }\n";
+        var project = Sample.NewProject("ExtractInterfaceOnto", ("Greeter.cs", greeter), ("IGreeter.cs", other));
+
+        var error = await Server.CallFailingAsync("extract_interface", new() { ["projectPath"] = project, ["symbol"] = "Edits.Greeter" });
+
+        error.Should().Be($"An error occurred invoking 'extract_interface': '{FileOf(project, "IGreeter.cs")}' already exists, so nothing was written.");
+        (Read(FileOf(project, "Greeter.cs")), Read(FileOf(project, "IGreeter.cs"))).Should().Be((greeter, other));
     }
 
     [Test]

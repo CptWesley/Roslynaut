@@ -38,10 +38,18 @@ internal static class SymbolEdits
             Placement.Before => new(new TextSpan(text.Lines.GetLineFromPosition(StartIncludingComments(node)).Start, 0), lines),
             _ => new(new TextSpan(text.Lines.GetLineFromPosition(node.Span.End).EndIncludingLineBreak, 0), lines),
         };
+
+        // The last member of an enum may go without a comma, which a member inserted after it needs.
+        if (placement == Placement.After && node is EnumMemberDeclarationSyntax { Parent: EnumDeclarationSyntax @enum } member
+            && @enum.Members.IndexOf(member) >= @enum.Members.SeparatorCount)
+            return solution.WithDocumentText(document.Id, text.WithChanges(new TextChange(new TextSpan(node.Span.End, 0), ","), change));
         return solution.WithDocumentText(document.Id, text.WithChanges(change));
     }
 
-    /// <summary>Deletes the symbol's declarations if nothing outside them references it; otherwise returns those references.</summary>
+    /// <summary>
+    /// Deletes the symbol's declarations if nothing outside them references it and the code compiles without them; otherwise returns those
+    /// references, or where code would no longer compile.
+    /// </summary>
     public static async Task<(Solution? Deleted, IReadOnlyList<SourceLocation> References)> SafeDeleteAsync(
         Solution solution, IReadOnlyList<ISymbol> symbols, CancellationToken cancellationToken)
     {
@@ -100,7 +108,14 @@ internal static class SymbolEdits
                 deleted = deleted.RemoveDocument(id);
         }
 
-        return (deleted, []);
+        // Code can use a member without naming it, as with an implicit conversion, which finding references misses: what would no longer compile,
+        // here or in the projects that depend on these, needs it too.
+        var changed = deleted.GetChanges(solution).GetProjectChanges().Select(change => change.ProjectId).ToList();
+        var users = changed.SelectMany(solution.GetProjectDependencyGraph().GetProjectsThatTransitivelyDependOnThisProject);
+        var introduced = await DiagnosticsTool.IntroducedErrorsAsync(solution, deleted, changed.Concat(users).Distinct(), cancellationToken);
+        if (introduced.Any(error => !error.Location.IsInSource))
+            throw new McpException($"Deleting {symbol.ToDisplayString()} would leave code that does not compile, so nothing changed: {string.Join(" ", introduced.Take(5).Select(error => $"{error.Id} {error.GetMessage()}"))}");
+        return introduced.Count > 0 ? (null, [.. introduced.Select(error => SourceLocation.From(error.Location)).Distinct()]) : (deleted, []);
     }
 
     /// <summary>The abstract member a member overrides, and the interface members it implements.</summary>
@@ -255,7 +270,8 @@ public sealed class SafeDeleteSymbolTool(WorkspaceService workspace) : IMcpTool
     public Delegate Handler => DeleteAsync;
 
     [McpServerTool(Name = "safe_delete_symbol", Destructive = true)]
-    [Description("Deletes a symbol's declaration, but only if nothing else references it; otherwise deletes nothing and returns the references. "
+    [Description("Deletes a symbol's declaration, but only if nothing else references it; otherwise deletes nothing and returns the references, "
+        + "or the code that would no longer compile without it, such as the uses of an implicit conversion. "
         + "Writes the changed files to disk, and deletes a file that declared nothing but a deleted type.")]
     private async Task<SafeDeleteResult> DeleteAsync(
         [Description(ToolDefaults.ProjectPath)] string projectPath,

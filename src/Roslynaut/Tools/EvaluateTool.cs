@@ -47,6 +47,7 @@ public sealed class EvaluateTool(WorkspaceService workspace, AssemblyLoader asse
             throw new McpException($"The script host is missing: {HostPath}");
 
         var input = JsonSerializer.Serialize(new { Code = code, References = references.ToArray() });
+        int exitCode;
         string output;
         using (var stop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
         {
@@ -54,7 +55,7 @@ public sealed class EvaluateTool(WorkspaceService workspace, AssemblyLoader asse
             stop.CancelAfter(timeout);
             try
             {
-                (_, output) = await DotnetCli.RunAsync(["exec", HostPath], Timeout.InfiniteTimeSpan, stop.Token, input);
+                (exitCode, output) = await DotnetCli.RunAsync(["exec", HostPath], Timeout.InfiniteTimeSpan, stop.Token, input);
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
@@ -62,12 +63,21 @@ public sealed class EvaluateTool(WorkspaceService workspace, AssemblyLoader asse
             }
         }
 
-        // The host ends with one line of JSON; anything else is the runtime failing.
+        // The host ends with one line of JSON; anything else is the runtime failing, or the code ending the process, which leaves nothing to say why.
         var result = output.Split('\n').Select(line => line.Trim()).LastOrDefault(line => line.StartsWith('{'));
-        return result is null
-            ? throw new McpException($"The script host failed: {BuildTool.Tail(output)}")
-            : JsonSerializer.Deserialize<Evaluation>(result)!;
+        if (result is null)
+        {
+            throw new McpException($"The script host ended with exit code {exitCode} before it gave a result"
+                + (BuildTool.Tail(output) is { Length: > 0 } tail ? $": {tail}" : ", as when the code calls Environment.Exit."));
+        }
+
+        // ponytail: a fixed cap on what the code wrote, so that a loop that writes a lot does not flood the client; page it if that is too little.
+        var evaluation = JsonSerializer.Deserialize<Evaluation>(result)!;
+        return evaluation with { Output = BuildLog.Truncate(evaluation.Output, MaxOutput) };
     }
+
+    /// <summary>How much of what the code writes comes back, in characters.</summary>
+    internal const int MaxOutput = 100_000;
 
     /// <param name="Output">What the code wrote to the console.</param>
     /// <param name="Value">The value of the last expression, formatted as the C# interactive window does.</param>

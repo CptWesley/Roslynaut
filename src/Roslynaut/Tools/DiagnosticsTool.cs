@@ -97,6 +97,27 @@ public sealed class DiagnosticsTool(WorkspaceService workspace, ResultCache cach
         return [.. diagnostics.Where(diagnostic => !diagnostic.IsSuppressed)];
     }
 
+    /// <summary>
+    /// The compiler errors an edit adds to some projects. Compared by id and file: the messages of errors there before can name what the edit
+    /// changed, such as a symbol by its new name.
+    /// </summary>
+    internal static async Task<List<Diagnostic>> IntroducedErrorsAsync(Solution before, Solution after, IEnumerable<ProjectId> projects, CancellationToken cancellationToken)
+    {
+        var ids = projects.ToList();
+        var (old, now) = (await ErrorsAsync(before, ids, cancellationToken), await ErrorsAsync(after, ids, cancellationToken));
+        return [.. now.Where(error => now.Count(other => Key(other) == Key(error)) > old.Count(other => Key(other) == Key(error)))];
+
+        static (string, string?) Key(Diagnostic error) => (error.Id, error.Location.SourceTree?.FilePath);
+    }
+
+    private static async Task<List<Diagnostic>> ErrorsAsync(Solution solution, IEnumerable<ProjectId> projects, CancellationToken cancellationToken)
+    {
+        var errors = new List<Diagnostic>();
+        foreach (var project in projects.Select(solution.GetProject).OfType<Project>())
+            errors.AddRange((await GetAsync(project, null, analyzers: false, cancellationToken)).Where(diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+        return errors;
+    }
+
     private static ImmutableArray<DiagnosticAnalyzer> Analyzers(Project project) =>
         [.. project.AnalyzerReferences.SelectMany(reference => reference.GetAnalyzers(project.Language))];
 

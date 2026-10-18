@@ -237,6 +237,19 @@ public class CodeInsightTests : EndToEndTest
         signatures.Select(signature => (signature.Display, signature.ActiveParameter, signature.Chosen)).Should().Equal(("Edits.Box<string>.Map<TResult>(System.Func<string?, TResult>)", (int?)0, true));
     }
 
+    // A call of a delegate, such as a Func parameter, has no method group of overloads: what it calls is the delegate's Invoke method.
+    [Test]
+    public async Task SignatureHelp_OfADelegatesCall_IsItsInvokeMethod()
+    {
+        var project = Sample.NewProject("DelegateSignatures", ("Kinds.cs", SampleSolution.Kinds));
+        var file = Sample.In("edits", "DelegateSignatures", "Kinds.cs");
+        var (line, column) = Sample.Find(file, "map(Item)");
+
+        var signatures = await Server.CallAsync<List<SignatureHelpTool.Signature>>("signature_help", new() { ["projectPath"] = project, ["filePath"] = file, ["line"] = line, ["column"] = column + "map(".Length });
+
+        signatures.Should().BeEquivalentTo([new SignatureHelpTool.Signature("System.Func<T?, TResult>.Invoke(T?)", null, [new("arg", "T?", null, false)], 0, true)]);
+    }
+
     [Test]
     public async Task Completion_AfterADot_ListsTheMembers()
     {
