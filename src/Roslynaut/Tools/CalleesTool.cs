@@ -74,6 +74,8 @@ public sealed class CalleesTool(WorkspaceService workspace, ResultCache cache) :
         IMethodReferenceOperation method => method.Method,
         IBinaryOperation { OperatorMethod: { } method } => method,
         IUnaryOperation { OperatorMethod: { } method } => method,
+        ICompoundAssignmentOperation { OperatorMethod: { } method } => method,
+        IIncrementOrDecrementOperation { OperatorMethod: { } method } => method,
         IConversionOperation { OperatorMethod: { } method } => method,
         _ => null,
     };

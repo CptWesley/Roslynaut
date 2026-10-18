@@ -67,7 +67,7 @@ public sealed class FindTestsTool(WorkspaceService workspace, ResultCache cache)
                 foreach (var symbol in frontier)
                 {
                     var callers = (await SymbolFinder.FindCallersAsync(symbol, solution, cancellationToken)).Select(caller => caller.CallingSymbol)
-                        .Concat((await CallersTool.BaseConstructorCallsAsync(symbol, solution, cancellationToken)).Select(call => call.Caller));
+                        .Concat((await CallersTool.MissedCallsAsync(symbol, solution, cancellationToken)).Select(call => call.Caller));
                     foreach (var caller in callers)
                     {
                         if (!seen.Add(caller))
@@ -83,15 +83,43 @@ public sealed class FindTestsTool(WorkspaceService workspace, ResultCache cache)
             }
         }
 
-        return tests.Select(test => new TestEntry(SymbolEntry.From(test), solution.GetProject(test.ContainingAssembly, cancellationToken)?.FilePath, FilterOf(test)));
+        var fixtures = new Dictionary<INamedTypeSymbol, IReadOnlyList<INamedTypeSymbol>>(SymbolEqualityComparer.Default);
+        var entries = new List<TestEntry>();
+        foreach (var test in tests)
+        {
+            if (!fixtures.TryGetValue(test.ContainingType, out var classes))
+                fixtures[test.ContainingType] = classes = await FixturesOfAsync(test.ContainingType, solution, cancellationToken);
+            entries.Add(new(SymbolEntry.From(test), solution.GetProject(test.ContainingAssembly, cancellationToken)?.FilePath,
+                string.Join("|", classes.Select(fixture => FilterOf(test, fixture)))));
+        }
+
+        return entries;
     }
 
     /// <summary>
-    /// The filter that runs a test: by its exact name, as a filter by how its name starts would also run tests whose names start the same, such as
-    /// Adds_Negative for Adds. NUnit names each case of a test with parameters by its arguments, as in Twice(2), which no filter can spell: VSTest's
-    /// escaping of the parenthesis breaks NUnit's adapter. ponytail: those go by how their name starts, so they run such tests too.
+    /// The classes that run the tests a class declares: itself unless it is abstract, and the classes that inherit them, under whose names they run.
+    /// An abstract class that nothing inherits stands for itself, though nothing runs its tests.
     /// </summary>
-    private static string FilterOf(IMethodSymbol test) => test.Parameters.Length == 0 ? $"FullyQualifiedName={TestName(test)}" : $"FullyQualifiedName~{TestName(test)}";
+    private static async Task<IReadOnlyList<INamedTypeSymbol>> FixturesOfAsync(INamedTypeSymbol type, Solution solution, CancellationToken cancellationToken)
+    {
+        var derived = type.IsSealed ? [] : await SymbolFinder.FindDerivedClassesAsync(type, solution, transitive: true, cancellationToken: cancellationToken);
+        var fixtures = derived.Prepend(type).Where(fixture => !fixture.IsAbstract).ToList();
+        return fixtures.Count > 0 ? fixtures : [type];
+    }
+
+    /// <summary>
+    /// The filter that runs a test in one class: by its exact name, as a filter by how its name starts would also run tests whose names start the same,
+    /// such as Adds_Negative for Adds. NUnit names each case of a test with parameters by its arguments, as in Twice(2), which no filter can spell: VSTest's
+    /// escaping of the parenthesis breaks NUnit's adapter. ponytail: those go by how their name starts, so they run such tests too.
+    /// NUnit names a generic class by its type arguments, as in Tests&lt;Int32&gt;, so for one of those the filter takes any.
+    /// </summary>
+    private static string FilterOf(IMethodSymbol test, INamedTypeSymbol fixture)
+    {
+        var (name, exact) = (TestName(fixture), test.Parameters.Length == 0);
+        return fixture.Arity > 0
+            ? $"(FullyQualifiedName~{name[..name.LastIndexOf('`')]}<&Name{(exact ? '=' : '~')}{test.Name})"
+            : $"FullyQualifiedName{(exact ? '=' : '~')}{name}.{test.Name}";
+    }
 
     private static bool IsTest(IMethodSymbol method) =>
         method.GetAttributes().Any(attribute => BaseTypes(attribute.AttributeClass).Any(type => TestAttributes.Contains(type.ToDisplayString())));
@@ -102,15 +130,14 @@ public sealed class FindTestsTool(WorkspaceService workspace, ResultCache cache)
             yield return type;
     }
 
-    /// <summary>The name test runners use: "Namespace.Outer+Nested.Method".</summary>
-    private static string TestName(IMethodSymbol method)
+    /// <summary>The name test runners give a class: "Namespace.Outer+Nested".</summary>
+    private static string TestName(INamedTypeSymbol fixture)
     {
-        var type = method.ContainingType.MetadataName;
-        for (var outer = method.ContainingType.ContainingType; outer is not null; outer = outer.ContainingType)
+        var type = fixture.MetadataName;
+        for (var outer = fixture.ContainingType; outer is not null; outer = outer.ContainingType)
             type = $"{outer.MetadataName}+{type}";
 
-        var ns = method.ContainingNamespace;
-        return ns.IsGlobalNamespace ? $"{type}.{method.Name}" : $"{ns.ToDisplayString()}.{type}.{method.Name}";
+        return fixture.ContainingNamespace.IsGlobalNamespace ? type : $"{fixture.ContainingNamespace.ToDisplayString()}.{type}";
     }
 
     /// <param name="Filter">A dotnet test --filter expression for this test, for run_tests.</param>

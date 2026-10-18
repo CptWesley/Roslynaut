@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.RegularExpressions;
 using ModelContextProtocol;
 using Mono.Cecil;
 using Mono.Cecil.Cil;
@@ -16,7 +17,7 @@ public sealed record MethodIL(string Method, string IL);
 internal sealed record MemberTokens(int Type, IReadOnlyList<int> TypeMethods, IReadOnlyList<int> Methods, bool IsType);
 
 /// <summary>Finds methods in a Cecil module and disassembles them.</summary>
-internal static class IlDisassembler
+internal static partial class IlDisassembler
 {
     public const string ResultDescription = "A type stands for all its methods. Every method comes with its compiler-generated helpers "
         + "(async and iterator state machines, lambdas, local functions). Paged per method.";
@@ -92,12 +93,12 @@ internal static class IlDisassembler
         var isDocId = name.Length > 2 && name[1] == ':';
         var query = Parse(name);
         bool Matches(IMemberDefinition member, List<Part> typeName) => isDocId
-            ? DocCommentId.GetDocCommentId(member) == name
+            ? WithoutFileLocalPrefix(DocCommentId.GetDocCommentId(member)) == name
             : IsNamed(member is TypeDefinition ? typeName : [.. typeName, .. Parse(member.Name, (member as MethodDefinition)?.GenericParameters.Count)], query);
 
         foreach (var type in types)
         {
-            var typeName = Parse(type.FullName);
+            var typeName = Parse(WithoutFileLocalPrefix(type.FullName));
             if (Matches(type, typeName))
             {
                 yield return type;
@@ -213,5 +214,15 @@ internal static class IlDisassembler
     /// <param name="Arity">The number of type parameters, if known.</param>
     private readonly record struct Part(string Name, int? Arity);
 
-    private static bool IsGenerated(IMemberDefinition member) => member.Name.StartsWith('<');
+    private static bool IsGenerated(IMemberDefinition member) => member.Name.StartsWith('<') && !FileLocalPrefix().IsMatch(member.Name);
+
+    /// <summary>
+    /// A name with the names of file-local types as code writes them: the compiler names "file class Helper" in Tools.cs &lt;Tools&gt;F1A2...__Helper,
+    /// where documentation IDs and symbol paths say Helper. ponytail: so file-local types of one name in one namespace all match; tell them apart
+    /// by their metadata names if that matters.
+    /// </summary>
+    private static string WithoutFileLocalPrefix(string name) => FileLocalPrefix().Replace(name, "");
+
+    [GeneratedRegex(@"<[^<>]*>F[0-9A-Fa-f]+__")]
+    private static partial Regex FileLocalPrefix();
 }

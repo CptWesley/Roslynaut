@@ -200,6 +200,51 @@ public class NavigationTests : EndToEndTest
         ]);
     }
 
+    // Code uses an implicit conversion, and the compound assignment operators of C# 14, without naming them; finding references misses those uses.
+    [Test]
+    public async Task ReferencesCallersAndCallees_OfOperatorsThatCodeDoesNotName()
+    {
+        var project = Sample.NewProject("UnnamedOperators", ("Meter.cs", """
+            namespace Edits;
+
+            public class Meter
+            {
+                public int Value;
+
+                public static implicit operator int(Meter meter) => meter.Value;
+
+                public void operator +=(int amount) => Value += amount;
+
+                public void operator ++() => Value++;
+            }
+
+            public static class Use
+            {
+                public static int Run()
+                {
+                    var meter = new Meter();
+                    meter += 2;
+                    meter++;
+                    int value = meter;
+                    return value + (int)meter;
+                }
+            }
+            """));
+        var file = Sample.In("edits", "UnnamedOperators", "Meter.cs");
+
+        var conversion = await Server.CallAsync<PagedResult<ReferencesTool.ReferenceEntry>>("references", new() { ["projectPath"] = project, ["symbol"] = "Meter.op_Implicit" });
+        var callers = await Server.CallAsync<PagedResult<CallersTool.Caller>>("callers", new() { ["projectPath"] = project, ["symbol"] = "Meter.op_AdditionAssignment" });
+        var callees = await Server.CallAsync<PagedResult<CallersTool.Caller>>("callees", new() { ["projectPath"] = project, ["symbol"] = "Use.Run" });
+
+        conversion.Items.Should().BeEquivalentTo(
+        [
+            new ReferencesTool.ReferenceEntry(Sample.Location(file, "meter;"), "Edits.Use.Run()", "Call"),
+            new ReferencesTool.ReferenceEntry(Sample.Location(file, "(int)meter"), "Edits.Use.Run()", "Call"),
+        ]);
+        callers.Items.Should().ContainSingle().Which.Calls.Should().Equal(Sample.Location(file, "+= 2"));
+        callees.Items.Select(callee => callee.Symbol.Name).Should().BeEquivalentTo(".ctor", "op_AdditionAssignment", "op_IncrementAssignment", "op_Implicit");
+    }
+
     [Test]
     public async Task SymbolSource_OfATypeAndOfAnOverload()
     {

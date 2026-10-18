@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Roslynaut.Tools;
 
 namespace Roslynaut.Tests.EndToEnd;
@@ -116,6 +117,30 @@ public class AssemblyTests : EndToEndTest
         il.Items.Select(method => method.Method).Should().Equal("System.Int32 Edits.Local::Twice(System.Int32)", "System.Int32 Edits.Local::<Twice>g__Double|0_0(System.Int32)");
         il.Items.Last().IL.Should().Contain("mul");
         asm.Items.Select(method => method.Method).Should().Equal(il.Items.Select(method => method.Method));
+    }
+
+    // The compiler names a file-local type after its file, as in <Ones>F1A2...__Helper, where code and symbol paths say Helper. Two files declare
+    // a Helper each, so the path finds both, as the name does in the build output.
+    [Test]
+    public async Task IlAsmAndDecompile_OfFileLocalTypes()
+    {
+        static string Declaring(string type, int value) =>
+            $"namespace Edits;\n\nfile static class Helper\n{{\n    public static int Run() => {value};\n}}\n\npublic static class {type}\n{{\n    public static int Get() => Helper.Run();\n}}\n";
+        var project = Sample.NewProject("FileLocalIl", ("Ones.cs", Declaring("Ones", 1)), ("Twos.cs", Declaring("Twos", 2)));
+
+        var il = await Server.CallAsync<PagedResult<MethodIL>>("symbol_il", new() { ["projectPath"] = project, ["symbol"] = "Edits.Helper.Run" });
+        var asm = await Server.CallAsync<PagedResult<MethodAsm>>("symbol_asm", new() { ["projectPath"] = project, ["symbol"] = "Helper" });
+        (await Server.CallAsync<BuildTool.BuildResult>("build", new() { ["projectPath"] = project })).Succeeded.Should().BeTrue();
+        var decompiled = await Server.CallAsync<PagedResult<DecompiledMember>>("decompile", new()
+        {
+            ["assemblyPath"] = Sample.In("edits", "FileLocalIl", "bin", "Debug", "net10.0", "FileLocalIl.dll"), ["name"] = "Helper",
+        });
+
+        il.Items.Select(method => Regex.Replace(method.Method, "F[0-9A-F]+__", "F__")).Should().BeEquivalentTo(
+            "System.Int32 Edits.<Ones>F__Helper::Run()", "System.Int32 Edits.<Twos>F__Helper::Run()");
+        il.Items.Single(method => method.Method.Contains("<Twos>")).IL.Should().Contain("ldc.i4.2");
+        asm.Items.Select(method => method.Method).Should().BeEquivalentTo(il.Items.Select(method => method.Method));
+        decompiled.Items.Select(member => Regex.Replace(member.Member, "F[0-9A-F]+__", "F__")).Should().BeEquivalentTo("Edits.<Ones>F__Helper", "Edits.<Twos>F__Helper");
     }
 
     // The build output is a debug build, which the JIT does not optimize; symbol_asm compiles a release build, which inlines the getters.

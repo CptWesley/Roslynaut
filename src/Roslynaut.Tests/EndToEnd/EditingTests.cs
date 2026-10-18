@@ -141,6 +141,27 @@ public class EditingTests : EndToEndTest
         File.ReadAllText(uses).Should().Be(Uses.Replace(".Count;", ".Total;").ReplaceLineEndings("\r\n"));
     }
 
+    // An older file in Windows-1252, which is not UTF-8, so the compiler reads it in that code page; the server reads it so too. An edit keeps the
+    // file in it, unless the code it adds has characters the code page has none of, which take UTF-8.
+    [Test]
+    public async Task Edits_OfAFileInWindows1252_KeepItsTextAndCodePage()
+    {
+        var project = Sample.NewProject("CodePage");
+        var file = FileOf(project, "Cafe.cs");
+        var windows1252 = System.Text.CodePagesEncodingProvider.Instance.GetEncoding(1252)!;
+        const string cafe = "namespace Edits;\n\n// Café crème, “to go”\npublic class Cafe\n{\n    public string Name => \"Crème brûlée\";\n}\n";
+        File.WriteAllBytes(file, windows1252.GetBytes(cafe));
+
+        var source = await Server.CallAsync<List<SymbolSourceTool.SymbolSource>>("symbol_source", new() { ["projectPath"] = project, ["symbol"] = "Cafe.Name" });
+        await Server.CallAsync<RenameSymbolTool.RenameResult>("rename_symbol", new() { ["projectPath"] = project, ["symbol"] = "Cafe.Name", ["newName"] = "Dish" });
+        var renamed = File.ReadAllBytes(file);
+        await Server.CallAsync<EditResult>("insert_after_symbol", new() { ["projectPath"] = project, ["symbol"] = "Cafe.Dish", ["code"] = "\n    public string Smile => \"☺\";" });
+
+        source.Single().Source.Should().Be("    public string Name => \"Crème brûlée\";");
+        renamed.Should().Equal(windows1252.GetBytes(cafe.Replace("Name", "Dish")));
+        File.ReadAllText(file).Should().Be(cafe.Replace("Name", "Dish").Replace("brûlée\";\n", "brûlée\";\n\n    public string Smile => \"☺\";\n"));
+    }
+
     // Spaces and letters outside ASCII in the paths, through MSBuild, the compiler's messages and an edit.
     [Test]
     public async Task PathsWithSpacesAndAccents_BuildAndEdit()

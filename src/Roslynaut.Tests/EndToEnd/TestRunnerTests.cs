@@ -106,6 +106,63 @@ public class TestRunnerTests : EndToEndTest
         none.Output.Should().Contain("A total of 1 test files matched the specified pattern.");
     }
 
+    // A test runs under the name of each class that inherits it, and of its own class unless that is abstract. NUnit names a generic class by its
+    // type arguments, as in GenericTests<Int32>. Each filter runs its test in two classes: six tests of the eight.
+    [Test]
+    public async Task FindTests_OfInheritedAndGenericTests_RunThemInEachClass()
+    {
+        var project = Sample.Write("edits/Inherited/Inherited.csproj", File.ReadAllText(Sample.TestsProject).Replace(@"<ProjectReference Include=""..\..\src\Shapes\Shapes.csproj"" />", ""));
+        Sample.Write("edits/Inherited/InheritedTests.cs", """
+            using NUnit.Framework;
+
+            namespace Edits;
+
+            public abstract class ContractTests
+            {
+                [Test]
+                public void Holds() => Assert.Pass();
+            }
+
+            public class ListContract : ContractTests
+            {
+            }
+
+            public class ArrayContract : ContractTests
+            {
+            }
+
+            public class BaseTests
+            {
+                [Test]
+                public void Runs() => Assert.Pass();
+            }
+
+            public sealed class MoreTests : BaseTests
+            {
+            }
+
+            [TestFixture(typeof(int))]
+            [TestFixture(typeof(string))]
+            public class GenericTests<T>
+            {
+                [Test]
+                public void Generic() => Assert.Pass();
+
+                [Test]
+                public void Generic_Other() => Assert.Pass();
+            }
+            """);
+        await Sample.DotnetAsync("restore", project);
+
+        var filters = (await Server.CallAsync<PagedResult<FindTestsTool.TestEntry>>("find_tests", new() { ["projectPath"] = project })).Items.ToDictionary(test => test.Test.Name, test => test.Filter);
+        var run = await Server.CallAsync<RunTestsTool.TestRun>("run_tests", new() { ["projectPath"] = project, ["filter"] = $"{filters["Holds"]}|{filters["Runs"]}|{filters["Generic"]}" });
+
+        filters["Holds"].Split('|').Should().BeEquivalentTo("FullyQualifiedName=Edits.ListContract.Holds", "FullyQualifiedName=Edits.ArrayContract.Holds");
+        filters["Runs"].Split('|').Should().BeEquivalentTo("FullyQualifiedName=Edits.BaseTests.Runs", "FullyQualifiedName=Edits.MoreTests.Runs");
+        filters["Generic"].Should().Be("(FullyQualifiedName~Edits.GenericTests<&Name=Generic)");
+        (run.Succeeded, run.Total, run.Passed).Should().Be((true, 6, 6));
+    }
+
     [Test]
     public async Task RunTests_OfTheSolution_RunItsTestProject()
     {
@@ -202,7 +259,7 @@ public class TestRunnerTests : EndToEndTest
     }
 
     // A repository of its own, with NUnit's attribute declared in it: a commit changes Add, then Sub is changed without a commit, and a file with
-    // a name that is not ASCII is added without one, which git names in UTF-8.
+    // a name that is not ASCII is added without one, which git names in UTF-8. Its configuration changes the prefixes of diff's paths.
     [Test]
     public async Task AffectedTests_SinceAnEarlierCommit()
     {
@@ -223,6 +280,8 @@ public class TestRunnerTests : EndToEndTest
         }
 
         await GitAsync("init", "-q");
+        // As some people configure git: diff then writes "+++ w/Calc.cs" rather than "+++ b/Calc.cs".
+        await GitAsync("config", "diff.mnemonicPrefix", "true");
         await GitAsync("add", ".");
         await GitAsync("commit", "-q", "-m", "First");
         File.WriteAllText(file, calc.Replace("a + b", "b + a"));

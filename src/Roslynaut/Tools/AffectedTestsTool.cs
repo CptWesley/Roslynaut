@@ -88,7 +88,8 @@ public sealed partial class AffectedTestsTool(WorkspaceService workspace) : IMcp
     internal static async Task<Dictionary<string, IReadOnlyCollection<int>?>> ChangedLinesAsync(string directory, string baseRef, CancellationToken cancellationToken)
     {
         var root = (await GitAsync(directory, ["rev-parse", "--show-toplevel"], cancellationToken)).Trim();
-        var changes = ParseDiff(root, await GitAsync(root, ["diff", "--no-color", "--no-ext-diff", "-U0", baseRef, "--", "*.cs"], cancellationToken));
+        // The prefixes ParseDiff reads, whatever diff.noprefix or diff.mnemonicPrefix in the user's configuration say.
+        var changes = ParseDiff(root, await GitAsync(root, ["diff", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "-U0", baseRef, "--", "*.cs"], cancellationToken));
         foreach (var file in (await GitAsync(root, ["ls-files", "--others", "--exclude-standard", "--", "*.cs"], cancellationToken)).Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
             changes[Path.GetFullPath(Path.Combine(root, file))] = null;
 

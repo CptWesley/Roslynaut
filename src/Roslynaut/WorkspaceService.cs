@@ -182,7 +182,10 @@ public sealed class WorkspaceService
             var written = new List<string>();
             foreach (var (path, text, original) in writes)
             {
-                var encoding = EncodingOf(original?.FilePath ?? path);
+                // A file in Windows-1252 stays so, unless the edit brings in characters it has none of.
+                var encoding = original is not null && (await original.GetTextAsync(cancellationToken)).Encoding?.CodePage == 1252 && Windows1252.GetString(Windows1252.GetBytes(text)) == text
+                    ? Windows1252
+                    : EncodingOf(original?.FilePath ?? path);
                 Directory.CreateDirectory(Path.GetDirectoryName(path)!);
                 // A new name that only differs in case would otherwise keep the old one, where file names ignore case.
                 if (original?.FilePath is { } renamed && renamed.Equals(path, StringComparison.OrdinalIgnoreCase) && !renamed.Equals(path, StringComparison.Ordinal))
@@ -524,12 +527,26 @@ public sealed class WorkspaceService
             path.StartsWith(directory + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
     }
 
+    private static readonly Encoding StrictUtf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+
+    /// <summary>The code page the compiler reads a file in that has no byte order mark and is not UTF-8, as older files often are.</summary>
+    private static readonly Encoding Windows1252 = CodePagesEncodingProvider.Instance.GetEncoding(1252)!;
+
     // From a stream, so the text gets an encoding: compilations cannot emit debug information without one. Sharing writes, so that reading a
     // file does not keep an edit or an editor from writing it; a write while reading changes the file again, which the watchers report.
+    // ponytail: a project's CodePage property, which changes what the compiler falls back on, is not read.
     private static SourceText Read(string file)
     {
         using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-        return SourceText.From(stream);
+        try
+        {
+            return SourceText.From(stream, StrictUtf8);
+        }
+        catch (DecoderFallbackException)
+        {
+            stream.Position = 0;
+            return SourceText.From(stream, Windows1252);
+        }
     }
 
     /// <summary>The folders of a file below its project's directory, such as ["Models", "Orders"]; none for build output in bin and obj.</summary>

@@ -40,6 +40,9 @@ public sealed class ReferencesTool(WorkspaceService workspace, ResultCache cache
                 foreach (var location in reference.Locations)
                     entries.Add(await EntryOfAsync(location, reference.Definition, cancellationToken));
             }
+
+            foreach (var (caller, use) in await CallersTool.UnnamedUsesAsync(symbol, solution, cancellationToken))
+                entries.Add(new(SourceLocation.From(use), SymbolEntry.PathOf(caller), "Call"));
         }
 
         return entries.Distinct();
