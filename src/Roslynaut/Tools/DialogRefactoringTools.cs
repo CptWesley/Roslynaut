@@ -50,9 +50,15 @@ internal static class DialogRefactorings
             throw new McpException($"{duplicate.Key} is in the list twice.");
 
         var list = new List<object>();
+        string? optional = null;
         foreach (var (spec, index) in parameters.Select((spec, index) => (spec, index)))
         {
-            if (byName.TryGetValue(spec.Name, out var kept))
+            var isOptional = byName.TryGetValue(spec.Name, out var kept) ? kept.IsOptional : spec.DefaultValue is not null;
+            if (optional is not null && !isOptional && kept?.IsParams != true)
+                throw new McpException($"{spec.Name} is required, so it has to come before the optional parameter {optional}.");
+            optional ??= isOptional ? spec.Name : null;
+
+            if (kept is not null)
             {
                 if (spec.Type is not null || spec.Value is not null || spec.DefaultValue is not null)
                     throw new McpException($"{spec.Name} is an existing parameter, so give only its name.");
@@ -223,15 +229,20 @@ internal static class DialogRefactorings
             if (moved.GetDocument(id) is not { } document)
                 continue;
 
+            // A name qualified with the old namespace, as in new Orders.Order(), gets the new one instead.
             var model = (await document.GetSemanticModelAsync(cancellationToken))!;
             var root = await document.GetSyntaxRootAsync(cancellationToken);
             var unbound = root!.DescendantNodes().OfType<SimpleNameSyntax>()
-                .Where(name => names.Contains(name.Identifier.ValueText) && !IsQualified(name) && model.GetSymbolInfo(name, cancellationToken) is { Symbol: null, CandidateSymbols.IsEmpty: true })
+                .Where(name => names.Contains(name.Identifier.ValueText))
+                .Select(name => name.Parent is QualifiedNameSyntax qualified && qualified.Right == name ? qualified : IsQualified(name) ? null : (NameSyntax)name)
+                .OfType<NameSyntax>()
+                .Where(name => model.GetSymbolInfo(name, cancellationToken) is { Symbol: null, CandidateSymbols.IsEmpty: true })
                 .ToList();
             if (unbound.Count == 0)
                 continue;
 
-            var qualified = document.WithSyntaxRoot(root.ReplaceNodes(unbound, (name, _) => SyntaxFactory.QualifiedName(SyntaxFactory.ParseName(targetNamespace), name.WithoutTrivia())
+            var qualified = document.WithSyntaxRoot(root.ReplaceNodes(unbound, (name, _) => SyntaxFactory.QualifiedName(SyntaxFactory.ParseName(targetNamespace),
+                    (name is QualifiedNameSyntax { Right: var right } ? right : (SimpleNameSyntax)name).WithoutTrivia())
                 .WithTriviaFrom(name).WithAdditionalAnnotations(Simplifier.Annotation, Simplifier.AddImportsAnnotation)));
             var imported = await ImportAdder.AddImportsAsync(qualified, Simplifier.AddImportsAnnotation, cancellationToken: cancellationToken);
             var simplified = await Formatter.FormatAsync(await Simplifier.ReduceAsync(imported, Simplifier.Annotation, cancellationToken: cancellationToken), Formatter.Annotation, cancellationToken: cancellationToken);

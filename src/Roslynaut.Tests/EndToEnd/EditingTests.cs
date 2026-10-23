@@ -274,6 +274,71 @@ public class EditingTests : EndToEndTest
             """.ReplaceLineEndings("\n"));
     }
 
+    // The implementation and its documentation change along with the interface member, and so do the calls of the other project; a call that
+    // names its arguments keeps them as they are.
+    [Test]
+    public async Task ChangeSignature_OfAnInterfaceMember_ChangesItsImplementationAndCallsInOtherProjects()
+    {
+        var solution = LibraryAndApp("ChangeSignatureInterface", """
+            namespace Lib;
+
+            public interface IGreeter
+            {
+                /// <param name="name">Who.</param>
+                /// <param name="times">How often.</param>
+                string Greet(string name, int times);
+            }
+
+            public class Greeter : IGreeter
+            {
+                public string Greet(string name, int times) => name + times;
+            }
+            """, """
+            using Lib;
+
+            namespace App;
+
+            public static class Use
+            {
+                public static string Run(IGreeter greeter, Greeter concrete) => greeter.Greet("a", 2) + concrete.Greet(times: 3, name: "b");
+            }
+            """);
+        var (library, use) = (Sample.In("edits", "ChangeSignatureInterface", "Lib", "Lib.cs"), Sample.In("edits", "ChangeSignatureInterface", "App", "Use.cs"));
+
+        var result = await Server.CallAsync<ChangedFiles>("change_signature", new()
+        {
+            ["projectPath"] = solution, ["symbol"] = "Lib.IGreeter.Greet", ["parameters"] = new object[] { new { name = "times" }, new { name = "name" } },
+        });
+
+        result.Files.Should().BeEquivalentTo(library, use);
+        Read(library).Should().Contain("    /// <param name=\"times\">How often.</param>\n    /// <param name=\"name\">Who.</param>\n    string Greet(int times, string name);")
+            .And.Contain("public string Greet(int times, string name) => name + times;");
+        Read(use).Should().Contain("greeter.Greet(2, \"a\") + concrete.Greet(times: 3, name: \"b\");");
+    }
+
+    // An IDE's dialog keeps the optional parameters last, as C# has them.
+    [Test]
+    public async Task ChangeSignature_ThatPutsARequiredParameterAfterAnOptionalOne_ChangesNothing()
+    {
+        const string code = "namespace Edits;\n\npublic static class Calc\n{\n    public static int Add(int a, int b = 2, params int[] more) => a + b + more.Length;\n}\n";
+        var project = Sample.NewProject("ChangeSignatureOptional", ("Calc.cs", code));
+        Task<string> FailAsync(params object[] parameters) =>
+            Server.CallFailingAsync("change_signature", new() { ["projectPath"] = project, ["symbol"] = "Edits.Calc.Add", ["parameters"] = parameters });
+
+        (await FailAsync(new { name = "b" }, new { name = "a" }, new { name = "more" })).Should()
+            .Be("An error occurred invoking 'change_signature': a is required, so it has to come before the optional parameter b.");
+        (await FailAsync(new { name = "a" }, new { name = "b" }, new { name = "c", type = "int", value = "3" }, new { name = "more" })).Should()
+            .Be("An error occurred invoking 'change_signature': c is required, so it has to come before the optional parameter b.");
+        Read(FileOf(project, "Calc.cs")).Should().Be(code);
+
+        // A new optional one can follow, and the params one stays last.
+        await Server.CallAsync<ChangedFiles>("change_signature", new()
+        {
+            ["projectPath"] = project, ["symbol"] = "Edits.Calc.Add", ["parameters"] = new object[] { new { name = "a" }, new { name = "b" }, new { name = "c", type = "int", defaultValue = "3" }, new { name = "more" } },
+        });
+        Read(FileOf(project, "Calc.cs")).Should().Contain("public static int Add(int a, int b = 2, int c = 3, params int[] more)");
+    }
+
     // An action whose title ends in '...' asks an IDE for members; apply_code_action takes them as an argument.
     [Test]
     public async Task ApplyCodeAction_GenerateOverrides_ForTheMembersPicked()
@@ -1189,6 +1254,30 @@ public class EditingTests : EndToEndTest
         order.Files.Should().BeEquivalentTo(FileOf(project, "Order.cs"), FileOf(project, "Shop.cs"));
         tag.Files.Should().BeEquivalentTo(FileOf(project, "TagAttribute.cs"), FileOf(project, "Shop.cs"));
         Read(FileOf(project, "Shop.cs")).Should().Be("using Edits.Orders;\nusing Edits.Tags;\n\nnamespace Edits;\n\n[Tag]\npublic static class Shop\n{\n    public static object Create() => new Order();\n}\n");
+    }
+
+    // A constructor call that qualifies the type with its old namespace no longer binds either, here in another project.
+    [Test]
+    public async Task MoveToNamespace_UpdatesQualifiedConstructorCalls_InTheProjectsThatUseIt()
+    {
+        var solution = LibraryAndApp("MoveToNamespaceQualified", "namespace Lib;\n\npublic class Widget\n{\n}\n",
+            "using Lib;\n\nnamespace App;\n\npublic static class Use\n{\n    public static Widget Make() => new Lib.Widget();\n\n    public static object MakeGlobal() => new global::Lib.Widget();\n}\n");
+        var use = Sample.In("edits", "MoveToNamespaceQualified", "App", "Use.cs");
+
+        var moved = await Server.CallAsync<ChangedFiles>("move_to_namespace", new() { ["projectPath"] = solution, ["symbol"] = "Lib.Widget", ["targetNamespace"] = "Lib.Parts" });
+
+        moved.Files.Should().BeEquivalentTo(Sample.In("edits", "MoveToNamespaceQualified", "Lib", "Lib.cs"), use);
+        Read(use).Should().Be("using Lib.Parts;\n\nnamespace App;\n\npublic static class Use\n{\n    public static Widget Make() => new Widget();\n\n    public static object MakeGlobal() => new Widget();\n}\n");
+    }
+
+    /// <summary>A solution in edits/{name}, of the library Lib with Lib.cs, and App with Use.cs, which references it; returns its path.</summary>
+    private static string LibraryAndApp(string name, string library, string app)
+    {
+        Sample.Write($"edits/{name}/Lib/Lib.csproj", File.ReadAllText(Sample.ProblemsProject));
+        Sample.Write($"edits/{name}/App/App.csproj", File.ReadAllText(Sample.ProblemsProject).Replace("</Project>", "  <ItemGroup>\n    <ProjectReference Include=\"../Lib/Lib.csproj\" />\n  </ItemGroup>\n</Project>"));
+        Sample.Write($"edits/{name}/Lib/Lib.cs", library);
+        Sample.Write($"edits/{name}/App/Use.cs", app);
+        return Sample.Write($"edits/{name}/{name}.slnx", "<Solution>\n  <Project Path=\"Lib/Lib.csproj\" />\n  <Project Path=\"App/App.csproj\" />\n</Solution>\n");
     }
 
     // Out of Edits, the moved type no longer sees its types without a using: it keeps one where it needs them, if only in a documentation comment.

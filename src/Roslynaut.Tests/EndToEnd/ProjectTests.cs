@@ -138,6 +138,36 @@ public class ProjectTests : EndToEndTest
         ]);
     }
 
+    // A project for several frameworks loads for its first, here netstandard2.0, while a project that references it compiles against its output for
+    // net10.0, which is elsewhere: that is still the project, before a build writes the output, and after.
+    [Test]
+    public async Task AProjectThatReferencesOneForSeveralFrameworks_ReferencesItsCode()
+    {
+        Sample.Write("edits/Frameworks/Lib/Lib.csproj", File.ReadAllText(Sample.TargetsProject).Replace("net10.0;netstandard2.0", "netstandard2.0;net10.0"));
+        var app = Sample.Write("edits/Frameworks/App/App.csproj",
+            File.ReadAllText(Sample.ProblemsProject).Replace("</Project>", "  <ItemGroup>\n    <ProjectReference Include=\"../Lib/Lib.csproj\" />\n  </ItemGroup>\n</Project>"));
+        Sample.Write("edits/Frameworks/Lib/Widget.cs", "namespace Lib\n{\n    public static class Widget\n    {\n        public static int Make() => 1;\n    }\n}\n");
+        var use = Sample.Write("edits/Frameworks/App/Use.cs", "namespace App;\n\npublic static class Use\n{\n    public static int Run() => Lib.Widget.Make();\n}\n");
+        var solution = Sample.Write("edits/Frameworks/Frameworks.slnx", "<Solution>\n  <Project Path=\"Lib/Lib.csproj\" />\n  <Project Path=\"App/App.csproj\" />\n</Solution>\n");
+
+        async Task ReferencesLibAsync(string projectPath)
+        {
+            (await Server.CallAsync<PagedResult<DiagnosticsTool.DiagnosticEntry>>("diagnostics", new() { ["projectPath"] = projectPath, ["analyzers"] = false })).Items.Should().BeEmpty();
+            (await Server.CallAsync<PagedResult<ReferencesTool.ReferenceEntry>>("references", new() { ["projectPath"] = projectPath, ["symbol"] = "Lib.Widget.Make" })).Items
+                .Should().ContainSingle().Which.Location.Should().Be(Sample.Location(use, "Make"));
+        }
+
+        await ReferencesLibAsync(solution);
+        (await Server.CallAsync<List<ProjectGraphTool.ProjectNode>>("project_graph", new() { ["projectPath"] = solution })).Should().BeEquivalentTo(
+        [
+            new ProjectGraphTool.ProjectNode("Lib", Sample.In("edits", "Frameworks", "Lib", "Lib.csproj"), "netstandard2.0", "Library", [], ["App"]),
+            new ProjectGraphTool.ProjectNode("App", app, "net10.0", "Library", ["Lib"], []),
+        ]);
+
+        (await Server.CallAsync<BuildTool.BuildResult>("build", new() { ["projectPath"] = solution })).Succeeded.Should().BeTrue();
+        await ReferencesLibAsync(app);
+    }
+
     // In the classic format, with a solution folder, in a directory of its own, away from the projects; it lists the app first.
     [Test]
     public async Task ProjectGraph_OfAClassicSolution()

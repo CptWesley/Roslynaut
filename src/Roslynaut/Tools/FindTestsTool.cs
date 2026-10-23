@@ -110,12 +110,12 @@ public sealed class FindTestsTool(WorkspaceService workspace, ResultCache cache)
     /// <summary>
     /// The filter that runs a test in one class: by its exact name, as a filter by how its name starts would also run tests whose names start the same,
     /// such as Adds_Negative for Adds. NUnit names each case of a test with parameters by its arguments, as in Twice(2), which no filter can spell: VSTest's
-    /// escaping of the parenthesis breaks NUnit's adapter. ponytail: those go by how their name starts, so they run such tests too.
-    /// NUnit names a generic class by its type arguments, as in Tests&lt;Int32&gt;, so for one of those the filter takes any.
+    /// escaping of the parenthesis breaks NUnit's adapter. ponytail: those go by how their name starts, so they run such tests too. xUnit and MSTest
+    /// give each case the name of the method. NUnit names a generic class by its type arguments, as in Tests&lt;Int32&gt;, so for one of those the filter takes any.
     /// </summary>
     private static string FilterOf(IMethodSymbol test, INamedTypeSymbol fixture)
     {
-        var (name, exact) = (TestName(fixture), test.Parameters.Length == 0);
+        var (name, exact) = (TestName(fixture), test.Parameters.Length == 0 || !test.GetAttributes().Any(attribute => attribute.AttributeClass?.ContainingNamespace.ToDisplayString() == "NUnit.Framework"));
         return fixture.Arity > 0
             ? $"(FullyQualifiedName~{name[..name.LastIndexOf('`')]}<&Name{(exact ? '=' : '~')}{test.Name})"
             : $"FullyQualifiedName{(exact ? '=' : '~')}{name}.{test.Name}";

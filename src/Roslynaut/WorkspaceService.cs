@@ -330,6 +330,7 @@ public sealed class WorkspaceService
         private readonly Lock _lock = new();
         private readonly ConcurrentQueue<(string Path, bool Created)> _changes = new();
         private FileSystemWatcher[]? _watchers;
+        private HashSet<string> _analyzers = [];
         private LoadedWorkspace? _loaded;
         private LoadSettings _settings = new();
         private int _overflowed;
@@ -355,7 +356,8 @@ public sealed class WorkspaceService
                 var changes = TakeChanges(_loaded.Solution);
 
                 // ponytail: any project or build file change reloads everything; reload only the affected projects if that gets slow.
-                if (changes.Keys.Any(IsBuildFile))
+                // A rebuilt analyzer or generator, such as one of the solution's projects, runs after a reload, with a new loader.
+                if (changes.Keys.Any(file => IsBuildFile(file) || _analyzers.Contains(file)) || changes.Any(change => change.Value && OnlyMsBuildPlaces(_loaded, change.Key, changes)))
                     return Reload();
 
                 if (changes.Count == 0)
@@ -394,6 +396,9 @@ public sealed class WorkspaceService
             foreach (var watcher in previous)
                 watcher.Dispose();
 
+            // Also those that do not exist yet, as before the first build of a generator project. ponytail: only those in the watched directories.
+            _analyzers = new(loaded.Results.SelectMany(result => result.AnalyzerReferences.Select(file => Path.GetFullPath(file, Path.GetDirectoryName(result.ProjectFilePath)!))),
+                StringComparer.OrdinalIgnoreCase);
             return _loaded = loaded;
         }
 
@@ -423,8 +428,8 @@ public sealed class WorkspaceService
 
         private void Enqueue(string root, string file, bool created)
         {
-            var ignored = Path.GetRelativePath(root, file).Split(Path.DirectorySeparatorChar).Any(segment => IsSkipped(segment))
-                || (!IsTracked(file) && File.Exists(file));
+            var ignored = !_analyzers.Contains(file) && (Path.GetRelativePath(root, file).Split(Path.DirectorySeparatorChar).Any(segment => IsSkipped(segment))
+                || (!IsTracked(file) && File.Exists(file)));
             if (!ignored)
                 _changes.Enqueue((file, created));
         }
@@ -444,7 +449,7 @@ public sealed class WorkspaceService
                         foreach (var file in Enumerate(change.Path))
                             Mark(file, created: true);
                 }
-                else if (IsTracked(change.Path))
+                else if (IsTracked(change.Path) || _analyzers.Contains(change.Path))
                 {
                     Mark(change.Path, change.Created);
                 }
@@ -469,7 +474,7 @@ public sealed class WorkspaceService
                     solution = solution.RemoveDocuments(ids);
                 else if (!ids.IsEmpty)
                     solution = solution.WithDocumentText(ids, Read(file));
-                // ponytail: a new file joins the deepest enclosing project, as with default globbing; explicit Compile items need a project file change.
+                // A new file joins the deepest enclosing project, as with default globbing, where OnlyMsBuildPlaces has not reloaded instead.
                 else if (created && FindOwner(solution, file) is { } project)
                     solution = project.AddDocument(Path.GetFileName(file), Read(file), FoldersOf(project.FilePath!, file), file).Project.Solution;
             }
@@ -529,13 +534,39 @@ public sealed class WorkspaceService
         private static bool IsBuildFile(string file) =>
             Path.GetExtension(file).ToLowerInvariant() is ".csproj" or ".props" or ".targets" or ".sln" or ".slnx" or ".editorconfig" or ".globalconfig";
 
+        /// <summary>
+        /// Whether only MSBuild can tell which project a created C# file joins, if any: when its project lists its files itself, or leaves out files
+        /// beside the new one or in the nearest directory above it that has any, as a Compile Remove does. Else it joins as default globbing has it.
+        /// ponytail: a Compile Remove of a directory without files yet goes unseen, so a file created there joins.
+        /// </summary>
+        private static bool OnlyMsBuildPlaces(LoadedWorkspace loaded, string file, Dictionary<string, bool> changes)
+        {
+            if (!file.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) || !File.Exists(file) || !loaded.Solution.GetDocumentIdsWithFilePath(file).IsEmpty
+                || FindOwner(loaded.Solution, file) is not { FilePath: { } projectFile } project)
+                return false;
+
+            var result = loaded.Results.FirstOrDefault(result => result.ProjectFilePath.Equals(projectFile, StringComparison.OrdinalIgnoreCase));
+            if (new[] { "EnableDefaultItems", "EnableDefaultCompileItems" }.Any(property => !string.Equals(result?.GetProperty(property), "true", StringComparison.OrdinalIgnoreCase)))
+                return true;
+
+            var compiled = project.Documents.Select(document => document.FilePath).OfType<string>().ToHashSet(StringComparer.OrdinalIgnoreCase);
+            for (var directory = Path.GetDirectoryName(file)!; ; directory = Path.GetDirectoryName(directory)!)
+            {
+                var others = Directory.EnumerateFiles(directory, "*.cs").Where(other => !changes.GetValueOrDefault(other)).ToList();
+                if (others.Any(other => !compiled.Contains(other)))
+                    return true;
+                if (others.Count > 0 || !IsUnder(directory, Path.GetDirectoryName(projectFile)!))
+                    return false;
+            }
+        }
+
         private static Project? FindOwner(Solution solution, string file) => solution.Projects
             .Where(project => project.Language == LanguageNames.CSharp && project.FilePath is not null && IsUnder(file, Path.GetDirectoryName(project.FilePath)!))
             .MaxBy(project => Path.GetDirectoryName(project.FilePath)!.Length);
-
-        private static bool IsUnder(string path, string directory) =>
-            path.StartsWith(directory + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
     }
+
+    private static bool IsUnder(string path, string directory) =>
+        path.StartsWith(directory + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
 
     private static readonly Encoding StrictUtf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
@@ -620,6 +651,18 @@ public sealed class WorkspaceService
                 outputs.TryAdd(output, id);
         }
 
+        // A project for several frameworks loads for one, and a project that references it gets the output for the nearest to its own framework,
+        // which is elsewhere: an assembly of the project's file name in its output directories is the project too.
+        // ponytail: the referencing project then sees the code as loaded for the other framework; load it for the nearest framework if that matters.
+        var outputDirectories = projects.Select(project => (project.Id, Name: project.Result.GetProperty("TargetFileName"), Directories: new[] { "BaseOutputPath", "BaseIntermediateOutputPath" }
+                .Select(project.Result.GetProperty).Where(directory => !string.IsNullOrEmpty(directory))
+                .Select(directory => Path.TrimEndingDirectorySeparator(Path.GetFullPath(directory!, Path.GetDirectoryName(project.Result.ProjectFilePath)!))).ToList()))
+            .Where(project => !string.IsNullOrEmpty(project.Name))
+            .ToList();
+        ProjectId? ProjectWithOutput(string file) => outputs.TryGetValue(file, out var id) ? id
+            : outputDirectories.FirstOrDefault(project => project.Name!.Equals(Path.GetFileName(file), StringComparison.OrdinalIgnoreCase)
+                && project.Directories.Any(directory => IsUnder(file, directory))).Id;
+
         var workspace = new SettableWorkspace();
         // A new loader per load picks up rebuilt generators after a reload.
         // ponytail: assemblies of earlier loads stay loaded; a collectible load context per load if that memory matters.
@@ -637,7 +680,7 @@ public sealed class WorkspaceService
 
         var warnings = projects.ToDictionary(project => project.Result.ProjectFilePath, _ => new ConcurrentQueue<Diagnostic>(), StringComparer.OrdinalIgnoreCase);
         workspace.Set(projects.Aggregate(workspace.CurrentSolution, (solution, project) =>
-            solution.AddProject(ProjectOf(project.Result, project.Id, outputs, loader, Reference, warnings[project.Result.ProjectFilePath]))));
+            solution.AddProject(ProjectOf(project.Result, project.Id, ProjectWithOutput, loader, Reference, warnings[project.Result.ProjectFilePath]))));
         return new(workspace.CurrentSolution, results, errors, warnings);
     }
 
@@ -699,11 +742,11 @@ public sealed class WorkspaceService
     /// configuration, folders or default namespace, reads files as UTF-16, and references projects the compiler does not get, such as
     /// source generators (ReferenceOutputAssembly="false").
     /// </summary>
-    /// <param name="outputs">The projects by the paths of their outputs, which their references to each other point to.</param>
+    /// <param name="projectWithOutput">The project whose output a file is, which references between projects point to; null for other files.</param>
     /// <param name="referenceTo">Makes the reference to a file, with properties.</param>
     /// <param name="warnings">Takes what this server's compiler does not take as the SDK's does.</param>
     private static ProjectInfo ProjectOf(
-        IAnalyzerResult result, ProjectId id, Dictionary<string, ProjectId> outputs, IAnalyzerAssemblyLoader loader, Func<string, MetadataReferenceProperties, MetadataReference> referenceTo,
+        IAnalyzerResult result, ProjectId id, Func<string, ProjectId?> projectWithOutput, IAnalyzerAssemblyLoader loader, Func<string, MetadataReferenceProperties, MetadataReference> referenceTo,
         ConcurrentQueue<Diagnostic> warnings)
     {
         var (name, language) = (Path.GetFileNameWithoutExtension(result.ProjectFilePath), LanguageOf(result.ProjectFilePath)!);
@@ -722,7 +765,8 @@ public sealed class WorkspaceService
             .Select(file => DocumentInfo.Create(DocumentId.CreateNewId(id, file), Path.GetFileName(file), FoldersOf(result.ProjectFilePath, file),
                 loader: TextLoader.From(TextAndVersion.Create(Read(file), VersionStamp.Create(), file)), filePath: file));
         // A command line can name a reference twice, as Visual Basic's does with the VB runtime, which a project cannot have.
-        var references = arguments.MetadataReferences.Select(reference => (Path: Path.GetFullPath(reference.Reference, directory), reference.Properties)).Distinct().ToList();
+        var references = arguments.MetadataReferences.Select(reference => (Path: Path.GetFullPath(reference.Reference, directory), reference.Properties)).Distinct()
+            .Select(reference => (reference.Path, reference.Properties, Project: projectWithOutput(reference.Path))).ToList();
 
         // Without a documentation file to write, the compiler skips documentation comments; an IDE parses them, for the documentation it shows.
         var parseOptions = arguments.ParseOptions.DocumentationMode == DocumentationMode.None ? arguments.ParseOptions.WithDocumentationMode(DocumentationMode.Parse) : arguments.ParseOptions;
@@ -734,9 +778,9 @@ public sealed class WorkspaceService
             .WithDocuments(Documents(arguments.SourceFiles.Select(file => file.Path)))
             .WithAdditionalDocuments(Documents(arguments.AdditionalFiles.Select(file => file.Path)))
             .WithAnalyzerConfigDocuments(Documents(arguments.AnalyzerConfigPaths))
-            .WithProjectReferences(references.Where(reference => outputs.ContainsKey(reference.Path))
-                .Select(reference => new ProjectReference(outputs[reference.Path], reference.Properties.Aliases, reference.Properties.EmbedInteropTypes)))
-            .WithMetadataReferences(references.Where(reference => !outputs.ContainsKey(reference.Path) && File.Exists(reference.Path))
+            .WithProjectReferences(references.Where(reference => reference.Project is not null)
+                .Select(reference => new ProjectReference(reference.Project!, reference.Properties.Aliases, reference.Properties.EmbedInteropTypes)))
+            .WithMetadataReferences(references.Where(reference => reference.Project is null && File.Exists(reference.Path))
                 .Select(reference => referenceTo(reference.Path, reference.Properties)))
             .WithAnalyzerReferences(arguments.AnalyzerReferences.Select(reference => Path.GetFullPath(reference.FilePath, directory)).Where(File.Exists)
                 .Select(file => AnalyzerReferenceTo(file, loader, warnings)))

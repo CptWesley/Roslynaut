@@ -38,6 +38,71 @@ public class WorkspaceSyncTests : EndToEndTest
             .Should().ContainSingle().Which.Id.Should().Be("CS0246");
     }
 
+    // A project can leave files out, as with Compile Remove, and a new file beside them stays out too, as MSBuild has it.
+    [Test]
+    public async Task NewFiles_BesideOnesTheProjectLeavesOut_StayOut()
+    {
+        var project = Sample.Write("edits/LeftOut/LeftOut.csproj", File.ReadAllText(Sample.ProblemsProject).Replace("</Project>", "  <ItemGroup>\n    <Compile Remove=\"Templates/**\" />\n  </ItemGroup>\n</Project>"));
+        var order = Sample.Write("edits/LeftOut/Order.cs", Order);
+        Sample.Write("edits/LeftOut/Templates/Template.cs", "namespace Edits;\n\npublic class Template : Missing\n{\n}\n");
+        (await TypesAsync(project)).Should().Equal(("Edits.Order", order));
+
+        Sample.Write("edits/LeftOut/Templates/Other.cs", "namespace Edits;\n\npublic class Other : Missing\n{\n}\n");
+        var line = Sample.Write("edits/LeftOut/Line.cs", "namespace Edits;\n\npublic class Line\n{\n}\n");
+
+        await SeesAsync(project, ("Edits.Order", order), ("Edits.Line", line));
+        (await Server.CallAsync<PagedResult<DiagnosticsTool.DiagnosticEntry>>("diagnostics", new() { ["projectPath"] = project, ["analyzers"] = false })).Items.Should().BeEmpty();
+    }
+
+    // A source generator of the solution runs once a build writes it, and runs as rebuilt after the next.
+    [Test]
+    public async Task AGeneratorOfTheSolution_RunsOnceBuilt_AndAsRebuilt()
+    {
+        Sample.Write("edits/Generator/Gen/Gen.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <TargetFramework>netstandard2.0</TargetFramework>
+                <EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
+              </PropertyGroup>
+              <ItemGroup>
+                <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0" PrivateAssets="all" />
+              </ItemGroup>
+            </Project>
+            """);
+        var generator = Sample.Write("edits/Generator/Gen/HelloGenerator.cs", """
+            using Microsoft.CodeAnalysis;
+
+            namespace Gen
+            {
+                [Generator]
+                public sealed class HelloGenerator : IIncrementalGenerator
+                {
+                    public void Initialize(IncrementalGeneratorInitializationContext context) =>
+                        context.RegisterPostInitializationOutput(output => output.AddSource("Hello.g.cs", "namespace App { public static class Hello { public static string Say() => \"hi\"; } }"));
+                }
+            }
+            """);
+        Sample.Write("edits/Generator/App/App.csproj", File.ReadAllText(Sample.ProblemsProject).Replace("</Project>",
+            "  <ItemGroup>\n    <ProjectReference Include=\"../Gen/Gen.csproj\" OutputItemType=\"Analyzer\" ReferenceOutputAssembly=\"false\" />\n  </ItemGroup>\n</Project>"));
+        Sample.Write("edits/Generator/App/Use.cs", "namespace App;\n\npublic static class Use\n{\n    public static string Run() => Hello.Say();\n}\n");
+        var solution = Sample.Write("edits/Generator/Generator.slnx", "<Solution>\n  <Project Path=\"Gen/Gen.csproj\" />\n  <Project Path=\"App/App.csproj\" />\n</Solution>\n");
+        async Task<string?> GeneratedAsync() =>
+            (await Server.CallAsync<PagedResult<GeneratedSourcesTool.GeneratedSource>>("generated_sources", new() { ["projectPath"] = solution, ["name"] = "Hello" })).Items.SingleOrDefault()?.Source;
+        async Task<List<string>> ErrorsAsync() =>
+            [.. (await Server.CallAsync<PagedResult<DiagnosticsTool.DiagnosticEntry>>("diagnostics", new() { ["projectPath"] = solution, ["analyzers"] = false })).Items.Select(error => error.Id)];
+        (await GeneratedAsync()).Should().BeNull();
+        (await ErrorsAsync()).Should().Equal("CS0103");
+
+        (await Server.CallAsync<BuildTool.BuildResult>("build", new() { ["projectPath"] = solution })).Succeeded.Should().BeTrue();
+        await EventuallyAsync(async () => await GeneratedAsync() is { } source && source.Contains("Say()"), "the server should run the generator it built");
+        (await ErrorsAsync()).Should().BeEmpty();
+
+        File.WriteAllText(generator, File.ReadAllText(generator).Replace("Say()", "Speak()"));
+        (await Server.CallAsync<BuildTool.BuildResult>("build", new() { ["projectPath"] = Sample.In("edits", "Generator", "Gen", "Gen.csproj") })).Succeeded.Should().BeTrue();
+        await EventuallyAsync(async () => await GeneratedAsync() is { } source && source.Contains("Speak()"), "the server should run the generator as rebuilt");
+        (await ErrorsAsync()).Should().Equal("CS0117");
+    }
+
     [Test]
     public async Task MovedFolders_TakeTheirFilesAlong()
     {

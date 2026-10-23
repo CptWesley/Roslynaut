@@ -106,6 +106,52 @@ public class TestRunnerTests : EndToEndTest
         none.Output.Should().Contain("A total of 1 test files matched the specified pattern.");
     }
 
+    // xUnit and MSTest give the cases of a test with parameters the name of its method, so its filter takes that name as is, and a test in a nested
+    // class goes by Outer+Nested. Each filter runs its own tests: Twice its two cases, and not Twice_Zero.
+    [TestCase("xunit", "xunit\" Version=\"2.9.3\" />\n    <PackageReference Include=\"xunit.runner.visualstudio\" Version=\"3.1.5", "using Xunit;", "", "Fact", "Theory, InlineData(1), InlineData(2)")]
+    [TestCase("mstest", "MSTest.TestFramework\" Version=\"3.10.4\" />\n    <PackageReference Include=\"MSTest.TestAdapter\" Version=\"3.10.4",
+        "using Microsoft.VisualStudio.TestTools.UnitTesting;", "[TestClass]", "TestMethod", "TestMethod, DataRow(1), DataRow(2)")]
+    public async Task FindTests_OfOtherFrameworks_GiveFiltersThatRunOnlyTheirTests(string framework, string packages, string @using, string fixture, string test, string cases)
+    {
+        var project = Sample.Write($"edits/Filters-{framework}/Filters.csproj", File.ReadAllText(Sample.TestsProject)
+            .Replace("NUnit\" Version=\"5.0.0\" />\n    <PackageReference Include=\"NUnit3TestAdapter\" Version=\"6.3.1", packages)
+            .Replace(@"<ProjectReference Include=""..\..\src\Shapes\Shapes.csproj"" />", ""));
+        Sample.Write($"edits/Filters-{framework}/CalcTests.cs", $$"""
+            {{@using}}
+
+            namespace Edits;
+
+            {{fixture}}
+            public class CalcTests
+            {
+                [{{cases}}]
+                public void Twice(int x) { }
+
+                [{{test}}]
+                public void Twice_Zero() { }
+
+                {{fixture}}
+                public class Nested
+                {
+                    [{{test}}]
+                    public void Inner() { }
+                }
+            }
+            """);
+        await Sample.DotnetAsync("restore", project);
+
+        var filters = (await Server.CallAsync<PagedResult<FindTestsTool.TestEntry>>("find_tests", new() { ["projectPath"] = project })).Items.ToDictionary(entry => entry.Test.Name, entry => entry.Filter);
+        var runs = new Dictionary<string, int>();
+        foreach (var (name, filter) in filters)
+            runs[name] = (await Server.CallAsync<RunTestsTool.TestRun>("run_tests", new() { ["projectPath"] = project, ["filter"] = filter })).Passed;
+
+        filters.Should().BeEquivalentTo(new Dictionary<string, string>
+        {
+            ["Twice"] = "FullyQualifiedName=Edits.CalcTests.Twice", ["Twice_Zero"] = "FullyQualifiedName=Edits.CalcTests.Twice_Zero", ["Inner"] = "FullyQualifiedName=Edits.CalcTests+Nested.Inner",
+        });
+        runs.Should().BeEquivalentTo(new Dictionary<string, int> { ["Twice"] = 2, ["Twice_Zero"] = 1, ["Inner"] = 1 });
+    }
+
     // A test runs under the name of each class that inherits it, and of its own class unless that is abstract. NUnit names a generic class by its
     // type arguments, as in GenericTests<Int32>. Each filter runs its test in two classes: six tests of the eight.
     [Test]
