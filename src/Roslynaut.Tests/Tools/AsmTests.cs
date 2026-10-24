@@ -37,8 +37,8 @@ public class AsmTests
     [OneTimeTearDown]
     public void DeleteTemporaryFiles() => assemblies.Dispose();
 
-    private async Task<List<MethodAsm>> SymbolAsmAsync(string path, Solution? solution = null) =>
-        (await SymbolIlTool.DisassembleAsync(solution ?? Calculator, assemblies, path, JitDisassembler.Disassemble, optimize: true, CancellationToken.None)).ToList();
+    private async Task<List<MethodAsm>> SymbolAsmAsync(string path, Solution? solution = null, string[]? typeArguments = null, string? workload = null) =>
+        (await SymbolAsmTool.DisassembleAsync(solution ?? Calculator, assemblies, path, typeArguments ?? [], workload, CancellationToken.None)).ToList();
 
     [Test]
     public async Task SymbolAsm_Method_ReturnsOptimizedListing()
@@ -67,6 +67,165 @@ public class AsmTests
     }
 
     // The state machine of an optimized async method is a struct, whose interface methods are compiled behind an unboxing stub.
+    private static readonly Solution Generics = TestSolution.Create("""
+        using System.Collections.Generic;
+
+        namespace Gen
+        {
+            public struct Vec2 { public float X, Y; }
+
+            public class Box<T>
+            {
+                private T value = default!;
+                public T Get() => value;
+                public U Pick<U>(U other) => other;
+            }
+
+            public class Outer<T> { public class Inner { public T Item = default!; public T Get() => Item; } }
+        }
+        """);
+
+    // Value types get code of their own; the type's arguments come first, then the method's.
+    [Test]
+    public async Task SymbolAsm_TypeArguments_CompileTheirOwnCode()
+    {
+        (await SymbolAsmAsync("Box.Get", Generics, ["float"])).Should().ContainSingle().Which.Asm.Should().Contain("Gen.Box`1[float]:Get():float:this (FullOpts)");
+        (await SymbolAsmAsync("Box.Pick", Generics, ["Vec2?", "List<int>"])).Should().ContainSingle()
+            .Which.Asm.Should().Contain("Gen.Box`1[System.Nullable`1[Gen.Vec2]]:Pick[System.__Canon]");
+        (await SymbolAsmAsync("Outer.Inner.Get", Generics, ["(int, Vec2)"])).Should().ContainSingle()
+            .Which.Asm.Should().Contain("Gen.Outer`1+Inner[System.ValueTuple`2[int,Gen.Vec2]]:Get()");
+    }
+
+    [Test]
+    public async Task SymbolAsm_UnknownTypeArgument_IsReported()
+    {
+        await FluentActions.Awaiting(() => SymbolAsmAsync("Box.Get", Generics, ["Missing"])).Should().ThrowAsync<ModelContextProtocol.McpException>()
+            .WithMessage("'Missing' is not a type where Get is declared; qualify it*");
+    }
+
+    private static readonly Solution Shapes = TestSolution.Create("""
+        namespace Pgo
+        {
+            public interface IShape { double Area(); }
+            public sealed class Circle : IShape { public double Area() => 3.0; }
+            public sealed class Square : IShape { public double Area() => 4.0; }
+
+            public static class Work
+            {
+                public static double Total(IShape[] shapes)
+                {
+                    var total = 0.0;
+                    foreach (var shape in shapes)
+                        total += shape.Area();
+                    return total;
+                }
+
+                public static double Unused() => 1;
+            }
+
+            public class Bench
+            {
+                private readonly IShape[] shapes = [new Circle(), new Circle(), new Circle(), new Square()];
+
+                public void Run()
+                {
+                    for (var i = 0; i < 100; i++)
+                        Work.Total(shapes);
+                }
+
+                public static void Fail() => throw new System.InvalidOperationException("No data");
+            }
+        }
+        """);
+
+    // Dynamic PGO sees mostly circles, so Tier1 checks for one and inlines its Area, with the interface call as the fallback.
+    [Test]
+    public async Task SymbolAsm_Workload_GivesTier1CodeWithDynamicPgo()
+    {
+        var listing = (await SymbolAsmAsync("Work.Total", Shapes, workload: "Bench.Run")).Should().ContainSingle().Subject.Asm;
+
+        listing.Should().Contain("Pgo.Work:Total(Pgo.IShape[]):double (Tier1)").And.Contain("optimized using Dynamic PGO").And.Contain("Pgo.IShape:Area():double:this");
+        (await SymbolAsmAsync("Work.Unused", Shapes, workload: "Bench.Run")).Should().ContainSingle()
+            .Which.Asm.Should().Contain("; The workload did not run this method often enough for Tier1.").And.Contain("(Tier0)");
+    }
+
+    [Test]
+    public async Task SymbolAsm_FailingWorkload_SaysWhy()
+    {
+        (await SymbolAsmAsync("Work.Total", Shapes, workload: "Bench.Fail")).Should().ContainSingle()
+            .Which.Asm.Should().Contain("; The workload threw InvalidOperationException: No data");
+        await FluentActions.Awaiting(() => SymbolAsmAsync("Work.Total", Shapes, workload: "Work.Total")).Should().ThrowAsync<ModelContextProtocol.McpException>()
+            .WithMessage("The workload 'Work.Total' must be one method of the solution, without parameters*");
+    }
+
+    private static readonly Solution Layouts = TestSolution.Create("""
+        namespace Lay
+        {
+            public struct Mixed { public byte A; public long B; public byte C; }
+            public class Base { public int X; }
+            public class Derived : Base { public byte Y; public Mixed M; public object? Ref; }
+            public class Holder<T> { public bool Flag; public T Value = default!; public long Version; static Holder() => throw new System.Exception("Ran"); }
+            public interface INothing { }
+        }
+        """);
+
+    private Task<TypeLayout> LayOutAsync(string path, params string[] typeArguments) =>
+        TypeLayoutTool.LayOutAsync(Layouts, assemblies, path, typeArguments, CancellationToken.None);
+
+    private static string Describe(TypeLayout layout) => string.Join("\n", layout.Fields.Select(field => $"{field.Offset} {field.Size} {field.Name} {field.Type} {field.DeclaringType}".TrimEnd()));
+
+    // Base types' fields come first; the runtime fills the gap after them with a small field, then puts references before structs.
+    [Test]
+    public async Task TypeLayout_Class_HasHeaderFieldsAndPadding()
+    {
+        var layout = await LayOutAsync("Derived");
+
+        (layout.Type, layout.Size, layout.CacheLines, layout.Runtime).Should().Be(("Lay.Derived", 56, 1, RuntimeInformation.FrameworkDescription));
+        Describe(layout).Should().Be("""
+            -8 8 (object header)
+            0 8 (method table)
+            8 4 X System.Int32 Lay.Base
+            12 1 Y System.Byte
+            13 3 (padding)
+            16 8 Ref System.Object
+            24 24 M Lay.Mixed
+            """.ReplaceLineEndings("\n"));
+    }
+
+    [Test]
+    public async Task TypeLayout_Struct_KeepsItsOrder()
+    {
+        var layout = await LayOutAsync("Mixed");
+
+        (layout.Size, Describe(layout)).Should().Be((24, """
+            0 1 A System.Byte
+            1 7 (padding)
+            8 8 B System.Int64
+            16 1 C System.Byte
+            17 7 (padding)
+            """.ReplaceLineEndings("\n")));
+    }
+
+    // The static constructor would throw; laying out does not run it.
+    [Test]
+    public async Task TypeLayout_Generic_UsesTheTypeArguments()
+    {
+        var layout = await LayOutAsync("Holder", "Mixed");
+
+        layout.Type.Should().Be("Lay.Holder<Lay.Mixed>");
+        layout.Fields.Select(field => (field.Name, field.Offset, field.CacheLine)).Should().Equal(
+            ("(object header)", -8, 0), ("(method table)", 0, 0), ("Version", 8, 0), ("Flag", 16, 0), ("(padding)", 17, 0), ("Value", 24, 0));
+        (await LayOutAsync("Holder")).Fields.Should().Contain(field => field.Name == "Value" && field.Type == "System.Object" && field.Offset == 8);
+    }
+
+    [Test]
+    public async Task TypeLayout_OfAnInterface_IsRefused()
+    {
+        await FluentActions.Awaiting(() => LayOutAsync("INothing")).Should().ThrowAsync<ModelContextProtocol.McpException>().WithMessage("*interface*");
+        await FluentActions.Awaiting(() => LayOutAsync("Holder", "int", "int")).Should().ThrowAsync<ModelContextProtocol.McpException>()
+            .WithMessage("Lay.Holder<T> takes 1 type arguments, not 2.");
+    }
+
     [Test]
     public async Task SymbolAsm_AsyncMethod_IncludesStateMachine()
     {

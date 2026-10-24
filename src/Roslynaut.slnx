@@ -1,5 +1,6 @@
 <Solution>
   <Project Path="Roslynaut/Roslynaut.csproj" />
+  <Project Path="Roslynaut.CallCounter/Roslynaut.CallCounter.csproj" />
   <Project Path="Roslynaut.JitHost/Roslynaut.JitHost.csproj" />
   <Project Path="Roslynaut.ScriptHost/Roslynaut.ScriptHost.csproj" />
   <Project Path="Roslynaut.Tests/Roslynaut.Tests.csproj" />

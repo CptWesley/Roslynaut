@@ -31,6 +31,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\Roslynaut.CallCounter\Roslynaut.CallCounter.csproj" />
     <ProjectReference Include="..\Roslynaut.JitHost\Roslynaut.JitHost.csproj" />
     <ProjectReference Include="..\Roslynaut.ScriptHost\Roslynaut.ScriptHost.csproj" />
   </ItemGroup>

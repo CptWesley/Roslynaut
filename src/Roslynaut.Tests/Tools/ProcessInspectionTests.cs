@@ -180,10 +180,15 @@ public class ProcessInspectionTests
     }
 }
 
-/// <summary>process_cpu and process_counters, against a script host that spins in a known method.</summary>
+/// <summary>
+/// process_cpu, process_allocations and process_counters, against a script host that spins in a known method on one thread, and allocates
+/// byte arrays and finalizable objects on another, between sleeps.
+/// </summary>
 [NonParallelizable]
 public class ProcessTracingTests
 {
+    private static readonly ProcessTracing.CpuFilters NoFilters = new(null, null, null, null);
+
     private Process target = null!;
 
     [OneTimeSetUp]
@@ -198,6 +203,23 @@ public class ProcessTracingTests
         target = Process.Start(start)!;
         const string code = """
             class Spin { public static long Work() { long x = 0; for (long i = 0; ; i++) x += i % 7; } }
+            class Fin { ~Fin() { } }
+            class Churn
+            {
+                public static object Kept;
+                public static void Run()
+                {
+                    while (true)
+                    {
+                        for (var i = 0; i < 100; i++)
+                            Kept = new byte[1024];
+                        for (var i = 0; i < 1000; i++)
+                            Kept = new Fin();
+                        System.Threading.Thread.Sleep(1);
+                    }
+                }
+            }
+            new System.Threading.Thread(Churn.Run) { IsBackground = true }.Start();
             Spin.Work()
             """;
         target.StandardInput.Write(System.Text.Json.JsonSerializer.Serialize(new { Code = code, References = Array.Empty<string>() }));
@@ -216,13 +238,81 @@ public class ProcessTracingTests
         target.Dispose();
     }
 
+    // The spinning thread starts in the script host's Main, the outermost method that is not the framework's.
     [Test]
-    public async Task Cpu_FindsTheSpinningMethod()
+    public async Task Cpu_FindsTheSpinningMethod_AndItsThread()
     {
-        var profile = await ProcessTracing.SampleAsync(target.Id, TimeSpan.FromSeconds(2), top: 10, CancellationToken.None);
+        var samples = await ProcessTracing.SampleAsync(target.Id, TimeSpan.FromSeconds(2), CancellationToken.None);
+        var profile = ProcessTracing.Analyze("1", samples, null, NoFilters, top: 10);
 
         profile.Samples.Should().BePositive();
         profile.Methods[0].Should().Match<ProcessTracing.MethodSamples>(method => method.Method.Contains("Spin.Work") && method.Self > 50);
+        profile.Threads[0].Should().Match<ProcessTracing.ThreadSamples>(thread => thread.Entry.StartsWith("Roslynaut.ScriptHost.Program.") && thread.Busy > 20);
+        ProcessTracing.Analyze("1", samples, null, NoFilters with { Threads = new(@"Spin\.Work") }, top: 10).Threads.Should().ContainSingle();
+        ProcessTracing.Analyze("1", samples, null, NoFilters with { Exclude = new(@"Spin\.Work") }, top: 10).Methods.Should().NotContain(method => method.Method.Contains("Spin.Work"));
+    }
+
+    private static ProcessTracing.StackSamples Stack(int thread, int count, params string[] frames) => new(thread, frames, count);
+
+    private static readonly ProcessTracing.CpuSamples Profile = new(TimeSpan.FromSeconds(1),
+    [
+        Stack(1, 60, "Leaf()", "Mid()", "Root()", "Main()"),
+        Stack(1, 20, "Mid()", "Root()", "Main()"),
+        Stack(1, 10, "System.Threading.Monitor.Wait()", "Root()", "Main()"),
+        Stack(2, 10, "Leaf()", "Other()", "System.Threading.Thread.StartCallback()"),
+    ]);
+
+    [Test]
+    public void Analyze_CountsThreadsAndMethods()
+    {
+        var profile = ProcessTracing.Analyze("1", Profile, null, NoFilters, top: 2);
+
+        (profile.Profile, profile.Samples).Should().Be(("1", 100));
+        profile.Threads.Should().Equal(new ProcessTracing.ThreadSamples(1, "Main()", 90, 9), new ProcessTracing.ThreadSamples(2, "Other()", 10, 1));
+        profile.Methods.Should().Equal(new ProcessTracing.MethodSamples("Leaf()", 70, 70), new ProcessTracing.MethodSamples("Mid()", 20, 80));
+        (profile.Callees, profile.Callers).Should().Be((null, null));
+    }
+
+    // Shares are of the samples that pass the filters; the tree under Root ends where samples ran a method itself.
+    [Test]
+    public void Analyze_FiltersAndBuildsCallTrees()
+    {
+        var profile = ProcessTracing.Analyze("1", Profile, null, new(new("^Root"), new(@"Monitor\.Wait"), new("^Root"), new("^Leaf")), top: 10);
+
+        (profile.Samples, profile.Threads.Single().Id).Should().Be((80, 1));
+        profile.Callees.Should().BeEquivalentTo([Tree("Root()", 100, 0, Tree("Mid()", 100, 25, Tree("Leaf()", 75, 75)))], options => options.WithStrictOrdering());
+        profile.Callers.Should().BeEquivalentTo([Tree("Leaf()", 75, null, Tree("Mid()", 75, null, Tree("Root()", 75, null, Tree("Main()", 75, null))))], options => options.WithStrictOrdering());
+    }
+
+    private static ProcessTracing.CallTree Tree(string method, double total, double? self, params ProcessTracing.CallTree[] children) => new(method, total, self, children);
+
+    // Ties on Self go by Total.
+    [Test]
+    public void Analyze_AgainstABaseline_PutsTheBiggestChangesFirst()
+    {
+        var baseline = new ProcessTracing.CpuSamples(TimeSpan.FromSeconds(1), [Stack(1, 50, "Leaf()", "Main()"), Stack(1, 50, "Gone()", "Main()")]);
+
+        var profile = ProcessTracing.Analyze("2", Profile, baseline, NoFilters, top: 3);
+
+        profile.Methods.Select(method => $"{method.Method} {method.SelfChange} {method.TotalChange}").Should().Equal("Gone() -50 -50", "Mid() 20 80", "Leaf() 20 20");
+    }
+
+    // The churning thread allocates the most; starting the session allocates a little on another. The byte arrays outweigh the objects with
+    // a finalizer, which are listed apart.
+    [Test]
+    public async Task Allocations_ByTypeStackAndFinalizer()
+    {
+        var profile = await ProcessTracing.AllocationsAsync(target.Id, TimeSpan.FromSeconds(3), null, top: 10, maxFrames: 5, CancellationToken.None);
+
+        profile.Bytes.Should().BePositive();
+        profile.Types[0].Type.Should().Be("System.Byte[]");
+        profile.Threads[0].Entry.Should().Be("Submission#0+Churn.Run()");
+        profile.Threads[0].Bytes.Should().BeGreaterThan(profile.Bytes / 2);
+        profile.Stacks.Should().Contain(stack => stack.Type == "System.Byte[]" && stack.Stack.Any(frame => frame.Contains("Churn.Run")) && stack.Stack.Count <= 5);
+        // The allocation ticks name the nested type Fin, the runtime Submission#0+Fin.
+        profile.Finalizable.Should().ContainSingle().Which.Type.Should().Be("Submission#0+Fin");
+        (await ProcessTracing.AllocationsAsync(target.Id, TimeSpan.FromSeconds(1), new(@"Churn\.Run"), top: 10, maxFrames: 5, CancellationToken.None))
+            .Threads.Should().ContainSingle().Which.Entry.Should().Be("Submission#0+Churn.Run()");
     }
 
     [Test]

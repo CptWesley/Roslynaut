@@ -176,6 +176,55 @@ public class AssemblyTests : EndToEndTest
         release.Asm.Should().Contain("; Assembly listing for method Shapes.Rectangle:Area():double:this (FullOpts)").And.NotContain("get_Width");
     }
 
+    // A test of the test project runs until TotalArea, which it calls, is hot: Tier1 then, with PGO data for what it inlined. The JIT calls
+    // the method's own profile synthesized, as it does for a loop over an IEnumerable.
+    [Test]
+    public async Task Asm_AfterAWorkload_IsTier1()
+    {
+        var asm = await Server.CallAsync<PagedResult<MethodAsm>>("symbol_asm", new()
+        {
+            ["projectPath"] = Sample.Solution, ["symbol"] = "ShapeMath.TotalArea", ["pgoWorkload"] = "ShapeTests.TotalArea_AddsTheAreas",
+        });
+
+        asm.Items.Should().ContainSingle().Which.Asm.Should().Contain("; Assembly listing for method Shapes.ShapeMath:TotalArea(").And.Contain("(Tier1)")
+            .And.MatchRegex("[1-9][0-9]* inlinees with PGO data");
+    }
+
+    // Box<T> takes classes, which share code; its Map<TResult> gets code of its own for int.
+    [Test]
+    public async Task AsmAndLayout_WithTypeArguments()
+    {
+        var project = Sample.NewProject("GenericAsm", ("Kinds.cs", SampleSolution.Kinds));
+
+        var asm = await Server.CallAsync<PagedResult<MethodAsm>>("symbol_asm", new() { ["projectPath"] = project, ["symbol"] = "Box.Map", ["typeArguments"] = new[] { "string", "int" } });
+        var layout = await Server.CallAsync<TypeLayout>("type_layout", new() { ["projectPath"] = project, ["symbol"] = "Box", ["typeArguments"] = new[] { "string" } });
+
+        asm.Items.Should().ContainSingle().Which.Asm.Should().Contain("Edits.Box`1[System.__Canon]:Map[int]");
+        (layout.Type, layout.Size).Should().Be(("Edits.Box<System.String>", 24));
+        layout.Fields.Should().ContainEquivalentOf(new FieldSlot("<Item>k__BackingField", "System.String", 8, 8, 0));
+    }
+
+    // The shapes as process_heap counts them: after the header and method table pointer, a Rectangle's two doubles make 32 bytes.
+    [Test]
+    public async Task TypeLayout_OfTheShapes()
+    {
+        var rectangle = await Server.CallAsync<TypeLayout>("type_layout", new() { ["projectPath"] = Sample.Solution, ["symbol"] = "Rectangle" });
+        var square = await Server.CallAsync<TypeLayout>("type_layout", new() { ["projectPath"] = Sample.Solution, ["symbol"] = "Square" });
+
+        (rectangle.Type, rectangle.Size, rectangle.CacheLines).Should().Be(("Shapes.Rectangle", 32, 1));
+        rectangle.Runtime.Should().StartWith($".NET {Environment.Version.Major}.");
+        rectangle.Fields.Should().BeEquivalentTo(
+        [
+            new FieldSlot("(object header)", null, -8, 8, 0),
+            new FieldSlot("(method table)", null, 0, 8, 0),
+            new FieldSlot("<Width>k__BackingField", "System.Double", 8, 8, 0),
+            new FieldSlot("<Height>k__BackingField", "System.Double", 16, 8, 0),
+        ], options => options.WithStrictOrdering());
+        square.Fields.Where(field => field.Type is not null).Should().OnlyContain(field => field.DeclaringType == "Shapes.Rectangle").And.HaveCount(2);
+        (await Server.CallFailingAsync("type_layout", new() { ["projectPath"] = Sample.Solution, ["symbol"] = "ShapeMath.TotalArea" }))
+            .Should().Be("An error occurred invoking 'type_layout': 'ShapeMath.TotalArea' is not a class or struct declared in the solution.");
+    }
+
     [Test]
     public async Task Decompile_APackageType_AndAMethodOfTheBuild()
     {

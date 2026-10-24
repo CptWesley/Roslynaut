@@ -199,5 +199,80 @@ public class ProcessTests : EndToEndTest
 
         profile.Samples.Should().BePositive();
         profile.Methods.Should().Contain(method => method.Method.Contains("Shapes.App.Spinner.Spin") && method.Total >= 90);
+        // The spinning thread starts in a lambda of the top-level statements.
+        profile.Threads.Should().Contain(thread => thread.Entry.StartsWith("Program"));
+    }
+
+    // A profile's samples stay, to analyze again with filters, or to compare a later profile with.
+    [Test]
+    public async Task ProcessCpu_AnalyzesAProfileAgain_AndComparesProfiles()
+    {
+        var profile = await Server.CallAsync<ProcessTracing.CpuProfile>("process_cpu", new() { ["processId"] = app.Id, ["seconds"] = 2 });
+        var tree = await Server.CallAsync<ProcessTracing.CpuProfile>("process_cpu", new() { ["profile"] = profile.Profile, ["root"] = @"Spinner\.Spin", ["leaf"] = @"\.Area\(" });
+        var compared = await Server.CallAsync<ProcessTracing.CpuProfile>("process_cpu", new() { ["processId"] = app.Id, ["seconds"] = 2, ["compareTo"] = profile.Profile });
+
+        (tree.Profile, tree.Samples).Should().Be((profile.Profile, profile.Samples));
+        tree.Callees.Should().ContainSingle().Which.Method.Should().StartWith("Shapes.App.Spinner.Spin");
+        tree.Callers.Should().NotBeEmpty().And.OnlyContain(caller => caller.Method.Contains(".Area("));
+        compared.Profile.Should().NotBe(profile.Profile);
+        compared.Methods.Should().NotBeEmpty().And.OnlyContain(method => method.SelfChange != null && method.TotalChange != null);
+        (await Server.CallFailingAsync("process_cpu", new() { ["profile"] = "none" }))
+            .Should().Be("An error occurred invoking 'process_cpu': There is no profile none; only the last 10 are kept, until the server restarts.");
+        (await Server.CallFailingAsync("process_cpu", new() { ["processId"] = app.Id, ["profile"] = profile.Profile }))
+            .Should().Be("An error occurred invoking 'process_cpu': Pass either a processId or a profile.");
+    }
+
+    // The app allocates nothing once it waits, so what shows is little; the call still sorts it.
+    [Test]
+    public async Task ProcessAllocations_SortsWhatWasAllocated()
+    {
+        var profile = await Server.CallAsync<ProcessTracing.AllocationProfile>("process_allocations", new() { ["processId"] = app.Id, ["seconds"] = 2, ["top"] = 5 });
+
+        profile.Bytes.Should().Be(profile.Threads.Sum(thread => thread.Bytes));
+        profile.Types.Select(type => type.Bytes).Should().BeInDescendingOrder();
+        profile.Types.Count.Should().BeLessThanOrEqualTo(5);
+        (await Server.CallFailingAsync("process_allocations", new() { ["processId"] = app.Id, ["threads"] = "(" }))
+            .Should().StartWith("An error occurred invoking 'process_allocations': Invalid threads: ");
+    }
+
+    // Without arguments the app adds up the areas once and exits; Square has Rectangle's Area.
+    [Test]
+    public async Task ProcessCalls_CountCallsPerMarker()
+    {
+        var counts = await Server.CallAsync<CallCounts>("process_calls", new()
+        {
+            ["projectPath"] = Sample.Solution, ["program"] = Sample.AppAssembly, ["methods"] = new[] { "Shapes.Circle.Area", "Rectangle.Area" },
+            ["per"] = "ShapeMath.TotalArea", ["seconds"] = 60,
+        });
+
+        (counts.ExitCode, counts.Seconds > 0).Should().Be((0, true));
+        counts.Output.Should().Contain("Total area: 25");
+        counts.Methods.Select(method => (method.Method, method.Calls, method.PerMarker)).Should().BeEquivalentTo(
+        [
+            ("System.Double Shapes.Rectangle::Area()", 2L, (double?)2),
+            ("System.Double Shapes.Circle::Area()", 1L, (double?)1),
+            ("System.Double Shapes.ShapeMath::TotalArea(System.Collections.Generic.IEnumerable`1<Shapes.IShape>)", 1L, (double?)1),
+        ]);
+        counts.Methods[0].Threads.Should().ContainSingle().Which.Calls.Should().Be(2);
+        Directory.GetFiles(Path.GetDirectoryName(Sample.AppAssembly)!, "*.roslynaut-*").Should().BeEmpty("the deps.json for counting goes when done");
+    }
+
+    // Waiting, the app spins on a thread of its own until it is stopped.
+    [Test]
+    public async Task ProcessCalls_StopTheProgramInTime()
+    {
+        var counts = await Server.CallAsync<CallCounts>("process_calls", new()
+        {
+            ["projectPath"] = Sample.Solution, ["program"] = Sample.AppAssembly, ["methods"] = new[] { "Circle" }, ["arguments"] = new[] { "wait" }, ["seconds"] = 3,
+        });
+
+        (counts.ExitCode, counts.Output).Should().Be((null, null));
+        var area = counts.Methods.Single(method => method.Method == "System.Double Shapes.Circle::Area()");
+        area.Calls.Should().BeGreaterThan(1000);
+        area.PerSecond.Should().BePositive();
+        area.Threads.Should().HaveCount(2).And.Contain(thread => thread.Calls == 1);
+        counts.Methods.Should().Contain(method => method.Method == "System.Void Shapes.Circle::.ctor(System.Double)" && method.Calls == 1);
+        (await Server.CallFailingAsync("process_calls", new() { ["projectPath"] = Sample.Solution, ["program"] = Sample.AppAssembly, ["methods"] = new[] { "Spinner.Spin" } }))
+            .Should().Be("An error occurred invoking 'process_calls': Shapes.App is the program itself; only methods of the libraries it uses can be counted.");
     }
 }

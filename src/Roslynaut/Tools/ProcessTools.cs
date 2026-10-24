@@ -237,7 +237,7 @@ internal static class ProcessInspection
             [.. (baseline is null ? types.OrderByDescending(stats => stats.Size) : types.OrderByDescending(stats => stats.SizeChange)).Take(top)]);
     }
 
-    private static DataTarget Open(int? processId, string? dumpPath)
+    public static DataTarget Open(int? processId, string? dumpPath)
     {
         try
         {
@@ -255,7 +255,7 @@ internal static class ProcessInspection
         }
     }
 
-    private static ClrRuntime RuntimeOf(DataTarget target)
+    public static ClrRuntime RuntimeOf(DataTarget target)
     {
         if (target.ClrVersions.FirstOrDefault() is not { } clr)
             throw new McpException("The process does not run .NET.");
@@ -344,15 +344,15 @@ internal static class ProcessDefaults
     public const string ProcessId = "The id of a running process, e.g. from dotnet_processes; or else pass dumpPath.";
     public const string DumpPath = "The path of a dump file to read instead of a running process, such as one from dotnet-dump collect or a crash.";
 
-    public static Regex? TypePattern(string? type)
+    public static Regex? Pattern(string? pattern, string parameter)
     {
         try
         {
-            return type is null ? null : new Regex(type, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            return pattern is null ? null : new Regex(pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
         }
         catch (ArgumentException e)
         {
-            throw new McpException($"Invalid type: {e.Message}");
+            throw new McpException($"Invalid {parameter}: {e.Message}");
         }
     }
 }
@@ -406,7 +406,7 @@ public sealed class ProcessHeapTool : IMcpTool
         [Description("The Snapshot of an earlier process_heap result to compare with.")] string? compareTo = null) =>
         Task.Run(() =>
         {
-            var regex = ProcessDefaults.TypePattern(type);
+            var regex = ProcessDefaults.Pattern(type, "type");
             ProcessInspection.HeapSnapshot? baseline = null;
             if (compareTo is not null && !_snapshots.TryGetValue(compareTo, out baseline))
                 throw new McpException($"There is no snapshot {compareTo}; only the last {MaxSnapshots} are kept, until the server restarts.");
@@ -434,7 +434,7 @@ public sealed class ProcessObjectsTool : IMcpTool
         [Description("Or else a regex for the type names of the objects to show, e.g. '^MyApp\\.OrderCache$'.")] string? type = null,
         [Description("How many objects of the type to show.")] int top = 10)
     {
-        var (parsed, regex) = (address is null ? (ulong?)null : ProcessInspection.ParseAddress(address), ProcessDefaults.TypePattern(type));
+        var (parsed, regex) = (address is null ? (ulong?)null : ProcessInspection.ParseAddress(address), ProcessDefaults.Pattern(type, "type"));
         return Task.Run(() => ProcessInspection.Objects(processId, dumpPath, parsed, regex, top));
     }
 }
