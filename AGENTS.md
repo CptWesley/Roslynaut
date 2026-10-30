@@ -13,6 +13,7 @@ dotnet test src/Roslynaut.Tests --filter "FullyQualifiedName~NavigationTests" # 
 dotnet test src/Roslynaut.Tests --filter "Name=References_HaveContainerAndAccess"
 dotnet test src/Roslynaut.Tests --filter "TestCategory!=EndToEnd"                    # without the end-to-end tests
 dotnet run --project src/Roslynaut -- --protocol stdio|http|sse              # no args = stdio
+dotnet run --project src/Roslynaut -- --enable-tools build run_tests         # only these tools; --disable-tools leaves tools out
 ```
 
 Environment variables:

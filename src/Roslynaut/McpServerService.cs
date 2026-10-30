@@ -77,11 +77,13 @@ public sealed class McpServerService(IEnumerable<IMcpTool> tools)
           ROSLYNAUT_ALLOW_EVALUATE=true.
         """;
 
-    /// <summary>Starts the server; the returned task completes when the server shuts down.</summary>
-    public async Task StartAsync(McpProtocol protocol)
-    {
-        var serverTools = tools.Select(tool => (McpServerTool)new ExplainingTool(McpServerTool.Create(tool.Handler), tool.Handler.Method)).ToList();
+    /// <summary>Every tool, as the server serves it.</summary>
+    public IReadOnlyList<McpServerTool> Tools { get; } =
+        [.. tools.Select(tool => (McpServerTool)new ExplainingTool(McpServerTool.Create(tool.Handler), tool.Handler.Method))];
 
+    /// <summary>Starts the server with some of <see cref="Tools"/>; the returned task completes when the server shuts down.</summary>
+    public async Task StartAsync(McpProtocol protocol, IReadOnlyList<McpServerTool> serverTools)
+    {
         if (protocol == McpProtocol.Stdio)
         {
             // stdout carries the protocol, so log to stderr only.
