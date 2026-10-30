@@ -1,4 +1,5 @@
 using Microsoft.CodeAnalysis;
+using ModelContextProtocol;
 using Roslynaut.Tools;
 
 namespace Roslynaut.Tests.Tools;
@@ -106,4 +107,13 @@ public class NavigationTests
 
         caller.Calls.Should().HaveCount(3);
     }
+
+    // Agents guess paths: a miss names the paths that come closest, for a wrong container, overload or spelling.
+    [TestCase("Square.Radius", "No symbol found for 'Square.Radius'. Closest paths: 'Shapes.Circle.Radius'.")]
+    [TestCase("Use.Total(Circle[])", "No symbol found for 'Use.Total(Circle[])'. Closest paths: 'Shapes.Use.Total(IShape[])'.")]
+    [TestCase("Circle.Aera", "No symbol found for 'Circle.Aera'. Closest paths: 'Shapes.Circle.Area()', *")]
+    [TestCase("Shapez", "No symbol found for 'Shapez'. Closest paths: 'Shapes', 'Shapes.Shape', 'Shapes.IShape'.")]
+    [TestCase("Hexagon", "No symbol found for 'Hexagon'.")]
+    public async Task SymbolPaths_ThatMatchNothing_NameTheClosest(string path, string message) =>
+        await FluentActions.Awaiting(() => Resolve(path)).Should().ThrowAsync<McpException>().WithMessage(message);
 }

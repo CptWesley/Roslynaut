@@ -282,7 +282,8 @@ public class NavigationTests : EndToEndTest
         (await Server.CallAsync<PagedResult<ReferencesTool.ReferenceEntry>>("references", new() { ["projectPath"] = Sample.Solution, ["symbol"] = "ShapeMath.TotalArea(IEnumerable<IShape>).total" }))
             .Items.Select(reference => reference.Access).Should().Equal("Write", "Read");
         (await Server.CallFailingAsync("symbol_source", new() { ["projectPath"] = Sample.Solution, ["symbol"] = "ShapeMath.Classify(Circle)" }))
-            .Should().Be("An error occurred invoking 'symbol_source': No symbol found for 'ShapeMath.Classify(Circle)'.");
+            .Should().Be("An error occurred invoking 'symbol_source': No symbol found for 'ShapeMath.Classify(Circle)'. "
+                + "Closest paths: 'Shapes.ShapeMath.Classify(IShape)', 'Shapes.Tests.ShapeTests.Classify_UnitSquare_IsSmall()'.");
     }
 
     [Test]

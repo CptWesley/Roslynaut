@@ -66,7 +66,65 @@ internal static class SymbolTree
         }
 
         resolved = [.. resolved.Distinct(SymbolEqualityComparer.Default).DistinctBy(DeclarationKey)];
-        return resolved.Count > 0 ? resolved : throw new McpException($"No symbol found for '{path}'.");
+        return resolved.Count > 0 ? resolved : throw new McpException(NotFound(path, segments, compilations, own, cancellationToken));
+    }
+
+    /// <summary>
+    /// That no symbol has the path, with the paths that come closest, since agents guess paths: those of declarations named like its last
+    /// segment, spelled nearly so or as part of the other name, closest first by their last segments, so a wrong container or overload or
+    /// a typo takes one more call, not a search.
+    /// </summary>
+    // ponytail: the compilations' declarations hold no parameters or locals, so those get no suggestions; the children of the deepest
+    // symbols the path reached would supply them.
+    private static string NotFound(string path, List<string> segments, List<Compilation> compilations, HashSet<IAssemblySymbol> own, CancellationToken cancellationToken)
+    {
+        var name = NameOf(segments[^1]);
+        var asked = string.Join('.', segments.Select(NameOf));
+        List<string> closest = name.Length == 0 ? [] : compilations
+            .SelectMany(compilation => compilation.GetSymbolsWithName(candidate => IsClose(candidate, name), SymbolFilter.All, cancellationToken))
+            .SelectMany(symbol => OwnParts(symbol, own))
+            .Select(symbol => (Path: PathTo(symbol), Distance: Distance(asked, NamePath(symbol, segments.Count))))
+            .OrderBy(candidate => candidate.Distance).ThenBy(candidate => candidate.Path, StringComparer.Ordinal)
+            .Select(candidate => candidate.Path).Distinct().Take(5).ToList();
+        return closest is [] ? $"No symbol found for '{path}'." : $"No symbol found for '{path}'. Closest paths: {string.Join(", ", closest.Select(close => $"'{close}'"))}.";
+    }
+
+    private static bool IsClose(string candidate, string name) =>
+        candidate.Contains(name, StringComparison.OrdinalIgnoreCase)
+        || candidate.Length >= 3 && name.Contains(candidate, StringComparison.OrdinalIgnoreCase)
+        || Math.Abs(candidate.Length - name.Length) <= Math.Max(2, name.Length / 3) && Distance(candidate, name) <= Math.Max(2, name.Length / 3);
+
+    /// <summary>A symbol's path, with the parameter list that picks its overload.</summary>
+    private static string PathTo(ISymbol symbol) => symbol.ContainingSymbol is { } container and not INamespaceSymbol { IsGlobalNamespace: true }
+        ? $"{SymbolEntry.PathOf(container)}.{symbol.ToDisplayString(ShortFormat)}"
+        : symbol.ToDisplayString(ShortFormat);
+
+    /// <summary>The names of a symbol and its containers, up to count of them, as a path without parameter lists.</summary>
+    private static string NamePath(ISymbol symbol, int count)
+    {
+        var names = new List<string>();
+        for (var current = symbol; current is not (null or INamespaceSymbol { IsGlobalNamespace: true }) && names.Count < count; current = current.ContainingSymbol)
+            names.Insert(0, current.Name);
+        return string.Join('.', names);
+    }
+
+    /// <summary>The Levenshtein distance, ignoring case.</summary>
+    private static int Distance(string a, string b)
+    {
+        var row = Enumerable.Range(0, b.Length + 1).ToArray();
+        for (var i = 1; i <= a.Length; i++)
+        {
+            var diagonal = row[0];
+            row[0] = i;
+            for (var j = 1; j <= b.Length; j++)
+            {
+                var above = row[j];
+                row[j] = Math.Min(Math.Min(above, row[j - 1]) + 1, diagonal + (char.ToLowerInvariant(a[i - 1]) == char.ToLowerInvariant(b[j - 1]) ? 0 : 1));
+                diagonal = above;
+            }
+        }
+
+        return row[b.Length];
     }
 
     /// <summary>
