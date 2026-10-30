@@ -22,12 +22,13 @@ public static class Program
         {
             Description = "Leave these tools out, also when --enable-tools names them.", HelpName = "tool", AllowMultipleArgumentsPerToken = true,
         }.AcceptOnlyFromAmong(names);
-        var root = new RootCommand("An MCP server that exposes Roslyn and MSBuild to agents.") { protocol, enable, disable };
+        var noInstructions = new Option<bool>("--no-instructions") { Description = "Leave out the server instructions, which tell agents which tool to use for what." };
+        var root = new RootCommand("An MCP server that exposes Roslyn and MSBuild to agents.") { protocol, enable, disable, noInstructions };
         root.SetAction(async parsed =>
         {
             var (only, without) = (parsed.GetValue(enable), parsed.GetValue(disable) ?? []);
             var tools = server.Tools.Where(tool => (only is not [_, ..] || only.Contains(tool.ProtocolTool.Name)) && !without.Contains(tool.ProtocolTool.Name));
-            await server.StartAsync(Enum.Parse<McpProtocol>(parsed.GetValue(protocol)!, ignoreCase: true), [.. tools]);
+            await server.StartAsync(Enum.Parse<McpProtocol>(parsed.GetValue(protocol)!, ignoreCase: true), [.. tools], !parsed.GetValue(noInstructions));
         });
 
         // The host handles Ctrl+C and SIGTERM itself and shuts down gracefully; System.CommandLine would give up on it after 2 seconds.

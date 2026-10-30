@@ -82,20 +82,20 @@ public sealed class McpServerService(IEnumerable<IMcpTool> tools)
         [.. tools.Select(tool => (McpServerTool)new ExplainingTool(McpServerTool.Create(tool.Handler), tool.Handler.Method))];
 
     /// <summary>Starts the server with some of <see cref="Tools"/>; the returned task completes when the server shuts down.</summary>
-    public async Task StartAsync(McpProtocol protocol, IReadOnlyList<McpServerTool> serverTools)
+    public async Task StartAsync(McpProtocol protocol, IReadOnlyList<McpServerTool> serverTools, bool instructions)
     {
         if (protocol == McpProtocol.Stdio)
         {
             // stdout carries the protocol, so log to stderr only.
             var host = Host.CreateEmptyApplicationBuilder(settings: null);
             host.Logging.AddConsole(options => options.LogToStandardErrorThreshold = LogLevel.Trace);
-            host.Services.AddMcpServer(options => options.ServerInstructions = Instructions).WithStdioServerTransport().WithTools(serverTools);
+            host.Services.AddMcpServer(options => options.ServerInstructions = instructions ? Instructions : null).WithStdioServerTransport().WithTools(serverTools);
             await host.Build().RunAsync();
             return;
         }
 
         var builder = WebApplication.CreateBuilder();
-        builder.Services.AddMcpServer(options => options.ServerInstructions = Instructions)
+        builder.Services.AddMcpServer(options => options.ServerInstructions = instructions ? Instructions : null)
             .WithHttpTransport(options =>
             {
                 // Legacy SSE needs in-memory sessions, so it cannot run stateless.

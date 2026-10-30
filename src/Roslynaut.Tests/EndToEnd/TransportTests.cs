@@ -70,4 +70,12 @@ public class TransportTests : EndToEndTest
 
         (await server.Client.ListToolsAsync()).Select(tool => tool.Name).Should().Equal("project_graph");
     }
+
+    [Test]
+    public async Task NoInstructions_LeavesTheInstructionsOut()
+    {
+        await using var server = await ServerProcess.StartAsync(null, "--no-instructions");
+
+        server.Client.ServerInstructions.Should().BeNull();
+    }
 }
