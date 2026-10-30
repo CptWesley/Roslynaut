@@ -257,6 +257,16 @@ public class NavigationTests : EndToEndTest
             "    public Rectangle Scale(double factor) => Scale(factor, factor);"));
     }
 
+    // The sample is one commit, made when the suite started.
+    [Test]
+    public async Task SymbolSource_WithHistory_HasTheCommitsOfItsLines()
+    {
+        var square = await Server.CallAsync<List<SymbolSourceTool.SymbolSource>>("symbol_source", new() { ["projectPath"] = Sample.Solution, ["symbol"] = "Shapes.Square", ["history"] = 5 });
+
+        square.Should().ContainSingle().Which.History.Should().ContainSingle().Which.Should().Match<SymbolSourceTool.Commit>(commit =>
+            commit.Message == "Sample" && commit.Author == "Roslynaut" && commit.Diff.Contains("+public sealed class Square"));
+    }
+
     // Parameter types by their names as code writes them, or fully qualified as results give them.
     [Test]
     public async Task SymbolPaths_PickOverloadsByTheirParameterTypes()

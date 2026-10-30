@@ -113,6 +113,17 @@ public static class Program
             .AddSingleton<IMcpTool, TypeLayoutTool>()
             .AddSingleton<IMcpTool, DecompileTool>()
             .AddSingleton<IMcpTool, AssemblySourcesTool>()
+            .AddSingleton<IMcpTool, ResolveStackTraceTool>()
+            .AddSingleton<IMcpTool, ProcessAsyncTool>()
+            .AddSingleton<IMcpTool, ProcessDumpTool>()
+            .AddSingleton<IMcpTool, ProcessEventsTool>()
+            .AddSingleton<IMcpTool, CallPathsTool>()
+            .AddSingleton<IMcpTool, ControlFlowTool>()
+            .AddSingleton<IMcpTool, ThrowsTool>()
+            .AddSingleton<IMcpTool, BenchmarkTool>()
+            .AddSingleton<IMcpTool, EndpointsTool>()
+            .AddSingleton<IMcpTool, DiRegistrationsTool>()
+            .AddSingleton<IMcpTool, FindDuplicatesTool>()
             .AddSingleton<McpServerService>()
             .BuildServiceProvider();
 

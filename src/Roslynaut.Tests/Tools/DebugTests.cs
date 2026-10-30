@@ -153,6 +153,23 @@ public class DebugTests
         (output + state.Output).Should().Contain("value 100");
     }
 
+    // The logpoint in the loop records each round; the breakpoint after it stops.
+    [Test]
+    public async Task Logpoint_RecordsEachHit_WithoutStopping()
+    {
+        await using var debugger = new DebugService(new WorkspaceService(), new PdbService());
+
+        var state = await debugger.StartAsync(project, [], [new(program, 4, Log: "n={n} total={total}"), new(program, 5)], stopAtEntry: false, stopOnExceptions: null,
+            TimeSpan.FromSeconds(60), CancellationToken.None);
+
+        state.Should().Match<DebugState>(stopped => stopped.Status == "Stopped" && stopped.Stack[0].Line == 5);
+        state.Logged!.Select(entry => entry[(entry.IndexOf(']') + 2)..]).Should().Equal("n=1 total=0", "n=2 total=1", "n=3 total=3");
+        state.Logged.Should().OnlyContain(entry => entry.StartsWith("Program.cs:4 ["));
+
+        state = await debugger.ResumeAsync(ResumeAction.Continue, TimeSpan.FromSeconds(60), CancellationToken.None);
+        state.Should().Match<DebugState>(exited => exited.Status == "Exited" && exited.Logged == null);
+    }
+
     [OneTimeTearDown]
     public void DeleteProgram() => directory?.Delete(recursive: true);
 

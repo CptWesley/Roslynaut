@@ -294,6 +294,8 @@ public class TestRunnerTests : EndToEndTest
                 Sample.Location(Sample.ShapeMathFile, "Classify(")));
             affected.Tests.Should().BeEquivalentTo([Test("Classify_UnitSquare_IsSmall")]);
             affected.Filter.Should().Be("FullyQualifiedName=Shapes.Tests.ShapeTests.Classify_UnitSquare_IsSmall");
+            // A changed body adds no member and removes none.
+            (affected.AddedMembers, affected.RemovedMembers).Should().BeEquivalentTo((Array.Empty<string>(), Array.Empty<string>()));
 
             var run = await Server.CallAsync<RunTestsTool.TestRun>("run_tests", new() { ["projectPath"] = Sample.TestsProject, ["filter"] = affected.Filter });
             (run.Succeeded, run.Total, run.Passed).Should().Be((true, 1, 1));
@@ -355,6 +357,6 @@ public class TestRunnerTests : EndToEndTest
     {
         var affected = await Server.CallAsync<AffectedTestsTool.AffectedTests>("affected_tests", new() { ["projectPath"] = Sample.Solution });
 
-        affected.Should().BeEquivalentTo(new AffectedTestsTool.AffectedTests([], [], null));
+        affected.Should().BeEquivalentTo(new AffectedTestsTool.AffectedTests([], [], null, [], []));
     }
 }

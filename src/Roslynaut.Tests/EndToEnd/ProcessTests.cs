@@ -38,6 +38,49 @@ public class ProcessTests : EndToEndTest
             process.Name == "dotnet" && process.Path == DotnetCli.Executable && process.StartTime != null);
     }
 
+    [Test]
+    public async Task DotnetProcesses_WithProcessId_DescribeHowItStarted()
+    {
+        var process = (await Server.CallAsync<List<ProcessInspection.ProcessEntry>>("dotnet_processes", new() { ["processId"] = app.Id, ["module"] = "Shapes" }))
+            .Should().ContainSingle().Subject;
+
+        process.CommandLine.Should().Contain("Shapes.App.dll");
+        process.Environment.Should().NotBeEmpty();
+        process.Modules!.Select(module => module.Name).Should().Contain(["Shapes", "Shapes.App"]).And.OnlyContain(name => name.Contains("Shapes") || name.StartsWith("Roslynaut.E2E"));
+    }
+
+    // The dump outlives the moment: the threads and the async methods read from it as from the process.
+    [Test]
+    public async Task ProcessDump_IsReadLikeTheProcess()
+    {
+        var dump = await Server.CallAsync<ProcessInspection.DumpFile>("process_dump", new() { ["processId"] = app.Id, ["kind"] = "Heap", ["path"] = Sample.In("written.dmp") });
+        try
+        {
+            (dump.Path, dump.Size > 0).Should().Be((Sample.In("written.dmp"), true));
+            (await Server.CallAsync<List<ProcessInspection.ThreadEntry>>("process_threads", new() { ["dumpPath"] = dump.Path }))
+                .Should().Contain(thread => thread.Stack.Any(frame => frame.StartsWith("Program.<Main>$")));
+            (await Server.CallAsync<List<ProcessInspection.AsyncChain>>("process_async", new() { ["dumpPath"] = dump.Path, ["method"] = "^Shapes" })).Should().BeEmpty();
+        }
+        finally
+        {
+            File.Delete(dump.Path);
+        }
+    }
+
+    // The app neither throws nor collects garbage while it spins; the summaries say so.
+    [Test]
+    public async Task ProcessEvents_SummarizeEachKind()
+    {
+        var exceptions = await Server.CallAsync<ProcessTracing.ProcessEvents>("process_events", new() { ["kind"] = "Exceptions", ["processId"] = app.Id, ["seconds"] = 1 });
+        var collections = await Server.CallAsync<ProcessTracing.ProcessEvents>("process_events", new() { ["kind"] = "Collections", ["processId"] = app.Id, ["seconds"] = 1 });
+
+        exceptions.Seconds.Should().BeApproximately(1, 0.5);
+        exceptions.Exceptions.Should().BeEmpty();
+        collections.Collections!.Count.Should().Be(0);
+        (await Server.CallFailingAsync("process_events", new() { ["kind"] = "Logs", ["processId"] = app.Id, ["level"] = "Loud" }))
+            .Should().Be("An error occurred invoking 'process_events': 'Loud' is not a log level: Debug, Information, Warning, Error or Critical.");
+    }
+
     // Each managed frame of the app's code has its file and line, from the PDB next to the build output.
     [Test]
     public async Task ProcessThreads_ShowWhereEachThreadIs()
@@ -219,7 +262,7 @@ public class ProcessTests : EndToEndTest
         (await Server.CallFailingAsync("process_cpu", new() { ["profile"] = "none" }))
             .Should().Be("An error occurred invoking 'process_cpu': There is no profile none; only the last 10 are kept, until the server restarts.");
         (await Server.CallFailingAsync("process_cpu", new() { ["processId"] = app.Id, ["profile"] = profile.Profile }))
-            .Should().Be("An error occurred invoking 'process_cpu': Pass either a processId or a profile.");
+            .Should().Be("An error occurred invoking 'process_cpu': Pass one of processId, launch or profile.");
     }
 
     // The app allocates nothing once it waits, so what shows is little; the call still sorts it.

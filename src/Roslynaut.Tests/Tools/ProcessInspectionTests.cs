@@ -25,6 +25,9 @@ public class ProcessInspectionTests
         // A second thread waits for the lock the sleeping one holds, which gives the lock a sync block. A third holds a System.Threading.Lock.
         const string code = """
             class Marker { public int Count = 42; public string Name = "marker"; }
+            static async System.Threading.Tasks.Task Inner(System.Threading.SemaphoreSlim gate) => await gate.WaitAsync();
+            static async System.Threading.Tasks.Task Outer(System.Threading.SemaphoreSlim gate) { await System.Threading.Tasks.Task.Yield(); await Inner(gate); }
+            var pending = Outer(new System.Threading.SemaphoreSlim(0));
             var kept = new Marker();
             var gate = new System.Threading.Lock();
             new System.Threading.Thread(() => { lock (gate) { System.Threading.Thread.Sleep(60000); } }) { IsBackground = true }.Start();
@@ -177,6 +180,51 @@ public class ProcessInspectionTests
     public void Processes_IncludeTarget()
     {
         ProcessInspection.List().Should().Contain(process => process.Id == target.Id && process.Name == "dotnet");
+    }
+
+    // Outer awaits Inner, which waits for a semaphore nobody releases; Outer's second await is its state 1.
+    [Test]
+    public async Task AsyncChains_RunFromTheInnermostAwaiter_ToItsCallers()
+    {
+        await SleepingThreadsAsync();
+
+        var chain = ProcessInspection.AsyncChains(target.Id, null, new("Inner"), top: 10, pdbs, CancellationToken.None).Should().ContainSingle().Subject;
+
+        chain.Frames.Select(frame => frame.Method.Split('.')[^1]).Should().Equal("Inner", "Outer");
+        chain.Frames.Select(frame => frame.State).Should().Equal(0, 1);
+        chain.Awaiting.Should().Contain("SemaphoreSlim");
+        chain.Count.Should().Be(1);
+        ProcessInspection.Objects(target.Id, null, ProcessInspection.ParseAddress(chain.Task), null, top: 1).Single().Type.Should().Contain("AsyncStateMachineBox");
+    }
+
+    [Test]
+    public async Task Dump_WrittenByTheServer_DescribesTheProcess()
+    {
+        await SleepingThreadsAsync();
+        var dump = await ProcessInspection.WriteDumpAsync(target.Id, DumpType.WithHeap, null, CancellationToken.None);
+        try
+        {
+            dump.Size.Should().BePositive();
+            ProcessInspection.Details(null, dump.Path, new("ScriptHost")).Modules.Should().ContainSingle().Which.Name.Should().Be("Roslynaut.ScriptHost");
+            ProcessInspection.AsyncChains(null, dump.Path, new("Inner"), top: 10, pdbs, CancellationToken.None).Should().ContainSingle();
+        }
+        finally
+        {
+            File.Delete(dump.Path);
+        }
+    }
+
+    [Test]
+    public async Task Details_HaveCommandLineEnvironmentAndAssemblies()
+    {
+        await SleepingThreadsAsync();
+
+        var details = ProcessInspection.Details(target.Id, null, null);
+
+        details.CommandLine.Should().Contain("Roslynaut.ScriptHost.dll");
+        details.Runtime.Should().StartWith($"{Environment.Version.Major}.");
+        details.Environment.Should().ContainKey("PATH");
+        details.Modules.Should().Contain(module => module.Name == "System.Private.CoreLib" && module.Version != null);
     }
 }
 
