@@ -1,3 +1,4 @@
+using System.CommandLine;
 using Microsoft.Extensions.DependencyInjection;
 using Roslynaut.Debugging;
 using Roslynaut.Tools;
@@ -6,14 +7,20 @@ namespace Roslynaut;
 
 public static class Program
 {
-    public static async Task<int> Main(params string[] args)
+    public static Task<int> Main(params string[] args)
     {
-        if (ParseProtocol(args) is not { } protocol)
-        {
-            await Console.Error.WriteLineAsync("Usage: Roslynaut [--protocol http|sse|stdio]");
-            return 1;
-        }
+        // A string, not the enum, which would take numbers too.
+        var protocol = new Option<string>("--protocol") { Description = "The transport that carries MCP.", DefaultValueFactory = _ => "stdio" }
+            .AcceptOnlyFromAmong("http", "sse", "stdio");
+        var root = new RootCommand("An MCP server that exposes Roslyn and MSBuild to agents.") { protocol };
+        root.SetAction(parsed => RunAsync(Enum.Parse<McpProtocol>(parsed.GetValue(protocol)!, ignoreCase: true)));
 
+        // The host handles Ctrl+C and SIGTERM itself and shuts down gracefully; System.CommandLine would give up on it after 2 seconds.
+        return root.Parse(args).InvokeAsync(new() { ProcessTerminationTimeout = null });
+    }
+
+    private static async Task<int> RunAsync(McpProtocol protocol)
+    {
         await using var services = new ServiceCollection()
             .AddSingleton<WorkspaceService>()
             .AddSingleton<ResultCache>()
@@ -130,17 +137,4 @@ public static class Program
         await services.GetRequiredService<McpServerService>().StartAsync(protocol);
         return 0;
     }
-
-    private static McpProtocol? ParseProtocol(string[] args) => args switch
-    {
-        [] => McpProtocol.Stdio,
-        ["--protocol", var value] => value.ToLowerInvariant() switch
-        {
-            "http" => McpProtocol.Http,
-            "sse" => McpProtocol.Sse,
-            "stdio" => McpProtocol.Stdio,
-            _ => null,
-        },
-        _ => null,
-    };
 }
