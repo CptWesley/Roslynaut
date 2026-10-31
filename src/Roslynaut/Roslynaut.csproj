@@ -5,7 +5,22 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+
+    <!-- dotnet tool install -g Roslynaut. The package holds the publish output, so the helper hosts beside the server too. -->
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>roslynaut</ToolCommandName>
+    <Version>0.1.0</Version>
+    <Authors>Wesley Baartman</Authors>
+    <Description>An MCP server that exposes Roslyn and MSBuild to agents: navigation, analysis, refactoring, builds and tests, IL/JIT disassembly, decompilation, process inspection and debugging of C# projects.</Description>
+    <PackageTags>mcp;roslyn;msbuild;csharp;agents</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <RepositoryUrl>https://github.com/CptWesley/Roslynaut</RepositoryUrl>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
 
   <ItemGroup>
     <InternalsVisibleTo Include="Roslynaut.Tests" />
