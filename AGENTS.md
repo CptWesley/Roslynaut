@@ -18,7 +18,7 @@ dotnet run --project src/Roslynaut -- --no-instructions                      # n
 dotnet run --project src/Roslynaut -- --install claude                       # register with Claude Code and exit
 ```
 
-`--install claude` (`ClaudeInstall`) adds this executable as the user-scope MCP server `roslynaut` to `~/.claude.json`, and a `Read|Grep` PreToolUse hook to `~/.claude/settings.json` (both under `CLAUDE_CONFIG_DIR` when set), each only if not there yet. The hook runs the executable with `--claude-hook`, which `Main` handles before building the services, and only adds context suggesting Roslynaut's tools for `.cs` files: it never blocks or approves a call.
+`--install claude` (`ClaudeInstall`) adds this executable as the user-scope MCP server `roslynaut` to `~/.claude.json`, and a `Read|Grep|Bash` PreToolUse hook to `~/.claude/settings.json` (both under `CLAUDE_CONFIG_DIR` when set), each only if not there yet. The hook runs the executable with `--claude-hook`, which `Main` handles before building the services, and only adds context suggesting Roslynaut's tools for `.cs` files: it never blocks or approves a call.
 
 Environment variables:
 - `ROSLYNAUT_ALLOW_EVALUATE=true` enables the `evaluate` and `benchmark` tools, which run arbitrary code. They are off by default.

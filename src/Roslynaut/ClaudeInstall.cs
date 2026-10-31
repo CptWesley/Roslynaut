@@ -57,7 +57,7 @@ internal static partial class ClaudeInstall
         {
             // Exec form (args), so no shell has to quote the path.
             var hook = new JsonObject { ["type"] = "command", ["command"] = command[0], ["args"] = Strings([.. command[1..], HookOption]) };
-            preToolUse.AsArray().Add(new JsonObject { ["matcher"] = "Read|Grep", ["hooks"] = new JsonArray(hook) });
+            preToolUse.AsArray().Add(new JsonObject { ["matcher"] = "Read|Grep|Bash", ["hooks"] = new JsonArray(hook) });
             Write(settingsFile, settings);
             log.WriteLine($"Added the Roslynaut hook, which suggests its tools when Claude reads or greps C# files, to {settingsFile}.");
         }
@@ -75,15 +75,28 @@ internal static partial class ClaudeInstall
     {
         var input = call?["tool_input"];
         string? Text(string name) => input?[name] is JsonValue value && value.TryGetValue(out string? text) ? text : null;
-        if (Text("type") != "cs" && !new[] { "file_path", "path", "glob" }.Any(name => Text(name) is { } text && CSharpFile().IsMatch(text)))
-            return null;
-        var context = (string?)call?["tool_name"] == "Read" ? ReadHint : GrepHint;
-        return new JsonObject { ["hookSpecificOutput"] = new JsonObject { ["hookEventName"] = "PreToolUse", ["additionalContext"] = context } }.ToJsonString();
+        bool CSharp(string name) => Text(name) is { } text && CSharpFile().IsMatch(text);
+        var context = (string?)call?["tool_name"] switch
+        {
+            "Read" when CSharp("file_path") => ReadHint,
+            "Grep" when Text("type") == "cs" || CSharp("path") || CSharp("glob") => GrepHint,
+            // ponytail: guesses from the command text which programs run on which files; parse the command line if the guesses miss too often.
+            "Bash" when CSharp("command") => SearchCommand().IsMatch(Text("command")!) ? GrepHint : ReadCommand().IsMatch(Text("command")!) ? ReadHint : null,
+            _ => null,
+        };
+        return context is null ? null
+            : new JsonObject { ["hookSpecificOutput"] = new JsonObject { ["hookEventName"] = "PreToolUse", ["additionalContext"] = context } }.ToJsonString();
     }
 
-    // Not .csproj or .cshtml.
-    [GeneratedRegex(@"\.cs\b", RegexOptions.IgnoreCase)]
+    // Not .csproj or .cshtml. The type options are ripgrep's.
+    [GeneratedRegex(@"\.cs\b|(?:-t ?|--type[= ])cs\b", RegexOptions.IgnoreCase)]
     private static partial Regex CSharpFile();
+
+    [GeneratedRegex(@"\b(?:e?grep|rg|ag|ack)\b")]
+    private static partial Regex SearchCommand();
+
+    [GeneratedRegex(@"\b(?:cat|head|tail|less|more|sed|awk)\b")]
+    private static partial Regex ReadCommand();
 
     private static JsonArray Strings(string[] values) => new([.. values.Select(value => JsonValue.Create(value))]);
 

@@ -35,6 +35,11 @@ public class ClaudeInstallTests
     [TestCase("Grep", """{ "pattern": "class", "glob": "*.cs" }""", true)]
     [TestCase("Grep", """{ "pattern": "class", "type": "cs" }""", true)]
     [TestCase("Grep", """{ "pattern": "class", "path": "docs" }""", false)]
+    [TestCase("Bash", """{ "command": "grep -rn 'class Order' --include=*.cs src" }""", true)]
+    [TestCase("Bash", """{ "command": "rg -t cs Submit" }""", true)]
+    [TestCase("Bash", """{ "command": "sed -n '10,40p' src/Program.cs" }""", true)]
+    [TestCase("Bash", """{ "command": "git add src/Program.cs" }""", false)]
+    [TestCase("Bash", """{ "command": "grep -r Version src/App.csproj" }""", false)]
     public void Hint_OnlyForCSharpFiles(string tool, string input, bool hints)
     {
         var hint = ClaudeInstall.Hint(JsonNode.Parse($$"""{ "tool_name": "{{tool}}", "tool_input": {{input}} }"""));
