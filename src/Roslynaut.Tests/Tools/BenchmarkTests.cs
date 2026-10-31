@@ -19,8 +19,9 @@ public class BenchmarkTests
             .And.Contain("public void Case_Loop() { for (var i = 0; i < 3; i++) { } }");
     }
 
-    // Downloads BenchmarkDotNet; takes a minute or two.
+    // Downloads BenchmarkDotNet; takes a minute or two. Retried, as the download can time out.
     [Test]
+    [Retry(3, RetryExceptions = [typeof(ModelContextProtocol.McpException)])]
     public async Task Cases_AreMeasured_WithRatioAndAllocations()
     {
         var directory = Directory.CreateTempSubdirectory("roslynaut-bench-");

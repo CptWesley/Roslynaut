@@ -203,7 +203,9 @@ public class PdbSourceTests
     }
 
     // The framework's PDBs are on Microsoft's symbol server, and lead through SourceLink to GitHub, at line endings other than the build's.
+    // Retried: the symbol server now and then takes longer than the download timeout.
     [Test]
+    [Retry(3, RetryExceptions = [typeof(ModelContextProtocol.McpException)])]
     public async Task SymbolSource_OfFrameworkMethod_ComesThroughSymbolServerAndSourceLink()
     {
         var collections = Path.Combine(Path.GetDirectoryName(typeof(object).Assembly.Location)!, "System.Collections.dll");
@@ -216,7 +218,9 @@ public class PdbSourceTests
         source.Document.Should().Match<SourceDocument>(document => document.Origin == "SourceLink" && document.Verified == true && document.Url!.StartsWith("https://"));
     }
 
+    // Retried, as it downloads from NuGet's symbol server too.
     [Test]
+    [Retry(3, RetryExceptions = [typeof(ModelContextProtocol.McpException)])]
     public async Task FindPdb_OfPackageWithSymbolPackage_DownloadsItFromNuGet()
     {
         var buildalyzer = Path.Combine(AppContext.BaseDirectory, "Buildalyzer.dll");

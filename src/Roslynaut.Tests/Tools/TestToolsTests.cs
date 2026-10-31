@@ -575,8 +575,9 @@ public class MutationTests
     [OneTimeTearDown]
     public void DeleteProjects() => directory.Delete(recursive: true);
 
-    // Max(1, 1) cannot tell > from >=, nor either branch from the other.
+    // Max(1, 1) cannot tell > from >=, nor either branch from the other. Retried, as installing Stryker.NET downloads it and can time out.
     [Test]
+    [Retry(3, RetryExceptions = [typeof(ModelContextProtocol.McpException)])]
     public async Task Mutate_ReportsTheChangesNoTestNoticed()
     {
         var calc = Path.Combine(directory.FullName, "Lib", "Calc.cs");
