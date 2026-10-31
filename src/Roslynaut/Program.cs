@@ -32,12 +32,16 @@ public static class Program
             Description = "Register the server with this agent for all projects, with a hook that suggests its tools when the agent reads or greps C# files, and exit.",
             HelpName = "agent",
         }.AcceptOnlyFromAmong("claude");
-        var root = new RootCommand("An MCP server that exposes Roslyn and MSBuild to agents.") { protocol, enable, disable, noInstructions, install };
+        var uninstall = new Option<string>("--uninstall")
+        {
+            Description = "Remove the server and its hook from this agent, as before uninstalling the tool, and exit.", HelpName = "agent",
+        }.AcceptOnlyFromAmong("claude");
+        var root = new RootCommand("An MCP server that exposes Roslyn and MSBuild to agents.") { protocol, enable, disable, noInstructions, install, uninstall };
         root.SetAction(async parsed =>
         {
-            if (parsed.GetValue(install) is not null)
+            if (parsed.GetValue(install) is not null || parsed.GetValue(uninstall) is not null)
             {
-                ClaudeInstall.Run();
+                ClaudeInstall.Run(uninstall: parsed.GetValue(uninstall) is not null);
                 return;
             }
 

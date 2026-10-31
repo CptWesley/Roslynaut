@@ -59,6 +59,34 @@ public class ClaudeInstallTests
         }
     }
 
+    [Test]
+    public void Uninstall_RemovesServerAndHook_KeepingTheRest()
+    {
+        var dir = Directory.CreateTempSubdirectory().FullName;
+        var (config, settings) = (Path.Combine(dir, ".claude.json"), Path.Combine(dir, "settings.json"));
+        File.WriteAllText(config, """{ "mcpServers": { "other": { "command": "x" }, "Roslynaut": { "command": "old/Roslynaut" } } }""");
+        File.WriteAllText(settings, """
+            { "hooks": { "PreToolUse": [
+                { "matcher": "Read|Grep", "hooks": [ { "type": "command", "command": "old/Roslynaut", "args": ["--claude-hook"] }, { "type": "command", "command": "mine" } ] } ] } }
+            """);
+        try
+        {
+            ClaudeInstall.Install(config, settings, ["dotnet", "Roslynaut.dll"], TextWriter.Null);
+            ClaudeInstall.Uninstall(config, settings, TextWriter.Null);
+            var again = new StringWriter();
+            ClaudeInstall.Uninstall(config, settings, again);
+
+            JsonNode.Parse(File.ReadAllText(config))!["mcpServers"]!.ToJsonString().Should().Be("""{"other":{"command":"x"}}""");
+            JsonNode.Parse(File.ReadAllText(settings))!["hooks"]!["PreToolUse"]!.ToJsonString().Should().Be(
+                """[{"matcher":"Read|Grep","hooks":[{"type":"command","command":"mine"}]}]""");
+            again.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries).Should().AllSatisfy(line => line.Should().StartWith("There is no"));
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
     [TestCase("Read", """{ "file_path": "C:/src/Program.cs" }""", true)]
     [TestCase("Read", """{ "file_path": "C:/src/App.csproj" }""", false)]
     [TestCase("Grep", """{ "pattern": "class", "glob": "*.cs" }""", true)]

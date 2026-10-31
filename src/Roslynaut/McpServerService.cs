@@ -95,6 +95,9 @@ public sealed class McpServerService(IEnumerable<IMcpTool> tools)
         }
 
         var builder = WebApplication.CreateBuilder();
+        // Kestrel listens on localhost, but takes any Host header: a web page whose name resolves to 127.0.0.1 (DNS rebinding) could call the
+        // tools, which run builds. The environment variable AllowedHosts overrides this, for a server that listens on another address.
+        builder.Configuration["AllowedHosts"] ??= "localhost;127.0.0.1;[::1]";
         builder.Services.AddMcpServer(options => options.ServerInstructions = instructions ? Instructions : null)
             .WithHttpTransport(options =>
             {

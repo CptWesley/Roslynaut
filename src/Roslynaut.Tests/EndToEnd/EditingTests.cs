@@ -137,7 +137,7 @@ public class EditingTests : EndToEndTest
 
         File.ReadAllBytes(counter).Take(3).Should().Equal(utf8.Preamble.ToArray());
         File.ReadAllBytes(uses).Take(3).Should().Equal(utf8.Preamble.ToArray());
-        File.ReadAllText(counter).Should().Be(Counter.Replace(" Count ", " Total ").Replace("set; }\n", "set; }\n\n    public int Peak { get; private set; }\n").ReplaceLineEndings("\r\n"));
+        File.ReadAllText(counter).Should().Be(Counter.ReplaceLineEndings("\n").Replace(" Count ", " Total ").Replace("set; }\n", "set; }\n\n    public int Peak { get; private set; }\n").ReplaceLineEndings("\r\n"));
         File.ReadAllText(uses).Should().Be(Uses.Replace(".Count;", ".Total;").ReplaceLineEndings("\r\n"));
     }
 
@@ -759,7 +759,7 @@ public class EditingTests : EndToEndTest
 
         refused.Should().BeEquivalentTo(new SafeDeleteSymbolTool.SafeDeleteResult(false, [], [use]));
         deleted.Should().BeEquivalentTo(new SafeDeleteSymbolTool.SafeDeleteResult(true, [file], []));
-        Read(file).Should().Be(Widget.Replace("\n\n    public int Faster() => Speed + 1;", "").ReplaceLineEndings("\n"));
+        Read(file).Should().Be(Widget.ReplaceLineEndings("\n").Replace("\n\n    public int Faster() => Speed + 1;", ""));
     }
 
     // Nothing calls these members, but overrides, explicit implementations and the types that implement abstract or interface members need them.
@@ -811,7 +811,7 @@ public class EditingTests : EndToEndTest
         Read(file).Should().Be(animals.ReplaceLineEndings("\n"));
 
         (await DeleteAsync("Dog.Name")).Should().BeEquivalentTo(new SafeDeleteSymbolTool.SafeDeleteResult(true, [file], []));
-        Read(file).Should().Be(animals.Replace("\n\n    public override string Name() => \"dog\";", "").ReplaceLineEndings("\n"));
+        Read(file).Should().Be(animals.ReplaceLineEndings("\n").Replace("\n\n    public override string Name() => \"dog\";", ""));
     }
 
     // Dot's primary constructor calls Shape's in its base list; and deleting Dot's would delete Dot, which declares it.

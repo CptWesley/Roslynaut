@@ -16,12 +16,13 @@ dotnet run --project src/Roslynaut -- --protocol stdio|http|sse              # n
 dotnet run --project src/Roslynaut -- --enable-tools build run_tests         # only these tools; --disable-tools leaves tools out
 dotnet run --project src/Roslynaut -- --no-instructions                      # no server instructions
 dotnet run --project src/Roslynaut -- --install claude                       # register with Claude Code and exit
+dotnet run --project src/Roslynaut -- --uninstall claude                     # remove that registration and exit
 dotnet pack src/Roslynaut -o artifacts                                       # the dotnet tool package
 ```
 
 The package is a dotnet tool (`PackAsTool`, command `roslynaut`) of the server's publish output, which holds the helper hosts too; they are not packable themselves. Installed with `dotnet tool install -g Roslynaut`, `roslynaut --install claude` registers the tool's command, which stays the same across updates. `ToolPackageTests` (category `EndToEnd`) packs it, installs it into a tool path and runs the helpers through the tool's command.
 
-`--install claude` (`ClaudeInstall`) adds this executable as the user-scope MCP server `roslynaut` to `~/.claude.json`, and a `Read|Grep|Bash` PreToolUse hook to `~/.claude/settings.json` (both under `CLAUDE_CONFIG_DIR` when set). It replaces an earlier installation, the hook found by its `--claude-hook` argument, and writes nothing when both are up to date. The hook runs the executable with `--claude-hook`, which `Main` handles before building the services, and only adds context suggesting Roslynaut's tools for `.cs` files: it never blocks or approves a call.
+`--install claude` (`ClaudeInstall`) adds this executable as the user-scope MCP server `roslynaut` to `~/.claude.json`, and a `Read|Grep|Bash` PreToolUse hook to `~/.claude/settings.json` (both under `CLAUDE_CONFIG_DIR` when set). It replaces an earlier installation, the hook found by its `--claude-hook` argument, and writes nothing when both are up to date. `--uninstall claude` removes both, of any version, to run before `dotnet tool uninstall`: a hook whose executable is gone fails on every call it matches. The hook runs the executable with `--claude-hook`, which `Main` handles before building the services, and only adds context suggesting Roslynaut's tools for `.cs` files: it never blocks or approves a call.
 
 Environment variables:
 - `ROSLYNAUT_ALLOW_EVALUATE=true` enables the `evaluate` and `benchmark` tools, which run arbitrary code. They are off by default.

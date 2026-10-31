@@ -44,6 +44,11 @@ public class TransportTests : EndToEndTest
             evaluate.IsError.Should().BeTrue();
             evaluate.Content.OfType<TextContentBlock>().Single().Text.Should().Be(
                 "An error occurred invoking 'evaluate': evaluate runs code, so it is off; start the server with the environment variable ROSLYNAUT_ALLOW_EVALUATE=true to allow it.");
+
+            // As a page on another name that resolves to this machine would ask.
+            using var http = new HttpClient();
+            var rebound = await http.SendAsync(new HttpRequestMessage(HttpMethod.Get, url) { Headers = { Host = "rebound.example" } });
+            rebound.StatusCode.Should().Be(System.Net.HttpStatusCode.BadRequest);
         }
         finally
         {

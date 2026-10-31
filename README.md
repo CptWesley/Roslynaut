@@ -11,3 +11,10 @@ roslynaut --install claude   # registers the server with Claude Code
 ```
 
 Other MCP clients run `roslynaut` (stdio), or `roslynaut --protocol http`.
+
+## Uninstall
+
+```sh
+roslynaut --uninstall claude   # removes the server and its hook from Claude Code
+dotnet tool uninstall -g Roslynaut
+```

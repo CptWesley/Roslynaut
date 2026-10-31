@@ -24,15 +24,22 @@ internal static partial class ClaudeInstall
 
     private static readonly JsonSerializerOptions Indented = new() { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
-    public static void Run()
+    public static void Run(bool uninstall)
     {
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         // CLAUDE_CONFIG_DIR moves both files, as it does for Claude Code.
         var configDir = Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR") is { Length: > 0 } dir ? dir : null;
+        var (configFile, settingsFile) = (Path.Combine(configDir ?? home, ".claude.json"), Path.Combine(configDir ?? Path.Combine(home, ".claude"), "settings.json"));
+        if (uninstall)
+        {
+            Uninstall(configFile, settingsFile, Console.Out);
+            return;
+        }
+
         var process = Environment.ProcessPath!;
         // Started as dotnet Roslynaut.dll, the process is dotnet itself.
         string[] command = Path.GetFileNameWithoutExtension(process) == "dotnet" ? [process, typeof(ClaudeInstall).Assembly.Location] : [process];
-        Install(Path.Combine(configDir ?? home, ".claude.json"), Path.Combine(configDir ?? Path.Combine(home, ".claude"), "settings.json"), command, Console.Out);
+        Install(configFile, settingsFile, command, Console.Out);
     }
 
     internal static void Install(string configFile, string settingsFile, string[] command, TextWriter log)
@@ -40,8 +47,7 @@ internal static partial class ClaudeInstall
         var config = Read(configFile);
         var servers = (config["mcpServers"] ??= new JsonObject()).AsObject();
         var server = new JsonObject { ["type"] = "stdio", ["command"] = command[0], ["args"] = Strings(command[1..]) };
-        // Whatever the case of its name, as Claude Code would run both.
-        var found = servers.Where(entry => entry.Key.Equals(Name, StringComparison.OrdinalIgnoreCase)).ToList();
+        var found = Servers(servers);
         if (found is [{ Key: Name, Value: var value }] && JsonNode.DeepEquals(value, server))
             log.WriteLine($"The MCP server {Name} in {configFile} is up to date.");
         else
@@ -58,24 +64,62 @@ internal static partial class ClaudeInstall
         // Exec form (args), so no shell has to quote the path.
         var hook = new JsonObject { ["type"] = "command", ["command"] = command[0], ["args"] = Strings([.. command[1..], HookOption]) };
         var group = new JsonObject { ["matcher"] = "Read|Grep|Bash", ["hooks"] = new JsonArray(hook) };
-        // By the option alone, so the hook of a server that moved, or of an older version, counts too.
-        static bool Ours(JsonNode? node) => node?.ToJsonString().Contains(HookOption) == true;
         var ours = groups.Where(Ours).ToList();
         if (ours is [var installed] && JsonNode.DeepEquals(installed, group))
             log.WriteLine($"The Roslynaut hook in {settingsFile} is up to date.");
         else
         {
-            // Other hooks that share a group with an old one stay.
-            foreach (var old in ours)
-            {
-                var hooks = old!["hooks"]!.AsArray();
-                hooks.RemoveAll(Ours);
-                if (hooks.Count == 0)
-                    groups.Remove(old);
-            }
+            RemoveHooks(groups, ours);
             groups.Add(group);
             Write(settingsFile, settings);
             log.WriteLine($"{(ours is [] ? "Added" : "Updated")} the Roslynaut hook, which suggests its tools when Claude reads or greps C# files, in {settingsFile}.");
+        }
+    }
+
+    /// <summary>
+    /// Removes what <see cref="Install"/> adds, by any version, before the tool is uninstalled: else Claude Code fails to start the hook on every
+    /// read and grep.
+    /// </summary>
+    internal static void Uninstall(string configFile, string settingsFile, TextWriter log)
+    {
+        var config = Read(configFile);
+        if (config["mcpServers"] is JsonObject servers && Servers(servers) is [_, ..] found)
+        {
+            foreach (var entry in found)
+                servers.Remove(entry.Key);
+            Write(configFile, config);
+            log.WriteLine($"Removed the MCP server {Name} from {configFile}.");
+        }
+        else
+            log.WriteLine($"There is no MCP server {Name} in {configFile}.");
+
+        var settings = Read(settingsFile);
+        if (settings["hooks"]?["PreToolUse"] is JsonArray groups && groups.Where(Ours).ToList() is [_, ..] ours)
+        {
+            RemoveHooks(groups, ours);
+            Write(settingsFile, settings);
+            log.WriteLine($"Removed the Roslynaut hook from {settingsFile}.");
+        }
+        else
+            log.WriteLine($"There is no Roslynaut hook in {settingsFile}.");
+    }
+
+    // Whatever the case of its name, as Claude Code would run both.
+    private static List<KeyValuePair<string, JsonNode?>> Servers(JsonObject servers) =>
+        [.. servers.Where(entry => entry.Key.Equals(Name, StringComparison.OrdinalIgnoreCase))];
+
+    // By the option alone, so the hook of a server that moved, or of an older version, counts too.
+    private static bool Ours(JsonNode? node) => node?.ToJsonString().Contains(HookOption) == true;
+
+    // Other hooks that share a group with ours stay.
+    private static void RemoveHooks(JsonArray groups, List<JsonNode?> ours)
+    {
+        foreach (var old in ours)
+        {
+            var hooks = old!["hooks"]!.AsArray();
+            hooks.RemoveAll(Ours);
+            if (hooks.Count == 0)
+                groups.Remove(old);
         }
     }
 
