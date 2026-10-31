@@ -7,6 +7,7 @@
     <Nullable>enable</Nullable>
     <!-- Shipped inside the Roslynaut tool package. -->
     <IsPackable>false</IsPackable>
+    <RollForward>Major</RollForward>
   </PropertyGroup>
 
   <ItemGroup>

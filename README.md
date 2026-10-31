@@ -3,7 +3,7 @@ Roslyn/MSBuild MCP
 
 ## Install
 
-Roslynaut is a .NET tool and needs the .NET 10 runtime.
+Roslynaut is a .NET tool and needs the .NET 10 runtime or later.
 
 ```sh
 dotnet tool install -g Roslynaut

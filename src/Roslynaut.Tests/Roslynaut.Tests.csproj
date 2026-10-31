@@ -16,10 +16,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\Roslynaut\Roslynaut.csproj" />
-  </ItemGroup>
-
-  <ItemGroup>
     <Using Include="AwesomeAssertions" />
     <Using Include="NUnit.Framework" />
   </ItemGroup>
