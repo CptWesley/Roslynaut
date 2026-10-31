@@ -50,7 +50,7 @@ public sealed class NuGetService(WorkspaceService workspace)
         foreach (var source in ConfigOf(projectPath).Sources)
         {
             if (await source.GetResourceAsync<PackageSearchResource>(cancellationToken) is { } search)
-                results.Add((source.PackageSource.Name, [.. await search.SearchAsync(query, new SearchFilter(prerelease), skip, take, NullLogger.Instance, cancellationToken)]));
+                results.Add((source.PackageSource.Name, [.. await search.SearchAsync(query, new SearchFilter(prerelease, prerelease ? SearchFilterType.IsAbsoluteLatestVersion : SearchFilterType.IsLatestVersion), skip, take, NullLogger.Instance, cancellationToken)]));
         }
 
         return results;

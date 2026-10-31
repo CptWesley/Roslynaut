@@ -14,7 +14,7 @@ public class ProcessInspectionTests
     [OneTimeSetUp]
     public void StartTarget()
     {
-        var start = new ProcessStartInfo(Path.Combine(Path.GetDirectoryName(typeof(object).Assembly.Location)!, "..", "..", "..", "dotnet.exe"))
+        var start = new ProcessStartInfo(DotnetCli.Executable)
         {
             ArgumentList = { "exec", Path.Combine(AppContext.BaseDirectory, "Roslynaut.ScriptHost.dll") },
             RedirectStandardInput = true,

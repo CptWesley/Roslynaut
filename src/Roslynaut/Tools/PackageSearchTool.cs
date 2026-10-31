@@ -33,10 +33,13 @@ public sealed class PackageSearchTool(NuGetService nuget) : IMcpTool
         // rank across sources if that matters.
         var sources = await nuget.SearchAsync(projectPath, query, prerelease, page * pageSize, pageSize + 1, cancellationToken);
         var results = sources
-            .SelectMany(source => source.Results.Take(pageSize).Select(package => new PackageSearchResult(
-                package.Identity.Id, package.Identity.Version.ToNormalizedString(), package.Description, package.Authors,
-                package.DownloadCount, package.PrefixReserved, source.Source)))
-            .DistinctBy(package => package.Id, StringComparer.OrdinalIgnoreCase)
+            .SelectMany(source => source.Results.Take(pageSize).Select(package => (Package: package, source.Source)))
+            // A local feed can list several versions of a package, in the order of its files, which differs between file systems.
+            .GroupBy(result => result.Package.Identity.Id, StringComparer.OrdinalIgnoreCase)
+            .Select(versions => versions.MaxBy(result => result.Package.Identity.Version))
+            .Select(result => new PackageSearchResult(
+                result.Package.Identity.Id, result.Package.Identity.Version.ToNormalizedString(), result.Package.Description, result.Package.Authors,
+                result.Package.DownloadCount, result.Package.PrefixReserved, result.Source))
             .ToList();
         return new(results, page, pageSize, sources.Any(source => source.Results.Count > pageSize), null);
     }

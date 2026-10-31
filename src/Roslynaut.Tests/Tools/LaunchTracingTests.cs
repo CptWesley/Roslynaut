@@ -57,7 +57,9 @@ public class LaunchTracingTests
             static class Busy
             {
                 public static void Fail() => throw new InvalidOperationException("No such order");
-                public static void Spin() { var end = Environment.TickCount64 + 20; while (Environment.TickCount64 < end) { } }
+                // Mostly managed code: on Linux, TickCount64 waits in native code for each sample, and the stacks stop there.
+                public static void Spin() { var end = Environment.TickCount64 + 20; while (Environment.TickCount64 < end) for (var i = 0; i < 100_000; i++) Sink += i % 7; }
+                public static long Sink;
             }
             """);
 

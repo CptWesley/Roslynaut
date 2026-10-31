@@ -32,9 +32,10 @@ Microsoft.Extensions.DependencyInjection.Abstractions, System.CodeDom,
 System.Composition.AttributedModel, System.Composition.Convention,
 System.Composition.Hosting, System.Composition.Runtime,
 System.Composition.TypedParts, System.Configuration.ConfigurationManager,
-System.Formats.Nrbf, System.Memory.Data, System.Reflection.MetadataLoadContext,
-System.Resources.Extensions, System.Security.Cryptography.Pkcs,
-System.Security.Cryptography.ProtectedData, System.Security.Cryptography.Xml
+System.Diagnostics.EventLog, System.Formats.Nrbf, System.Memory.Data,
+System.Reflection.MetadataLoadContext, System.Resources.Extensions,
+System.Security.Cryptography.Pkcs, System.Security.Cryptography.ProtectedData,
+System.Security.Cryptography.Xml
   https://github.com/dotnet/runtime
   © Microsoft Corporation. All rights reserved.
 

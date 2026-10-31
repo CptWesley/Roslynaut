@@ -517,7 +517,7 @@ public class TestingPlatformRunTests
         RunTestsTool.UsesTestingPlatform(project).Should().BeTrue();
 
         var run = await RunTestsTool.RunTestsAsync(project);
-        (run.Succeeded, run.Total, run.Passed, run.Failed).Should().Be((false, 2, 1, 1));
+        (run.Succeeded, run.Total, run.Passed, run.Failed).Should().Be((false, 2, 1, 1), run.Output ?? string.Join("\n", run.BuildErrors));
         run.Failures.Should().ContainSingle().Which.Message.Should().Contain("3");
 
         var filtered = await RunTestsTool.RunTestsAsync(project, $"FullyQualifiedName~{name}.Tests.Passes", workspace: new WorkspaceService());

@@ -393,7 +393,8 @@ public sealed class PdbService : IDisposable
             var checksums = string.Join(';', entries.Where(entry => entry.Type == DebugDirectoryEntryType.PdbChecksum)
                 .Select(pe.ReadPdbChecksumDebugDirectoryData)
                 .Select(checksum => $"{checksum.AlgorithmName}:{Convert.ToHexStringLower(checksum.Checksum.AsSpan())}"));
-            return (null, new($"{name}/{data.Guid:N}FFFFFFFF/{name}", new(data.Guid, codeView.Stamp), checksums.Length > 0 ? checksums : null));
+            var key = name.ToLowerInvariant();
+            return (null, new($"{key}/{data.Guid:N}FFFFFFFF/{key}", name, new(data.Guid, codeView.Stamp), checksums.Length > 0 ? checksums : null));
         }
         catch (BadImageFormatException)
         {
@@ -425,7 +426,7 @@ public sealed class PdbService : IDisposable
             if (!server.StartsWith("http://", StringComparison.OrdinalIgnoreCase) && !server.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
             {
                 // A symbol store has the server's layout; a plain directory has the PDBs side by side.
-                var stored = new[] { Path.Combine(server, symbols.Key), Path.Combine(server, Path.GetFileName(symbols.Key)) }.FirstOrDefault(File.Exists);
+                var stored = new[] { Path.Combine(server, symbols.Key), Path.Combine(server, symbols.Name) }.FirstOrDefault(File.Exists);
                 try
                 {
                     if (stored is null)
@@ -566,8 +567,11 @@ public sealed class PdbService : IDisposable
         return reader.ReadToEnd();
     }
 
-    /// <summary>How a symbol server knows a PDB: by file name and id; plus the checksums that nuget.org asks for.</summary>
-    private sealed record SymbolKey(string Key, BlobContentId Id, string? Checksums);
+    /// <summary>
+    /// How a symbol server knows a PDB: by lowercase file name and id; plus the checksums that nuget.org asks for. A directory of PDBs has it by
+    /// its own <see cref="Name"/>, whose case Linux tells apart.
+    /// </summary>
+    private sealed record SymbolKey(string Key, string Name, BlobContentId Id, string? Checksums);
 
     private sealed record CachedPdb(DateTime Timestamp, Pdb Pdb)
     {
