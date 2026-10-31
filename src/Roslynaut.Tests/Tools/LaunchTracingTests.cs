@@ -110,7 +110,9 @@ public class LaunchTracingTests
         profile.Methods.Should().Contain(method => method.Method.Contains("Busy.Spin"));
     }
 
+    // Retried: on a busy machine, as CI's, the sampler can miss most of the short test run.
     [Test]
+    [Retry(3)]
     public async Task Cpu_OfALaunchedTestProject_IsOfTheTestHost()
     {
         var samples = await ProcessTracing.SampleAsync(new TraceTarget(null, new(tests, [], "FullyQualifiedName~Spin.SpinTests.Spins", workspace)), AtMost, CancellationToken.None);

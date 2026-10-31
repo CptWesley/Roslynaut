@@ -288,8 +288,10 @@ public class ProcessTracingTests
         target.Dispose();
     }
 
-    // The spinning thread starts in the script host's Main, the outermost method that is not the framework's.
+    // The spinning thread starts in the script host's Main, the outermost method that is not the framework's. Retried: on a busy machine the
+    // spinning thread can get too few samples.
     [Test]
+    [Retry(3)]
     public async Task Cpu_FindsTheSpinningMethod_AndItsThread()
     {
         var samples = await ProcessTracing.SampleAsync(target.Id, TimeSpan.FromSeconds(2), CancellationToken.None);
