@@ -22,36 +22,70 @@ public sealed class DecompileTool(AssemblyLoader assemblies, PdbService pdbs, Re
     [Description("Decompiles types or members of any .NET assembly to C# with ILSpy's decompiler, such as a dependency without source. "
         + "definition gives the AssemblyPath of a symbol from a referenced assembly. A type comes out whole, with its nested types. "
         + "This shows what the assembly really contains: code from source generators, members the compiler synthesizes and code IL weavers add. "
-        + "Local variables keep their names if a PDB is at hand. For the original source with comments, use assembly_sources or symbol_source. Paged.")]
+        + "Local variables keep their names if a PDB is at hand. For the original source with comments, use assembly_sources or symbol_source. "
+        + "With lowered, it shows the C# the compiler lowered the code to instead: lambdas as closure classes, async and iterator methods as "
+        + "state machines (with their generated types), foreach, using, lock and string interpolation spelled out: where hidden allocations, "
+        + "boxing and captures come from. Paged.")]
     private Task<PagedResult<DecompiledMember>> DecompileAsync(
         [Description(IlDisassembler.AssemblyPath)] string assemblyPath,
         [Description("Type or member name, optionally partially qualified, e.g. 'System.Linq.Enumerable', 'Dictionary.TryGetValue' or 'Outer.Nested'; "
             + "or a documentation ID such as 'M:Ns.Type.Method(System.Int32)'. A method name returns all its overloads. "
             + "A generic arity, as in 'List`1' or 'List<T>', must match; without one, any arity does.")] string name,
+        [Description("Show the lowered code, as the compiler emits it, with the compiler-generated types of a method's lambdas and state machines; "
+            + "build the project first to see its current source this way.")] bool lowered = false,
         [Description(ToolDefaults.Page)] int page = 0,
         [Description(ToolDefaults.PageSize)] int pageSize = IlDisassembler.DefaultPageSize)
     {
         var assembly = assemblies.Read(assemblyPath);
-        return cache.GetPageAsync(assembly, $"decompile|{name}", page, pageSize,
-            () => Task.Run<IEnumerable<DecompiledMember>>(() => Decompile(assembly, [name], pdbs.FindPdb(assembly.Path.Value))));
+        return cache.GetPageAsync(assembly, $"decompile|{name}|{lowered}", page, pageSize,
+            () => Task.Run<IEnumerable<DecompiledMember>>(() => Decompile(assembly, [name], pdbs.FindPdb(assembly.Path.Value), lowered)));
     }
 
-    internal static List<DecompiledMember> Decompile(LoadedAssembly assembly, IReadOnlyCollection<string> names, Pdb? pdb = null)
+    /// <param name="lowered">Decompiles without rebuilding what the compiler lowered, and adds the generated types a method's code lives in.</param>
+    internal static List<DecompiledMember> Decompile(LoadedAssembly assembly, IReadOnlyCollection<string> names, Pdb? pdb = null, bool lowered = false)
     {
         List<(string Name, int Token)> members;
         lock (assembly.Module)
-            members = [.. IlDisassembler.FindMembers(assembly.Module, names).Select(member => (member.FullName, member.MetadataToken.ToInt32()))];
+        {
+            var found = IlDisassembler.FindMembers(assembly.Module, names).ToList();
+            members = [.. found.Select(member => (member.FullName, member.MetadataToken.ToInt32()))];
+            if (lowered)
+                members.AddRange(found.OfType<Mono.Cecil.MethodDefinition>().SelectMany(GeneratedTypesOf).Distinct().Select(type => (type.FullName, type.MetadataToken.ToInt32())));
+        }
 
         // From bytes, so the file stays unlocked. References resolve next to it, from the NuGet cache, or from installed frameworks, read whole
         // into memory too: by default the resolver keeps them open, and a build cannot write a referenced project's output.
         var path = assembly.Path.Value;
         using var file = new ICSharpCode.Decompiler.Metadata.PEFile(path, new MemoryStream(File.ReadAllBytes(path)));
         var resolver = new UniversalAssemblyResolver(path, throwOnError: false, file.DetectTargetFrameworkId(), streamOptions: PEStreamOptions.PrefetchEntireImage);
-        var decompiler = new CSharpDecompiler(file, resolver, new DecompilerSettings())
+        var settings = lowered
+            ? new DecompilerSettings
+            {
+                AnonymousMethods = false, AsyncAwait = false, YieldReturn = false, LocalFunctions = false, ExpressionTrees = false, LockStatement = false,
+                UsingStatement = false, ForEachStatement = false, StringInterpolation = false, SwitchStatementOnString = false, AutomaticProperties = false,
+                AutomaticEvents = false, NullPropagation = false, ShowXmlDocumentation = false,
+            }
+            : new DecompilerSettings();
+        var decompiler = new CSharpDecompiler(file, resolver, settings)
         {
             DebugInfoProvider = pdb is null ? null : new DebugInfo(pdb),
         };
         return [.. members.Select(member => new DecompiledMember(member.Name, Decompile(decompiler, member.Token)))];
+    }
+
+    /// <summary>
+    /// The compiler-generated nested types a method's code lives in: its state machine, as &lt;Method&gt;d__4, and the closure classes of the
+    /// type's lambdas, &lt;&gt;c and &lt;&gt;c__DisplayClass, which the method's IL names.
+    /// </summary>
+    private static IEnumerable<Mono.Cecil.TypeDefinition> GeneratedTypesOf(Mono.Cecil.MethodDefinition method)
+    {
+        var named = method.Body?.Instructions.Select(instruction => instruction.Operand switch
+        {
+            Mono.Cecil.MemberReference member => member.DeclaringType?.Resolve(),
+            _ => null,
+        }).OfType<Mono.Cecil.TypeDefinition>().ToHashSet() ?? [];
+        return method.DeclaringType.NestedTypes.Where(nested => nested.Name.StartsWith('<')
+            && (nested.Name.StartsWith($"<{method.Name}>", StringComparison.Ordinal) || named.Contains(nested)));
     }
 
     private static string Decompile(CSharpDecompiler decompiler, int token)

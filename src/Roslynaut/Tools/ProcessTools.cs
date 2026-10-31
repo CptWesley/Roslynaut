@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using Microsoft.Diagnostics.NETCore.Client;
 using Microsoft.Diagnostics.Runtime;
@@ -12,7 +13,7 @@ namespace Roslynaut.Tools;
 /// <summary>
 /// Inspects .NET processes with ClrMD: a running one from a snapshot, so it only pauses while the snapshot is taken, or a dump file.
 /// </summary>
-internal static class ProcessInspection
+public static partial class ProcessInspection
 {
     public static IEnumerable<ProcessEntry> List() =>
         DiagnosticsClient.GetPublishedProcesses().Where(id => id != Environment.ProcessId).Select(Describe).OfType<ProcessEntry>().ToList();
@@ -52,6 +53,248 @@ internal static class ProcessInspection
             thread.CurrentException is { } exception ? Describe(exception) : null,
             [.. thread.EnumerateStackTrace().Where(frame => frame.Kind == ClrStackFrameKind.ManagedMethod).Take(maxFrames).Select(frame => Describe(frame, pdbs))],
             [.. monitors[thread.ManagedThreadId], .. locks[thread.OSThreadId]]))];
+    }
+
+    /// <summary>
+    /// The async methods that wait, as chains from the innermost awaiter out to the method that started it, as SOS's dumpasync finds them:
+    /// each state machine box on the heap whose task has not completed, linked to the box its task's continuation resumes.
+    /// </summary>
+    public static IReadOnlyList<AsyncChain> AsyncChains(int? processId, string? dumpPath, Regex? method, int top, PdbService pdbs, CancellationToken cancellationToken)
+    {
+        using var target = Open(processId, dumpPath);
+        using var runtime = RuntimeOf(target);
+        var heap = HeapOf(runtime);
+        RequireWalkable(heap, dumpPath);
+
+        var boxes = new Dictionary<ulong, ClrObject>();
+        foreach (var item in heap.EnumerateObjects())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (item.IsValid && IsBox(item.Type) && (item.ReadField<int>("m_stateFlags") & TaskCompleted) == 0)
+                boxes[item.Address] = item;
+        }
+
+        // A box's task resumes the boxes that await it; those that nothing awaits is outermost, those that await nothing innermost.
+        var resumes = boxes.Values.ToDictionary(box => box.Address, box => Resumed(box.ReadObjectField("m_continuationObject"), depth: 0).Where(boxes.ContainsKey).Distinct().ToList());
+        var awaited = resumes.SelectMany(entry => entry.Value).ToHashSet();
+        var lines = new Dictionary<(string, int), IReadOnlyList<int>>();
+        var chains = boxes.Values.Where(box => !awaited.Contains(box.Address)).Select(innermost =>
+        {
+            var frames = new List<AsyncFrame>();
+            var seen = new HashSet<ulong>();
+            for (ulong? address = innermost.Address; address is { } at && seen.Add(at); address = resumes[at].Count > 0 ? resumes[at][0] : null)
+                frames.Add(FrameOf(boxes[at], pdbs, lines));
+            return (Frames: frames, Awaiting: AwaitedBy(innermost), Task: innermost.Address);
+        });
+
+        return [.. chains.Where(chain => method is null || chain.Frames.Any(frame => method.IsMatch(frame.Method)))
+            .GroupBy(chain => string.Join('\n', chain.Frames.Select(frame => $"{frame.Method}@{frame.State}")) + chain.Awaiting)
+            .Select(group => new AsyncChain(group.First().Frames, group.First().Awaiting, group.Count(), Hex(group.First().Task)))
+            .OrderByDescending(chain => chain.Count)
+            .Take(top)];
+    }
+
+    // Task's m_stateFlags for RanToCompletion, Faulted and Canceled.
+    private const int TaskCompleted = 0x1600000;
+
+    private static bool IsBox(ClrType? type) => type?.Name is { } name && name.Contains("AsyncStateMachineBox<", StringComparison.Ordinal);
+
+    /// <summary>
+    /// The boxes a continuation resumes: a box itself, a delegate whose target is one, a list of continuations, or a continuation object or
+    /// task (as Task.WhenAll's) that leads on to them.
+    /// </summary>
+    private static IEnumerable<ulong> Resumed(ClrObject continuation, int depth)
+    {
+        if (continuation.IsNull || !continuation.IsValid || depth > 8)
+            yield break;
+        if (IsBox(continuation.Type))
+        {
+            yield return continuation.Address;
+            yield break;
+        }
+
+        if (continuation.IsArray)
+        {
+            var array = continuation.AsArray();
+            if (array.Type.ComponentType?.IsObjectReference == true)
+            {
+                for (var i = 0; i < array.Length; i++)
+                    foreach (var resumed in Resumed(array.GetObjectValue(i), depth + 1))
+                        yield return resumed;
+            }
+
+            yield break;
+        }
+
+        foreach (var field in (string[])["_target", "m_action", "m_task", "_items", "m_continuationObject", "_stateMachine"])
+        {
+            if (continuation.Type?.GetFieldByName(field) is { IsObjectReference: true })
+                foreach (var resumed in Resumed(continuation.ReadObjectField(field), depth + 1))
+                    yield return resumed;
+        }
+    }
+
+    /// <summary>The method of a box's state machine, its state, and where in source it waits, where the module's PDB is at hand.</summary>
+    private static AsyncFrame FrameOf(ClrObject box, PdbService pdbs, Dictionary<(string, int), IReadOnlyList<int>> awaits)
+    {
+        var field = box.Type!.GetFieldByName("StateMachine");
+        var machineType = field?.Type;
+        int? state = null;
+        if (field is { IsObjectReference: true } && box.ReadObjectField("StateMachine") is { IsNull: false } machine && machine.Type?.GetFieldByName("<>1__state") is not null)
+            (state, machineType) = (machine.ReadField<int>("<>1__state"), machine.Type);
+        else if (field is { IsValueType: true } && box.ReadValueTypeField("StateMachine") is var value && value.Type?.GetFieldByName("<>1__state") is not null)
+            state = value.ReadField<int>("<>1__state");
+
+        var name = machineType?.Name ?? box.Type.Name ?? "?";
+        var method = ResolveStackTraceTool.PathOf(name.Replace('+', '.') + ".MoveNext()").Path;
+        return new(method, state ?? -1, state is { } waiting and >= 0 ? AwaitLocation(machineType, waiting, pdbs, awaits) : null);
+    }
+
+    /// <summary>The file and line of the await a state machine waits at in its state, from its PDB; null without one.</summary>
+    private static string? AwaitLocation(ClrType? machine, int state, PdbService pdbs, Dictionary<(string, int), IReadOnlyList<int>> awaits)
+    {
+        if (machine?.Module is not { IsDynamic: false, Name: { } file } || !File.Exists(file) || machine.Methods.FirstOrDefault(method => method.Name == "MoveNext") is not { } moveNext)
+            return null;
+
+        try
+        {
+            if (pdbs.FindPdb(file) is not { } pdb)
+                return null;
+            if (!awaits.TryGetValue((file, moveNext.MetadataToken), out var offsets))
+                awaits[(file, moveNext.MetadataToken)] = offsets = pdb.AwaitOffsets(moveNext.MetadataToken);
+            return state < offsets.Count && pdb.LineOf(moveNext.MetadataToken, offsets[state]) is var (document, line) ? $"{pdb.NameOf(document)}:line {line}" : null;
+        }
+        catch (Exception e) when (e is IOException or BadImageFormatException or McpException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// What an innermost state machine waits for: the object its awaiter holds, such as a task of a SemaphoreSlim, a TaskCompletionSource or
+    /// Task.Delay, or the source of a ValueTask. A completed await clears its awaiter, so the one that holds something is the current one.
+    /// </summary>
+    private static string? AwaitedBy(ClrObject box)
+    {
+        var field = box.Type!.GetFieldByName("StateMachine");
+        if (field is { IsObjectReference: true } && box.ReadObjectField("StateMachine") is { IsNull: false } machine)
+            return machine.Type!.Fields.Where(awaiter => awaiter.Name?.StartsWith("<>u__", StringComparison.Ordinal) == true)
+                .Select(awaiter => HeldBy(awaiter, awaiter.IsObjectReference ? machine.ReadObjectField(awaiter.Name!) : default, awaiter.IsValueType ? machine.ReadValueTypeField(awaiter.Name!) : null, 0))
+                .FirstOrDefault(held => held is not null);
+        if (field is not { IsValueType: true } || box.ReadValueTypeField("StateMachine") is not { Type: { } type } value)
+            return null;
+
+        return type.Fields.Where(awaiter => awaiter.Name?.StartsWith("<>u__", StringComparison.Ordinal) == true)
+            .Select(awaiter => HeldBy(awaiter, awaiter.IsObjectReference ? value.ReadObjectField(awaiter.Name!) : default, awaiter.IsValueType ? value.ReadValueTypeField(awaiter.Name!) : null, 0))
+            .FirstOrDefault(held => held is not null);
+
+        // The first object an awaiter holds, through the structs it nests (ConfiguredTaskAwaiter, ValueTaskAwaiter, ValueTask).
+        static string? HeldBy(ClrInstanceField awaiter, ClrObject reference, ClrValueType? nested, int depth)
+        {
+            if (awaiter.IsObjectReference)
+                return reference is { IsNull: false, IsValid: true } ? Describe(reference) : null;
+            if (nested is not { Type: { } type } value || depth > 3)
+                return null;
+
+            return type.Fields.Select(inner => HeldBy(inner, inner.IsObjectReference ? value.ReadObjectField(inner.Name!) : default,
+                inner.IsValueType ? value.ReadValueTypeField(inner.Name!) : null, depth + 1)).FirstOrDefault(held => held is not null);
+        }
+    }
+
+    /// <summary>Writes a dump of a running process: Heap has what the process tools read; Full also the code, which finding locals' roots needs.</summary>
+    public static async Task<DumpFile> WriteDumpAsync(int processId, DumpType type, string? path, CancellationToken cancellationToken)
+    {
+        var name = Describe(processId)?.Name ?? "process";
+        var file = Path.GetFullPath(path ?? Path.Combine(Path.GetTempPath(), "Roslynaut", "Dumps", $"{name}_{processId}_{DateTime.Now:yyyyMMdd_HHmmss}.dmp"));
+        Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+        try
+        {
+            await new DiagnosticsClient(processId).WriteDumpAsync(type, file, logDumpGeneration: false, cancellationToken);
+        }
+        catch (Exception e) when (e is ServerNotAvailableException or UnsupportedCommandException or ServerErrorException or ArgumentException)
+        {
+            throw new McpException($"Cannot dump process {processId}; is it a running .NET process? {e.Message}");
+        }
+
+        return new(file, new FileInfo(file).Length);
+    }
+
+    /// <summary>
+    /// What started a process and what it loaded: its command line, environment (values of names that look secret masked) and runtime from its
+    /// diagnostics port, and its assemblies from a snapshot; or, of a dump, the runtime and assemblies.
+    /// </summary>
+    public static ProcessEntry Details(int? processId, string? dumpPath, Regex? module)
+    {
+        using var target = Open(processId, dumpPath);
+        using var runtime = RuntimeOf(target);
+        var modules = runtime.AppDomains.SelectMany(domain => domain.Modules)
+            .Where(item => !item.IsDynamic && item.Name is { Length: > 0 } && (module is null || module.IsMatch(item.Name)))
+            .DistinctBy(item => item.Name)
+            .Select(item => new ModuleEntry(Path.GetFileNameWithoutExtension(item.Name!), VersionOf(item), item.Name!, item.Layout == ModuleLayout.Flat ? "Flat" : null))
+            .OrderBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var entry = processId is { } id ? Describe(id) ?? new(id, "?", null, null) : new(0, Path.GetFileName(dumpPath!), null, dumpPath);
+        if (processId is not { } running)
+            return entry with { Runtime = runtime.ClrInfo.Version.ToString(), Modules = modules };
+
+        var client = new DiagnosticsClient(running);
+        IReadOnlyDictionary<string, string>? environment = null;
+        try
+        {
+            environment = new SortedDictionary<string, string>(client.GetProcessEnvironment().ToDictionary(variable => variable.Key,
+                variable => Secret().IsMatch(variable.Key) ? "***" : variable.Value), StringComparer.OrdinalIgnoreCase);
+        }
+        catch (Exception e) when (e is ServerNotAvailableException or UnsupportedCommandException or ServerErrorException)
+        {
+            // An old runtime, or one that went away.
+        }
+
+        return entry with { Runtime = runtime.ClrInfo.Version.ToString(), CommandLine = CommandLineOf(running), Environment = environment, Modules = modules };
+    }
+
+    /// <summary>
+    /// An assembly's version: from the display name the runtime reports, "Name, Version=1.2.3.4, ...", or else from the file, if it is on
+    /// this machine.
+    /// </summary>
+    private static string? VersionOf(ClrModule module)
+    {
+        return Version(() => new System.Reflection.AssemblyName(module.AssemblyName!))
+            ?? (File.Exists(module.Name) ? Version(() => System.Reflection.AssemblyName.GetAssemblyName(module.Name)) : null);
+
+        static string? Version(Func<System.Reflection.AssemblyName> name)
+        {
+            try
+            {
+                return name().Version?.ToString();
+            }
+            catch (Exception e) when (e is ArgumentException or IOException or BadImageFormatException)
+            {
+                return null;
+            }
+        }
+    }
+
+    [GeneratedRegex("KEY|SECRET|TOKEN|PASSWORD|PASSWD|PWD|CONNECTIONSTRING|CREDENTIAL|SIGNATURE|AUTH", RegexOptions.IgnoreCase)]
+    private static partial Regex Secret();
+
+    /// <summary>A process's command line, through WMI on Windows and /proc elsewhere; null where it cannot be read.</summary>
+    private static string? CommandLineOf(int processId)
+    {
+        try
+        {
+            if (!OperatingSystem.IsWindows())
+                return File.Exists($"/proc/{processId}/cmdline") ? File.ReadAllText($"/proc/{processId}/cmdline").Replace('\0', ' ').Trim() : null;
+
+            // ponytail: through PowerShell's CIM, which takes a second; call WMI directly if that matters.
+            var (exitCode, output) = DotnetCli.RunAsync("powershell", ["-NoProfile", "-NonInteractive", "-Command", $"(Get-CimInstance Win32_Process -Filter 'ProcessId={processId}').CommandLine"],
+                TimeSpan.FromSeconds(30), CancellationToken.None).GetAwaiter().GetResult();
+            return exitCode == 0 && output.Trim() is { Length: > 0 } line ? line : null;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
+        {
+            return null;
+        }
     }
 
     private static ClrHeap HeapOf(ClrRuntime runtime)
@@ -301,7 +544,31 @@ internal static class ProcessInspection
     private static string Describe(ClrException exception) =>
         $"{exception.Type?.Name}: {exception.Message}" + (exception.Inner is { } inner ? $" ---> {Describe(inner)}" : "");
 
-    public sealed record ProcessEntry(int Id, string Name, DateTime? StartTime, string? Path);
+    /// <param name="Runtime">With processId or dumpPath: the version of the .NET runtime.</param>
+    /// <param name="CommandLine">With processId: how the process was started.</param>
+    /// <param name="Environment">With processId: its environment variables; the values of names that look secret, such as *KEY* or *PASSWORD*, show as ***.</param>
+    /// <param name="Modules">With processId or dumpPath: the assemblies it loaded.</param>
+    public sealed record ProcessEntry(
+        int Id, string Name, DateTime? StartTime, string? Path, string? Runtime = null, string? CommandLine = null,
+        IReadOnlyDictionary<string, string>? Environment = null, IReadOnlyList<ModuleEntry>? Modules = null);
+
+    /// <param name="Version">The assembly's file version, as the runtime reports it.</param>
+    /// <param name="Layout">Flat for an assembly loaded from bytes rather than from its file.</param>
+
+    public sealed record ModuleEntry(string Name, string? Version, string Path, string? Layout);
+
+    /// <param name="Frames">The awaiting methods, innermost first: each awaits the one before it.</param>
+    /// <param name="Awaiting">What the innermost method waits for: the object its awaiter holds, such as a SemaphoreSlim's task, a TaskCompletionSource's task or a Task.Delay.</param>
+    /// <param name="Count">How many chains of this shape wait, as many requests can wait in the same place.</param>
+    /// <param name="Task">The address of the innermost state machine's box, for process_objects or process_roots.</param>
+    public sealed record AsyncChain(IReadOnlyList<AsyncFrame> Frames, string? Awaiting, int Count, string Task);
+
+    /// <param name="Method">The async method, as a symbol path.</param>
+    /// <param name="State">The state machine's state: from 0, the await it waits at, in order of the method's awaits; -1 while it runs.</param>
+    /// <param name="Location">The file and line of that await, where the module's PDB is at hand.</param>
+    public sealed record AsyncFrame(string Method, int State, string? Location);
+
+    public sealed record DumpFile(string Path, long Size);
 
     /// <param name="Exception">The exception the thread is handling, with its inner exceptions.</param>
     /// <param name="Stack">The managed frames, innermost first; with "in file:line n" where the module's PDB is at hand.</param>
@@ -362,8 +629,77 @@ public sealed class DotnetProcessesTool : IMcpTool
     public Delegate Handler => List;
 
     [McpServerTool(Name = "dotnet_processes", ReadOnly = true)]
-    [Description("Lists the running .NET processes, to inspect with process_threads or process_heap: their id, name, start time and executable.")]
-    private static IEnumerable<ProcessInspection.ProcessEntry> List() => ProcessInspection.List();
+    [Description("Lists the running .NET processes, to inspect with process_threads or process_heap: their id, name, start time and executable. "
+        + "With processId (or dumpPath), only that one, with how it was started and what it loaded: its command line, environment variables, "
+        + "runtime version and assemblies with their versions and paths, for a FileLoadException or a version conflict, or to check that it "
+        + "runs the build it should.")]
+    private static Task<IEnumerable<ProcessInspection.ProcessEntry>> List(
+        [Description("The id of one process to describe in detail, e.g. from this list.")] int? processId = null,
+        [Description("Or else a dump file to describe: its runtime and assemblies.")] string? dumpPath = null,
+        [Description("Optional regex for the paths of the assemblies to list, e.g. 'Newtonsoft|MyApp'.")] string? module = null) =>
+        Task.Run(() => processId is null && dumpPath is null
+            ? ProcessInspection.List()
+            : [ProcessInspection.Details(processId, dumpPath, ProcessDefaults.Pattern(module, "module"))]);
+}
+
+public sealed class ProcessAsyncTool(PdbService pdbs) : IMcpTool
+{
+    public Delegate Handler => GetChainsAsync;
+
+    [McpServerTool(Name = "process_async", ReadOnly = true)]
+    [Description("Shows the async methods of a running .NET process or a dump that wait, as SOS's dumpasync does: chains of awaiting methods from "
+        + "the innermost out to the one that started them, each with the await it waits at (a line, where the PDB is at hand), and what the "
+        + "innermost waits for, such as a SemaphoreSlim, a TaskCompletionSource or a Task.Delay; chains of the same shape once, with their count. "
+        + "For hangs in async code, where process_threads shows idle threads, since an awaiting method has no thread. Walks the heap, so it "
+        + "takes a while on a big one.")]
+    private Task<IReadOnlyList<ProcessInspection.AsyncChain>> GetChainsAsync(
+        [Description(ProcessDefaults.ProcessId)] int? processId = null,
+        [Description(ProcessDefaults.DumpPath)] string? dumpPath = null,
+        [Description("Optional regex: only the chains with a method whose path matches, e.g. 'Orders\\.Submit'.")] string? method = null,
+        [Description("How many chains to return, those that wait most often first.")] int top = 20,
+        CancellationToken cancellationToken = default)
+    {
+        var regex = ProcessDefaults.Pattern(method, "method");
+        return Task.Run(() => ProcessInspection.AsyncChains(processId, dumpPath, regex, top, pdbs, cancellationToken), cancellationToken);
+    }
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter<DumpKind>))]
+public enum DumpKind
+{
+    /// <summary>Threads and stacks only.</summary>
+    Mini,
+
+    /// <summary>With the managed heap, which process_heap, process_objects, process_roots and process_async need.</summary>
+    Heap,
+
+    /// <summary>The least that explains a crash, without data that could be private.</summary>
+    Triage,
+
+    /// <summary>All the process's memory, code included, which process_roots needs to find locals.</summary>
+    Full,
+}
+
+public sealed class ProcessDumpTool : IMcpTool
+{
+    public Delegate Handler => WriteAsync;
+
+    [McpServerTool(Name = "process_dump", Destructive = false, Idempotent = false)]
+    [Description("Writes a dump of a running .NET process to a file, as dotnet-dump collect does, to read with process_threads, process_async, "
+        + "process_heap, process_objects, process_roots and dotnet_processes after the process has moved on, exited or restarted, or to compare "
+        + "two moments. The process pauses while it is written. Returns the file's path and size.")]
+    private static Task<ProcessInspection.DumpFile> WriteAsync(
+        [Description("The process id, e.g. from dotnet_processes.")] int processId,
+        [Description("Mini (threads only), Heap (what the process tools read), Triage or Full (the whole memory, larger).")] DumpKind kind = DumpKind.Heap,
+        [Description("Where to write it; by default a new file under the temporary directory's Roslynaut/Dumps.")] string? path = null,
+        CancellationToken cancellationToken = default) =>
+        ProcessInspection.WriteDumpAsync(processId, kind switch
+        {
+            DumpKind.Mini => DumpType.Normal,
+            DumpKind.Triage => DumpType.Triage,
+            DumpKind.Full => DumpType.Full,
+            _ => DumpType.WithHeap,
+        }, path, cancellationToken);
 }
 
 public sealed class ProcessThreadsTool(PdbService pdbs) : IMcpTool
@@ -372,7 +708,7 @@ public sealed class ProcessThreadsTool(PdbService pdbs) : IMcpTool
 
     [McpServerTool(Name = "process_threads", ReadOnly = true)]
     [Description("Snapshots a running .NET process and returns its managed threads, each with its call stack, the exception it is handling, "
-        + "if any, and the locks it holds that other threads wait for: for hangs, deadlocks and errors in progress. Frames give their source file and line where a PDB is at hand, also one that "
+        + "if any, and the locks it holds that other threads wait for: for hangs, deadlocks and errors in progress; an async method that waits has no thread, so process_async shows those. Frames give their source file and line where a PDB is at hand, also one that "
         + "assembly_sources or symbol_source downloaded earlier. The process pauses only while the snapshot is taken. Reads a dump file instead, "
         + "such as one of a crash or a hang.")]
     private Task<IReadOnlyList<ProcessInspection.ThreadEntry>> GetThreadsAsync(

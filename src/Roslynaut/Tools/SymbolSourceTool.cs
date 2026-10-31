@@ -24,10 +24,14 @@ public sealed class SymbolSourceTool(WorkspaceService workspace, AssemblyLoader 
         [Description(ToolDefaults.TargetFilePath)] string? filePath = null,
         [Description(ToolDefaults.Line)] int? line = null,
         [Description(ToolDefaults.Column)] int? column = null,
+        [Description("For a symbol declared in source: also the last this many commits that changed its lines, with git log -L, each with its "
+            + "author, date, message and the diff of those lines: why the code is as it is, or which commit brought in a change.")] int history = 0,
         CancellationToken cancellationToken = default)
     {
         var (solution, symbols) = await workspace.ResolveAsync(projectPath, symbol, filePath, line, column, cancellationToken);
         var sources = await GetSourcesAsync(symbols, cancellationToken);
+        if (sources.Count > 0 && history > 0)
+            return await Task.WhenAll(sources.Select(async source => source with { History = await HistoryAsync(source, history, cancellationToken) }));
         if (sources.Count > 0)
             return sources;
 
@@ -217,6 +221,41 @@ public sealed class SymbolSourceTool(WorkspaceService workspace, AssemblyLoader 
         };
     }
 
+    /// <summary>
+    /// The commits that changed a declaration's lines, newest first, as git log -L follows them back through edits and moves within the file;
+    /// none outside a git repository or for lines git does not have yet.
+    /// </summary>
+    internal static async Task<IReadOnlyList<Commit>> HistoryAsync(SymbolSource source, int count, CancellationToken cancellationToken)
+    {
+        var (file, start) = (source.Location.FilePath, source.Location.Line);
+        var end = start + source.Source.Count(character => character == '\n');
+        string log;
+        try
+        {
+            // Each commit starts with a record separator, its fields apart by unit separators, then the diff of the lines.
+            log = await AffectedTestsTool.GitAsync(Path.GetDirectoryName(file)!, ["log", "--no-color", "--no-ext-diff", $"-n{count}", "--date=short",
+                "--format=%x1e%h%x1f%an%x1f%ad%x1f%s", $"-L{start},{end}:{Path.GetFileName(file)}"], cancellationToken);
+        }
+        catch (McpException)
+        {
+            return [];
+        }
+
+        return [.. log.Split('\x1e', StringSplitOptions.RemoveEmptyEntries).Select(entry => entry.Split('\n', 2)).Where(entry => entry[0].Split('\x1f').Length == 4).Select(entry =>
+        {
+            var fields = entry[0].Split('\x1f');
+            var diff = entry.Length > 1 ? entry[1].Trim() : "";
+            // ponytail: a long diff is cut; ask git for one commit if its whole diff matters.
+            return new Commit(fields[0], fields[1], fields[2], fields[3].TrimEnd('\r'), diff.Length > MaxDiff ? diff[..MaxDiff] + "\n..." : diff);
+        })];
+    }
+
+    private const int MaxDiff = 4000;
+
     /// <param name="Document">For a symbol from a referenced assembly: the source file, from its PDB, that Location points into a local copy of.</param>
-    public sealed record SymbolSource(string Signature, SourceLocation Location, string Source, SourceDocument? Document = null);
+    /// <param name="History">With history: the commits that changed the declaration's lines, newest first.</param>
+    public sealed record SymbolSource(string Signature, SourceLocation Location, string Source, SourceDocument? Document = null, IReadOnlyList<Commit>? History = null);
+
+    /// <param name="Diff">The change to the declaration's lines in that commit.</param>
+    public sealed record Commit(string Hash, string Author, string Date, string Message, string Diff);
 }

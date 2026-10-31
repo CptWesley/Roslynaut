@@ -18,14 +18,14 @@ internal sealed class ServerProcess : IAsyncDisposable
 
     public McpClient Client { get; }
 
-    public static async Task<ServerProcess> StartAsync(Dictionary<string, string?>? environment = null)
+    public static async Task<ServerProcess> StartAsync(Dictionary<string, string?>? environment = null, params string[] arguments)
     {
         var log = new ConcurrentQueue<string>();
         var client = await McpClient.CreateAsync(new StdioClientTransport(new()
         {
             Name = "roslynaut",
             Command = DotnetCli.Executable,
-            Arguments = ["exec", Path.Combine(AppContext.BaseDirectory, "Roslynaut.dll"), "--protocol", "stdio"],
+            Arguments = ["exec", Path.Combine(AppContext.BaseDirectory, "Roslynaut.dll"), "--protocol", "stdio", .. arguments],
             EnvironmentVariables = environment,
             StandardErrorLines = line =>
             {

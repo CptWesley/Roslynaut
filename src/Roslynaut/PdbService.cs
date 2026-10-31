@@ -175,6 +175,32 @@ public sealed class Pdb
         .Where(local => (local.Attributes & LocalVariableAttributes.DebuggerHidden) == 0)
         .Select(local => (local.Index, Reader.GetString(local.Name)));
 
+    /// <summary>
+    /// The IL offsets of the awaits of an async method's MoveNext, in the order of the states the state machine waits in at them: state 0 at
+    /// the first. From the compiler's async stepping information, blob: catch handler offset, then per await its yield offset, resume offset
+    /// and resume method.
+    /// </summary>
+    public IReadOnlyList<int> AwaitOffsets(int moveNextToken)
+    {
+        if (MetadataTokens.EntityHandle(moveNextToken) is not { Kind: HandleKind.MethodDefinition } method
+            || Blobs(method, AsyncSteppingKind).FirstOrDefault() is not { IsNil: false } blob)
+            return [];
+
+        var reader = Reader.GetBlobReader(blob);
+        reader.ReadUInt32();
+        var offsets = new List<int>();
+        while (reader.RemainingBytes > 0)
+        {
+            offsets.Add((int)reader.ReadUInt32());
+            reader.ReadUInt32();
+            reader.ReadCompressedInteger();
+        }
+
+        return offsets;
+    }
+
+    private static readonly Guid AsyncSteppingKind = new("54FD2AC5-E925-401A-9C2A-F94F171072F8");
+
     private IEnumerable<BlobHandle> Blobs(EntityHandle parent, Guid kind) => Reader.GetCustomDebugInformation(parent)
         .Select(Reader.GetCustomDebugInformation).Where(info => Reader.GetGuid(info.Kind) == kind).Select(info => info.Value);
 }

@@ -51,12 +51,31 @@ public class TransportTests : EndToEndTest
         }
     }
 
-    [TestCase("--protocol", "websocket")]
-    [TestCase("--port", "80")]
-    public async Task UnknownArguments_PrintTheUsage(string option, string value)
+    [TestCase("--protocol", "websocket", "'websocket'")]
+    [TestCase("--protocol", "1", "'1'")]
+    [TestCase("--port", "80", "'--port'")]
+    [TestCase("--enable-tools", "no_such_tool", "'no_such_tool'")]
+    public async Task UnknownArguments_PrintTheUsage(string option, string value, string rejected)
     {
         var (exitCode, output) = await DotnetCli.RunAsync(["exec", ServerAssembly, option, value], TimeSpan.FromMinutes(1), CancellationToken.None);
 
-        (exitCode, output.Trim()).Should().Be((1, "Usage: Roslynaut [--protocol http|sse|stdio]"));
+        exitCode.Should().Be(1);
+        output.Should().Contain(rejected).And.Contain("--protocol <http|sse|stdio>");
+    }
+
+    [Test]
+    public async Task ToolOptions_PickTheTools()
+    {
+        await using var server = await ServerProcess.StartAsync(null, "--enable-tools", "project_graph", "find_tests", "--disable-tools", "find_tests");
+
+        (await server.Client.ListToolsAsync()).Select(tool => tool.Name).Should().Equal("project_graph");
+    }
+
+    [Test]
+    public async Task NoInstructions_LeavesTheInstructionsOut()
+    {
+        await using var server = await ServerProcess.StartAsync(null, "--no-instructions");
+
+        server.Client.ServerInstructions.Should().BeNull();
     }
 }

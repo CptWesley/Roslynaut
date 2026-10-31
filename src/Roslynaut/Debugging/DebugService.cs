@@ -26,7 +26,10 @@ public sealed record Breakpoint(
     [property: Description("With Line: the file to break in.")] string? FilePath = null,
     [property: Description("The 1-based line to break at.")] int Line = 0,
     [property: Description("Break only when this C# expression is true, such as 'i == 3'.")] string? Condition = null,
-    [property: Description("Or else: the method to break where it starts, such as 'MyApp.Orders.Submit' or 'Submit'.")] string? Function = null);
+    [property: Description("Or else: the method to break where it starts, such as 'MyApp.Orders.Submit' or 'Submit'.")] string? Function = null,
+    [property: Description("Makes it a logpoint, which does not stop the program: each time it is hit, this message is recorded with the C# "
+        + "expressions in braces evaluated, such as 'i={i}, total={order.Total}', and the program goes on. The messages come with the next state, "
+        + "in Logged.")] string? Log = null);
 
 /// <param name="Verified">Whether the debugger could bind the breakpoint to code; Message says why not.</param>
 public sealed record BreakpointState(string? FilePath, int Line, bool Verified, string? Message, string? Function = null);
@@ -45,9 +48,10 @@ public sealed record Variable(string Name, string Value, string? Type, int Refer
 /// <param name="Reason">Why it stopped: breakpoint, step, exception, pause or entry.</param>
 /// <param name="Output">What the program wrote since the previous state.</param>
 /// <param name="Exception">When it stopped at an exception: its type and message.</param>
+/// <param name="Logged">What logpoints recorded since the previous state, oldest first, as "file:line [thread] message".</param>
 public sealed record DebugState(
     string Status, string? Reason, string? Description, IReadOnlyList<Frame> Stack, IReadOnlyList<Variable> Locals, int? ExitCode, string Output,
-    string? Exception = null);
+    string? Exception = null, IReadOnlyList<string>? Logged = null);
 
 /// <summary>
 /// One debugging session at a time, with netcoredbg over the Debug Adapter Protocol: launches a program, attaches to a process or a test
@@ -376,6 +380,10 @@ public sealed partial class DebugService(WorkspaceService workspace, PdbService 
     [GeneratedRegex(@"Process Id: (\d+)")]
     private static partial Regex TestHostId();
 
+    /// <summary>An expression in braces in a logpoint's message.</summary>
+    [GeneratedRegex(@"\{([^{}]+)\}")]
+    private static partial Regex Placeholder();
+
     private async Task<T> LockedAsync<T>(Func<Task<T>> action)
     {
         await _lock.WaitAsync();
@@ -415,6 +423,7 @@ public sealed partial class DebugService(WorkspaceService workspace, PdbService 
         {
             breakpoints = breakpoints.Select(breakpoint => new { name = breakpoint.Function, condition = breakpoint.Condition }).ToArray(),
         }, cancellationToken);
+        session.SetFunctionLogpoints(breakpoints);
         return [.. response.GetProperty("breakpoints").EnumerateArray().Zip(breakpoints, (state, breakpoint) => new BreakpointState(
             state.TryGetProperty("source", out var source) ? DapClient.Text(source, "path") : null,
             state.TryGetProperty("line", out var line) ? line.GetInt32() : 0,
@@ -430,11 +439,13 @@ public sealed partial class DebugService(WorkspaceService workspace, PdbService 
             source = new { path = filePath },
             breakpoints = breakpoints.Select(breakpoint => new { line = breakpoint.Line, condition = breakpoint.Condition }).ToArray(),
         }, cancellationToken);
-        return [.. response.GetProperty("breakpoints").EnumerateArray().Zip(breakpoints, (state, breakpoint) => new BreakpointState(
+        List<BreakpointState> states = [.. response.GetProperty("breakpoints").EnumerateArray().Zip(breakpoints, (state, breakpoint) => new BreakpointState(
             filePath,
             state.TryGetProperty("line", out var line) ? line.GetInt32() : breakpoint.Line,
             state.GetProperty("verified").GetBoolean(),
             DapClient.Text(state, "message")))];
+        session.SetLogpoints(filePath, breakpoints, states);
+        return states;
     }
 
     /// <summary>The assembly to run: a .dll as is, or the output of a project after building it.</summary>
@@ -524,7 +535,7 @@ public sealed partial class DebugService(WorkspaceService workspace, PdbService 
                 }
                 catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
                 {
-                    return new("Running", null, null, [], [], null, TakeOutput());
+                    return new("Running", null, null, [], [], null, TakeOutput(), Logged: TakeLogged());
                 }
                 catch (ChannelClosedException)
                 {
@@ -546,7 +557,7 @@ public sealed partial class DebugService(WorkspaceService workspace, PdbService 
                     }
                 }
 
-                return new("Exited", null, null, [], [], exited.ValueKind == JsonValueKind.Object && exited.TryGetProperty("exitCode", out var code) ? code.GetInt32() : null, TakeOutput());
+                return new("Exited", null, null, [], [], exited.ValueKind == JsonValueKind.Object && exited.TryGetProperty("exitCode", out var code) ? code.GetInt32() : null, TakeOutput(), Logged: TakeLogged());
             }
 
             var reason = stop.ValueKind == JsonValueKind.Object ? DapClient.Text(stop, "reason") : null;
@@ -554,7 +565,7 @@ public sealed partial class DebugService(WorkspaceService workspace, PdbService 
             var stack = await StackAsync(cancellationToken);
             var locals = stack.Count == 0 ? [] : await LocalsAsync(await FrameIdAsync(0, cancellationToken), cancellationToken);
             var frames = await Task.WhenAll(stack.Select(frame => WithSourceAsync(frame.Frame, frame.Module, cancellationToken)));
-            return new("Stopped", reason, description, frames, locals, null, TakeOutput(), reason == "exception" ? await ExceptionAsync(cancellationToken) : null);
+            return new("Stopped", reason, description, frames, locals, null, TakeOutput(), reason == "exception" ? await ExceptionAsync(cancellationToken) : null, TakeLogged());
         }
 
         /// <summary>The exception the stopped thread is at, as "Type: message".</summary>
@@ -619,6 +630,99 @@ public sealed partial class DebugService(WorkspaceService workspace, PdbService 
                 frame.TryGetProperty("moduleId", out var module) ? module.ToString() : null))];
         }
 
+        private const int MaxLogged = 1000;
+
+        // Logpoints by "path|line" and by method, with their messages; what they recorded, until the next state takes it.
+        private readonly ConcurrentDictionary<string, string> _lineLogpoints = new(StringComparer.OrdinalIgnoreCase);
+        private readonly ConcurrentDictionary<string, string> _functionLogpoints = new();
+        private readonly List<string> _logged = [];
+
+        /// <summary>Replaces the logpoints of a file, at the lines the debugger bound them to.</summary>
+        public void SetLogpoints(string filePath, IReadOnlyList<Breakpoint> breakpoints, IReadOnlyList<BreakpointState> states)
+        {
+            foreach (var key in _lineLogpoints.Keys.Where(key => key.StartsWith(filePath + "|", StringComparison.OrdinalIgnoreCase)))
+                _lineLogpoints.TryRemove(key, out _);
+            foreach (var (breakpoint, state) in breakpoints.Zip(states).Where(pair => pair.First.Log is not null))
+                _lineLogpoints[$"{filePath}|{state.Line}"] = breakpoint.Log!;
+        }
+
+        public void SetFunctionLogpoints(IReadOnlyList<Breakpoint> breakpoints)
+        {
+            _functionLogpoints.Clear();
+            foreach (var breakpoint in breakpoints.Where(breakpoint => breakpoint is { Log: not null, Function: not null }))
+                _functionLogpoints[breakpoint.Function!] = breakpoint.Log!;
+        }
+
+        /// <summary>
+        /// When the program stopped at a logpoint: records its message, with the expressions in braces evaluated in the stopped frame, and
+        /// continues the program. False for any other stop.
+        /// </summary>
+        private async Task<bool> LogAsync(int thread)
+        {
+            if (_lineLogpoints.IsEmpty && _functionLogpoints.IsEmpty)
+                return false;
+
+            try
+            {
+                var stack = await Client.RequestAsync("stackTrace", new { threadId = thread, startFrame = 0, levels = 1 }, CancellationToken.None);
+                if (stack.GetProperty("stackFrames").EnumerateArray().FirstOrDefault() is not { ValueKind: JsonValueKind.Object } frame)
+                    return false;
+
+                var (path, line, name) = (frame.TryGetProperty("source", out var source) ? DapClient.Text(source, "path") : null, frame.GetProperty("line").GetInt32(), DapClient.Text(frame, "name") ?? "");
+                var message = path is not null && _lineLogpoints.TryGetValue($"{Path.GetFullPath(path)}|{line}", out var atLine) ? atLine
+                    : _functionLogpoints.FirstOrDefault(logpoint => name.Contains(logpoint.Key, StringComparison.Ordinal)).Value;
+                if (message is null)
+                    return false;
+
+                var text = new StringBuilder();
+                var last = 0;
+                foreach (Match expression in Placeholder().Matches(message))
+                {
+                    text.Append(message, last, expression.Index - last);
+                    try
+                    {
+                        var result = await Client.RequestAsync("evaluate", new { expression = expression.Groups[1].Value, frameId = frame.GetProperty("id").GetInt32(), context = "watch" }, CancellationToken.None);
+                        text.Append(DapClient.Text(result, "result"));
+                    }
+                    catch (McpException e)
+                    {
+                        text.Append($"<{e.Message}>");
+                    }
+
+                    last = expression.Index + expression.Length;
+                }
+
+                text.Append(message, last, message.Length - last);
+                lock (_logged)
+                {
+                    _logged.Add($"{(path is null ? name : Path.GetFileName(path))}:{line} [{thread}] {text}");
+                    if (_logged.Count > MaxLogged)
+                        _logged.RemoveAt(0);
+                }
+
+                await Client.RequestAsync("continue", new { threadId = thread }, CancellationToken.None);
+                return true;
+            }
+            catch (McpException)
+            {
+                // The program went on or ended meanwhile; report the stop as it is.
+                return false;
+            }
+        }
+
+        private IReadOnlyList<string>? TakeLogged()
+        {
+            lock (_logged)
+            {
+                if (_logged.Count == 0)
+                    return null;
+
+                var logged = _logged.ToList();
+                _logged.Clear();
+                return logged;
+            }
+        }
+
         private string TakeOutput()
         {
             lock (_output)
@@ -644,6 +748,10 @@ public sealed partial class DebugService(WorkspaceService workspace, PdbService 
                             _output.Append(DapClient.Text(body, "output"));
                         break;
                     case "stopped":
+                        // A logpoint records its message and lets the program go on.
+                        if (DapClient.Text(body, "reason") == "breakpoint" && body.TryGetProperty("threadId", out var logged) && await LogAsync(logged.GetInt32()))
+                            break;
+
                         // Into the channel before IsStopped, which tells WaitAsync it is there.
                         ThreadId = body.TryGetProperty("threadId", out var thread) ? thread.GetInt32() : ThreadId;
                         _stops.Writer.TryWrite(body);

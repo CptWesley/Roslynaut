@@ -42,6 +42,20 @@ public class DecompileTests
         directory.Delete(recursive: true);
     }
 
+    [Test]
+    public void Decompile_Lowered_ShowsClosuresAndStateMachines()
+    {
+        var capture = DecompileTool.Decompile(TestAssembly, ["LoweringSample.Capture"], lowered: true);
+        capture.Select(member => member.Member).Should().Contain(member => member.Contains("<>c__DisplayClass"));
+        capture[0].Code.Should().Contain("<>c__DisplayClass").And.NotContain("=> total");
+
+        var wait = DecompileTool.Decompile(TestAssembly, ["LoweringSample.WaitAsync"], lowered: true);
+        wait[0].Code.Should().NotContain("await").And.Contain("<WaitAsync>d__");
+        wait.Should().Contain(member => member.Member.Contains("<WaitAsync>d__") && member.Code.Contains("MoveNext"));
+
+        DecompileTool.Decompile(TestAssembly, ["LoweringSample.WaitAsync"]).Should().ContainSingle().Which.Code.Should().Contain("await Task.Yield()");
+    }
+
     // The IL and native code tools take properties too, by their accessors.
     [Test]
     public void FindMethods_OfProperty_AreItsAccessors()
@@ -94,5 +108,21 @@ public class DecompileTests
         var assembly = compilation.GetTypeByMetadataName("System.Text.StringBuilder")!.ContainingAssembly;
 
         (await AssemblyLoader.FindFileAsync(solution, assembly, CancellationToken.None)).Should().Be(typeof(object).Assembly.Location);
+    }
+}
+
+/// <summary>For lowered decompilation: a lambda that captures a local, and an async method.</summary>
+internal static class LoweringSample
+{
+    public static Func<int> Capture(int seed)
+    {
+        var total = seed;
+        return () => total + 1;
+    }
+
+    public static async Task<int> WaitAsync()
+    {
+        await Task.Yield();
+        return 1;
     }
 }

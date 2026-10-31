@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 using Roslynaut.Tools;
@@ -28,6 +29,17 @@ public class ProtocolTests : EndToEndTest
             foreach (var parameter in tool.JsonSchema.TryGetProperty("properties", out var properties) ? properties.EnumerateObject() : default)
                 parameter.Value.TryGetProperty("description", out _).Should().BeTrue($"{tool.Name}.{parameter.Name} needs a description");
         }
+    }
+
+    // The instructions name tools so that agents find them; a renamed tool must not leave a stale name behind.
+    [Test]
+    public async Task Instructions_NameOnlyToolsThatExist()
+    {
+        var tools = (await Server.Client.ListToolsAsync()).Select(tool => tool.Name).ToHashSet();
+        var instructions = Server.Client.ServerInstructions;
+
+        instructions.Should().NotBeNullOrWhiteSpace();
+        Regex.Matches(instructions!, @"\b[a-z]+(?:_[a-z]+)+\b").Select(match => match.Value).Where(name => !tools.Contains(name)).Should().BeEmpty();
     }
 
     // What a tool declares about itself reaches clients, which may ask before running a destructive one; what it leaves out stays unset.

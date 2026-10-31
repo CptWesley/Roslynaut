@@ -83,6 +83,39 @@ public class TestToolsTests
     }
 
     [Test]
+    public async Task MemberChanges_SinceACommit_AddedAndRemoved()
+    {
+        var directory = Directory.CreateTempSubdirectory("roslynaut-git-");
+        try
+        {
+            async Task Git(params string[] arguments) =>
+                (await DotnetCli.RunAsync("git", ["-C", directory.FullName, .. arguments], TimeSpan.FromMinutes(1), CancellationToken.None)).ExitCode.Should().Be(0);
+
+            var (changed, deleted) = (Path.Combine(directory.FullName, "Changed.cs"), Path.Combine(directory.FullName, "Deleted.cs"));
+            File.WriteAllText(changed, "namespace N;\nclass A\n{\n    int X;\n    void M(int a) { }\n    void Same() { }\n}\n");
+            File.WriteAllText(deleted, "class D { }\n");
+            await Git("init", "-q");
+            await Git("add", ".");
+            await Git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "-m", "Initial");
+            File.WriteAllText(changed, "namespace N;\nclass A\n{\n    int Y;\n    void M(long a) { }\n    void Same() { }\n}\n");
+            File.Delete(deleted);
+            File.WriteAllText(Path.Combine(directory.FullName, "Added.cs"), "class B { }\n");
+
+            var changes = await AffectedTestsTool.ChangedLinesAsync(directory.FullName, "HEAD", CancellationToken.None);
+            var (added, removed) = await AffectedTestsTool.MemberChangesAsync(directory.FullName, "HEAD", changes.Keys, CancellationToken.None);
+
+            added.Should().BeEquivalentTo("N.A.Y", "N.A.M(long)", "B");
+            removed.Should().BeEquivalentTo("N.A.X", "N.A.M(int)", "D");
+        }
+        finally
+        {
+            foreach (var file in directory.EnumerateFiles("*", SearchOption.AllDirectories))
+                file.Attributes = FileAttributes.Normal;
+            directory.Delete(recursive: true);
+        }
+    }
+
+    [Test]
     public void ParseDiff_TakesTheNewLines_AndSkipsDeletedFiles()
     {
         var root = Path.GetTempPath();
@@ -171,6 +204,22 @@ public class BuildAndRunTestsTests
                 [Test, Ignore("Not now")] public void Ignored() { }
             }
             """);
+
+        // Hangs only while a file next to the test assembly says so.
+        File.WriteAllText(Path.Combine(directory.FullName, "HangTests.cs"), """
+            using NUnit.Framework;
+
+            namespace Sample;
+
+            public class HangTests
+            {
+                [Test] public void Hangs()
+                {
+                    if (System.IO.File.Exists(System.IO.Path.Combine(System.AppContext.BaseDirectory, "hang")))
+                        System.Threading.Thread.Sleep(System.Threading.Timeout.Infinite);
+                }
+            }
+            """);
     }
 
     [OneTimeTearDown]
@@ -201,9 +250,69 @@ public class BuildAndRunTestsTests
     {
         var run = await RunTestsTool.RunTestsAsync(project);
 
-        (run.Succeeded, run.Total, run.Passed, run.Failed, run.Skipped).Should().Be((false, 3, 1, 1, 1));
+        (run.Succeeded, run.Total, run.Passed, run.Failed, run.Skipped).Should().Be((false, 4, 2, 1, 1));
         run.Failures.Should().ContainSingle().Which.Should().Match<RunTestsTool.TestFailure>(failure =>
             failure.Test == "Fails" && failure.Message!.Contains("Expected: 3") && failure.StackTrace!.Contains("SampleTests.cs"));
+    }
+
+    [Test]
+    public async Task RunTests_Repeated_CountsTheRunsEachTestFailed()
+    {
+        var run = await RunTestsTool.RunTestsAsync(project, "FullyQualifiedName~Sample.SampleTests.Fails|FullyQualifiedName~Sample.SampleTests.Passes", repeat: 2);
+
+        (run.Runs, run.Total, run.Failed).Should().Be((2, 4, 2));
+        run.Failures.Should().ContainSingle();
+        run.FailedRuns.Should().ContainSingle().Which.Should().Match<RunTestsTool.TestRepeat>(test =>
+            test.Test == "Fails" && test.Failed == 2 && test.Runs == 2 && test.Messages.Count == 1);
+    }
+
+    [Test]
+    public async Task RunTests_WithHangTimeout_DumpsTheHungTestHost()
+    {
+        await BuildTool.BuildAsync(project);
+        var marker = Directory.EnumerateFiles(directory.FullName, "Sample.Tests.dll", SearchOption.AllDirectories)
+            .Select(file => Path.Combine(Path.GetDirectoryName(file)!, "hang")).First(file => file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}"));
+        File.WriteAllText(marker, "");
+        RunTestsTool.TestRun run;
+        try
+        {
+            run = await RunTestsTool.RunTestsAsync(project, "FullyQualifiedName~Sample.HangTests", hangTimeout: 10);
+        }
+        finally
+        {
+            File.Delete(marker);
+        }
+
+        try
+        {
+            run.Hang.Should().NotBeNull();
+            run.Hang!.Running.Should().Equal("Sample.HangTests.Hangs");
+            run.Hang.Threads.Should().Contain(thread => thread.Stack.Any(frame => frame.Contains("Sample.HangTests.Hangs")));
+            File.Exists(run.Hang.Dump).Should().BeTrue();
+        }
+        finally
+        {
+            if (run.Hang is not null)
+                File.Delete(run.Hang.Dump);
+        }
+    }
+
+    [Test]
+    public void Mutations_ReadStrykersReport()
+    {
+        var report = RunTestsTool.Mutations("""
+            {"files": {"C:\\src\\Calc.cs": {"mutants": [
+              {"id": "0", "mutatorName": "Arithmetic mutation", "replacement": "a - b", "status": "Killed", "location": {"start": {"line": 4, "column": 44}, "end": {"line": 4, "column": 49}}},
+              {"id": "1", "mutatorName": "Equality mutation", "replacement": "a >= b", "status": "Survived", "location": {"start": {"line": 5, "column": 44}, "end": {"line": 5, "column": 49}}},
+              {"id": "2", "mutatorName": "Equality mutation", "replacement": "a < b", "status": "NoCoverage", "location": {"start": {"line": 5, "column": 44}, "end": {"line": 5, "column": 49}}},
+              {"id": "3", "mutatorName": "String mutation", "status": "CompileError", "location": {"start": {"line": 6, "column": 1}, "end": {"line": 6, "column": 2}}}
+            ]}}}
+            """);
+
+        (report.Score, report.Killed, report.Survived, report.NoCoverage).Should().Be((33.3, 1, 1, 1));
+        report.Undetected.Should().Equal(
+            new RunTestsTool.Mutant("C:\\src\\Calc.cs", 5, 44, "Equality mutation", "a >= b", "Survived"),
+            new RunTestsTool.Mutant("C:\\src\\Calc.cs", 5, 44, "Equality mutation", "a < b", "NoCoverage"));
     }
 
     [Test]
@@ -413,5 +522,70 @@ public class TestingPlatformRunTests
 
         var filtered = await RunTestsTool.RunTestsAsync(project, $"FullyQualifiedName~{name}.Tests.Passes", workspace: new WorkspaceService());
         (filtered.Succeeded, filtered.Total, filtered.Passed).Should().Be((true, 1, 1));
+    }
+}
+
+/// <summary>run_tests' mutate, with Stryker.NET (installed from nuget.org on first use) on a library whose tests check only some of its code.</summary>
+[NonParallelizable]
+public class MutationTests
+{
+    private DirectoryInfo directory = null!;
+
+    [OneTimeSetUp]
+    public void CreateProjects()
+    {
+        directory = Directory.CreateTempSubdirectory("roslynaut-mutation-");
+        void Write(string path, string text)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(Path.Combine(directory.FullName, path))!);
+            File.WriteAllText(Path.Combine(directory.FullName, path), text);
+        }
+
+        Write("Lib/Lib.csproj", """<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>""");
+        Write("Lib/Calc.cs", """
+            namespace Lib;
+            public static class Calc
+            {
+                public static int Add(int a, int b) => a + b;
+                public static int Max(int a, int b) => a > b ? a : b;
+            }
+            """);
+        Write("Lib.Tests/Lib.Tests.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>
+              <ItemGroup>
+                <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.11.0" />
+                <PackageReference Include="NUnit" Version="5.0.0" />
+                <PackageReference Include="NUnit3TestAdapter" Version="6.3.1" />
+                <ProjectReference Include="../Lib/Lib.csproj" />
+              </ItemGroup>
+            </Project>
+            """);
+        Write("Lib.Tests/CalcTests.cs", """
+            using NUnit.Framework;
+            namespace Lib.Tests;
+            public class CalcTests
+            {
+                [Test] public void Adds() => Assert.That(Lib.Calc.Add(2, 3), Is.EqualTo(5));
+                [Test] public void Max() => Assert.That(Lib.Calc.Max(1, 1), Is.EqualTo(1));
+            }
+            """);
+    }
+
+    [OneTimeTearDown]
+    public void DeleteProjects() => directory.Delete(recursive: true);
+
+    // Max(1, 1) cannot tell > from >=, nor either branch from the other.
+    [Test]
+    public async Task Mutate_ReportsTheChangesNoTestNoticed()
+    {
+        var calc = Path.Combine(directory.FullName, "Lib", "Calc.cs");
+
+        var run = await RunTestsTool.MutateAsync(Path.Combine(directory.FullName, "Lib.Tests", "Lib.Tests.csproj"), [calc], new WorkspaceService(), CancellationToken.None);
+
+        run.Output.Should().BeNull();
+        run.Mutation.Should().NotBeNull();
+        run.Mutation!.Killed.Should().BePositive();
+        run.Mutation.Undetected.Should().NotBeEmpty().And.OnlyContain(mutant => mutant.Line == 5 && mutant.File == calc);
     }
 }

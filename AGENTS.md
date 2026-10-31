@@ -13,10 +13,12 @@ dotnet test src/Roslynaut.Tests --filter "FullyQualifiedName~NavigationTests" # 
 dotnet test src/Roslynaut.Tests --filter "Name=References_HaveContainerAndAccess"
 dotnet test src/Roslynaut.Tests --filter "TestCategory!=EndToEnd"                    # without the end-to-end tests
 dotnet run --project src/Roslynaut -- --protocol stdio|http|sse              # no args = stdio
+dotnet run --project src/Roslynaut -- --enable-tools build run_tests         # only these tools; --disable-tools leaves tools out
+dotnet run --project src/Roslynaut -- --no-instructions                      # no server instructions
 ```
 
 Environment variables:
-- `ROSLYNAUT_ALLOW_EVALUATE=true` enables the `evaluate` tool, which runs arbitrary code. It is off by default.
+- `ROSLYNAUT_ALLOW_EVALUATE=true` enables the `evaluate` and `benchmark` tools, which run arbitrary code. They are off by default.
 - `NETCOREDBG` is the path to netcoredbg, which the debug tools need (or put it on the PATH). `DebugTests` are skipped through `Assume` when it is not set.
 
 Tests use NUnit with AwesomeAssertions (`.Should()`). Both are global usings.
@@ -63,13 +65,20 @@ Tests use NUnit with AwesomeAssertions (`.Should()`). Both are global usings.
   - `symbol_source`, `definition`, `assembly_sources`, `decompile` (local variable names), `process_threads`, the debug frames and `package_assembly` use it.
   - Tools without the network (`decompile`, `process_threads`) call `FindPdb`, which only finds PDBs on disk or downloaded earlier.
 
+**Process tools.** `ProcessInspection` reads a snapshot or a dump with ClrMD (`process_threads`, `process_heap`, `process_objects`, `process_roots`, `process_async`, `dotnet_processes` with a processId), and `ProcessTracing` listens over EventPipe (`process_cpu`, `process_allocations`, `process_counters`, `process_events`).
+- `TraceTarget` is a running process or a program to launch (`launch`). A launched program gets `DOTNET_DiagnosticPorts` pointing at a port the server listens on (`DiagnosticsClientConnector.FromDiagnosticPort`), so its runtime waits at startup until the session starts and then resumes. A project builds first. A VSTest test project runs through `dotnet test --no-build` with runsettings that set the port for the test host alone, since the CLI and MSBuild are .NET processes too; a Microsoft.Testing.Platform test application runs directly with the filter arguments. VSTest kills its test host, which cuts the stream off: the trace is read with `ContinueOnError`.
+- `process_async` finds unfinished `AsyncStateMachineBox` objects and links each to the boxes its continuation resumes, as SOS's `dumpasync` does; a state maps to its await's line through the PDB's async stepping information (`Pdb.AwaitOffsets`).
+- On .NET 9 and later, an exception's stack starts in `System.Runtime.EH`, which `process_events` skips. `GCStart` comes from the GC's thread; `GC/Triggered` carries the stack of the code that asked for a collection.
+
+**Helper tools run on demand.** `run_tests` with `mutate` installs Stryker.NET into `%TEMP%/Roslynaut/Tools/Stryker`; with `hangTimeout` it keeps the hang dump in `%TEMP%/Roslynaut/Dumps`, where `process_dump` writes too. `benchmark` writes a BenchmarkDotNet program that references the project into a temporary directory and runs it in Release. `diagnostics` with `analyzerPackages` downloads the packages into the global packages folder and adds their analyzers to a copy of the solution, for that call only.
+
 **Binary logs.** `build` writes a binary log with `binlogPath` (and always with `timings`, adding `-p:ReportAnalyzer=true` and `-profileevaluation`). The `build_*` tools read one through `BuildLog`, which runs MSBuild.StructuredLogger's `BuildAnalyzer` (double writes, file copies, analyzer summaries) and keeps the last two logs read. The log has no record of targets skipped for a false condition.
 
 **Transport.** In stdio mode, stdout carries the MCP protocol, so all logging goes to stderr. Never write to `Console.Out` in the server.
 
 ## Testing
 
-`TestSolution.Create(code)` builds an in-memory `AdhocWorkspace` solution, so most tests run without MSBuild. Tests that need real builds or processes (`TestToolsTests`, `ProcessInspectionTests`, `DebugTests`) are `[NonParallelizable]`. They write a temporary project in `[OneTimeSetUp]`.
+`TestSolution.Create(code)` builds an in-memory `AdhocWorkspace` solution, so most tests run without MSBuild. Tests that need real builds or processes (`TestToolsTests`, `ProcessInspectionTests`, `LaunchTracingTests`, `MutationTests`, `BenchmarkTests`, `DebugTests`) are `[NonParallelizable]`. They write a temporary project in `[OneTimeSetUp]`. `aspnet_endpoints`, `di_registrations` and `throws` are tested against stand-ins for the framework types they recognize by name. A few tests download from nuget.org: Stryker.NET (`MutationTests`), BenchmarkDotNet (`BenchmarkTests`) and Meziantou.Analyzer (`DiagnosticsTests`).
 
 The end-to-end tests (`EndToEnd/`, category `EndToEnd`, about three minutes) run the server as a client does and call every tool through MCP.
 - `EndToEndSetup` writes `SampleSolution` to a temporary git repository: a library, a console app and an NUnit project, plus a local feed with two versions of a package that embeds its PDB and sources. It starts one stdio server for all of them and builds the sample through the server's `build` tool, whose binary log the `build_*` tests read.
