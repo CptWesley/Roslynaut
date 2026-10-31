@@ -50,7 +50,7 @@ public class ClaudeInstallTests
                 """{"other":{"command":"x"},"roslynaut":{"type":"stdio","command":"dotnet","args":["Roslynaut.dll"]}}""");
             JsonNode.Parse(File.ReadAllText(settings))!["hooks"]!["PreToolUse"]!.ToJsonString().Should().Be(
                 """[{"matcher":"Read|Grep","hooks":[{"type":"command","command":"mine"}]},"""
-                + """{"matcher":"Read|Grep|Bash","hooks":[{"type":"command","command":"dotnet","args":["Roslynaut.dll","--claude-hook"]}]}]""");
+                + """{"matcher":"^(Read|Grep|Bash|PowerShell|mcp__.*(shell|terminal|command).*)$","hooks":[{"type":"command","command":"dotnet","args":["Roslynaut.dll","--claude-hook"]}]}]""");
             again.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries).Should().AllSatisfy(line => line.Should().Contain("up to date"));
         }
         finally
@@ -97,6 +97,10 @@ public class ClaudeInstallTests
     [TestCase("Bash", """{ "command": "sed -n '10,40p' src/Program.cs" }""", true)]
     [TestCase("Bash", """{ "command": "git add src/Program.cs" }""", false)]
     [TestCase("Bash", """{ "command": "grep -r Version src/App.csproj" }""", false)]
+    [TestCase("PowerShell", """{ "command": "Get-Content src/Program.cs -TotalCount 40" }""", true)]
+    [TestCase("PowerShell", """{ "command": "Select-String -Path src/*.cs -Pattern 'class Order'" }""", true)]
+    [TestCase("PowerShell", """{ "command": "Get-Content src/App.csproj" }""", false)]
+    [TestCase("mcp__serena__execute_shell_command", """{ "command": "findstr /s Order *.cs" }""", true)]
     public void Hint_OnlyForCSharpFiles(string tool, string input, bool hints)
     {
         var hint = ClaudeInstall.Hint(JsonNode.Parse($$"""{ "tool_name": "{{tool}}", "tool_input": {{input}} }"""));

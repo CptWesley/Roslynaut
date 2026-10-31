@@ -14,6 +14,10 @@ internal static partial class ClaudeInstall
     public const string HookOption = "--claude-hook";
     private const string Name = "roslynaut";
 
+    // Claude Code's shells, and the shell tools of MCP servers, which name them in many ways but take a command too. Anchored, as Claude Code
+    // reads a matcher with other characters than letters and | as an unanchored regex.
+    private const string Matcher = "^(Read|Grep|Bash|PowerShell|mcp__.*(shell|terminal|command).*)$";
+
     private const string ReadHint =
         "This is C# code. The roslynaut MCP server can show less of it: document_symbols outlines a file, symbol_source returns one symbol's "
         + "source, and definition, references and callers navigate by symbol.";
@@ -63,7 +67,7 @@ internal static partial class ClaudeInstall
         var groups = ((settings["hooks"] ??= new JsonObject())["PreToolUse"] ??= new JsonArray()).AsArray();
         // Exec form (args), so no shell has to quote the path.
         var hook = new JsonObject { ["type"] = "command", ["command"] = command[0], ["args"] = Strings([.. command[1..], HookOption]) };
-        var group = new JsonObject { ["matcher"] = "Read|Grep|Bash", ["hooks"] = new JsonArray(hook) };
+        var group = new JsonObject { ["matcher"] = Matcher, ["hooks"] = new JsonArray(hook) };
         var ours = groups.Where(Ours).ToList();
         if (ours is [var installed] && JsonNode.DeepEquals(installed, group))
             log.WriteLine($"The Roslynaut hook in {settingsFile} is up to date.");
@@ -141,7 +145,7 @@ internal static partial class ClaudeInstall
             "Read" when CSharp("file_path") => ReadHint,
             "Grep" when Text("type") == "cs" || CSharp("path") || CSharp("glob") => GrepHint,
             // ponytail: guesses from the command text which programs run on which files; parse the command line if the guesses miss too often.
-            "Bash" when CSharp("command") => SearchCommand().IsMatch(Text("command")!) ? GrepHint : ReadCommand().IsMatch(Text("command")!) ? ReadHint : null,
+            _ when CSharp("command") => SearchCommand().IsMatch(Text("command")!) ? GrepHint : ReadCommand().IsMatch(Text("command")!) ? ReadHint : null,
             _ => null,
         };
         return context is null ? null
@@ -152,10 +156,11 @@ internal static partial class ClaudeInstall
     [GeneratedRegex(@"\.cs\b|(?:-t ?|--type[= ])cs\b", RegexOptions.IgnoreCase)]
     private static partial Regex CSharpFile();
 
-    [GeneratedRegex(@"\b(?:e?grep|rg|ag|ack)\b")]
+    // PowerShell's commands and aliases too, whose case does not matter.
+    [GeneratedRegex(@"\b(?:e?grep|rg|ag|ack|Select-String|sls|findstr)\b", RegexOptions.IgnoreCase)]
     private static partial Regex SearchCommand();
 
-    [GeneratedRegex(@"\b(?:cat|head|tail|less|more|sed|awk)\b")]
+    [GeneratedRegex(@"\b(?:cat|head|tail|less|more|sed|awk|Get-Content|gc|type)\b", RegexOptions.IgnoreCase)]
     private static partial Regex ReadCommand();
 
     private static JsonArray Strings(string[] values) => new([.. values.Select(value => JsonValue.Create(value))]);
