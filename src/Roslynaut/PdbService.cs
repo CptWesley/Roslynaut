@@ -389,7 +389,7 @@ public sealed class PdbService : IDisposable
                 return (null, null);
 
             var data = pe.ReadCodeViewDebugDirectoryData(codeView);
-            var name = data.Path[(data.Path.LastIndexOfAny(['/', '\\']) + 1)..].ToLowerInvariant();
+            var name = data.Path[(data.Path.LastIndexOfAny(['/', '\\']) + 1)..];
             var checksums = string.Join(';', entries.Where(entry => entry.Type == DebugDirectoryEntryType.PdbChecksum)
                 .Select(pe.ReadPdbChecksumDebugDirectoryData)
                 .Select(checksum => $"{checksum.AlgorithmName}:{Convert.ToHexStringLower(checksum.Checksum.AsSpan())}"));

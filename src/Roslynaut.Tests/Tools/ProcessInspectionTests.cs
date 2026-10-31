@@ -45,7 +45,8 @@ public class ProcessInspectionTests
     [OneTimeTearDown]
     public void StopTarget()
     {
-        target.Kill(entireProcessTree: true);
+        // Not its tree: on Windows that can hold the createdump of a dump, which refuses to be killed while it ends.
+        target.Kill();
         target.Dispose();
     }
 
@@ -282,7 +283,8 @@ public class ProcessTracingTests
     [OneTimeTearDown]
     public void StopTarget()
     {
-        target.Kill(entireProcessTree: true);
+        // Not its tree: on Windows that can hold the createdump of a dump, which refuses to be killed while it ends.
+        target.Kill();
         target.Dispose();
     }
 

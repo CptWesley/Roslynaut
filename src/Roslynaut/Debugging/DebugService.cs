@@ -235,7 +235,7 @@ public sealed partial class DebugService(WorkspaceService workspace, PdbService 
 
         var platform = Tools.RunTestsTool.UsesTestingPlatform(path);
         IReadOnlyList<string> arguments = platform
-            ? ["test", "--project", path, .. filter is null ? [] : Tools.RunTestsTool.FilterArguments(filter, await Tools.RunTestsTool.FilterStyleAsync(workspace, path))]
+            ? ["test", "--project", path, "--no-ansi", .. filter is null ? [] :Tools.RunTestsTool.FilterArguments(filter, await Tools.RunTestsTool.FilterStyleAsync(workspace, path))]
             : ["test", path, "-v:q", .. filter is null ? (string[])[] : ["--filter", filter]];
         var application = platform
             ? (await workspace.GetAsync(path)).Results.FirstOrDefault(result => string.Equals(result.ProjectFilePath, path, StringComparison.OrdinalIgnoreCase))?.GetProperty("AssemblyName")

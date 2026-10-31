@@ -94,9 +94,10 @@ public sealed partial class RunTestsTool(WorkspaceService workspace, PdbService 
             string log;
             if (UsesTestingPlatform(path))
             {
-                // Microsoft.Testing.Platform's dotnet test passes options it does not know on to the test applications.
+                // Microsoft.Testing.Platform's dotnet test passes options it does not know on to the test applications. Under GitHub Actions or
+                // Azure Pipelines it colors its output even when redirected, unless --no-ansi, and the summary would not parse.
                 var isSolution = Path.GetExtension(path).ToLowerInvariant() is ".sln" or ".slnx";
-                List<string> command = ["test", isSolution ? "--solution" : "--project", path, "-c", configuration, "--results-directory", results.FullName];
+                List<string> command = ["test", isSolution ? "--solution" : "--project", path, "-c", configuration, "--results-directory", results.FullName, "--no-ansi"];
                 if (filter is not null)
                     command.AddRange(FilterArguments(filter, await FilterStyleAsync(workspace ?? new(), path)));
                 if (coverage)
