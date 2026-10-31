@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using Roslynaut.Tests.EndToEnd;
 using Roslynaut.Tools;
 
@@ -76,6 +77,26 @@ public class ToolPackageTests
         evaluation.Should().Be(new EvaluateTool.Evaluation("", "42", "System.Int32", null));
         asm.Items.Should().ContainSingle().Which.Asm.Should().Contain("; Assembly listing for method Lib.Numbers:Twice(int):int");
         Directory.GetFiles(In("tools", ".store"), "Roslynaut.CallCounter.dll", SearchOption.AllDirectories).Should().ContainSingle();
+    }
+
+    // A package the tool starts to ship, as a new dependency or a dependency's, needs its license in THIRD-PARTY-NOTICES.txt.
+    [Test]
+    public void Package_NoticesEveryPackageItShips()
+    {
+        var store = In("tools", ".store");
+        var notices = File.ReadAllText(Directory.GetFiles(store, "THIRD-PARTY-NOTICES.txt", SearchOption.AllDirectories).Single());
+        var shipped = Directory.GetFiles(store, "*.deps.json", SearchOption.AllDirectories)
+            .Select(file => JsonNode.Parse(File.ReadAllText(file))!)
+            .SelectMany(deps => deps["targets"]!.AsObject().SelectMany(target => target.Value!.AsObject())
+                .Where(library => (string?)deps["libraries"]![library.Key]!["type"] == "package"
+                    && library.Value!.AsObject().Any(assets => assets.Key is "runtime" or "runtimeTargets" or "native" or "resources")))
+            .Select(library => library.Key.Split('/')[0])
+            .Distinct()
+            .ToList();
+
+        shipped.Should().NotBeEmpty();
+        // Whole names in the lists of names, so neither Buildalyzer.Logger nor a URL stands in for Buildalyzer.
+        shipped.Where(id => !Regex.IsMatch(notices, $@"(?m)(?:^|, ){Regex.Escape(id)}(?:,|\r?$)")).Should().BeEmpty();
     }
 
     // The tool's command, not dotnet with the server's path in the tool store, which changes with every update.
