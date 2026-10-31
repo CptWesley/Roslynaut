@@ -12,10 +12,12 @@
     <RollForward>Major</RollForward>
     <Version>0.1.0</Version>
     <Authors>Wesley Baartman</Authors>
+    <Copyright>Copyright (c) 2026 Wesley Baartman</Copyright>
     <Description>An MCP server that exposes Roslyn and MSBuild to agents: navigation, analysis, refactoring, builds and tests, IL/JIT disassembly, decompilation, process inspection and debugging of C# projects.</Description>
     <PackageTags>mcp;roslyn;msbuild;csharp;agents</PackageTags>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageProjectUrl>https://github.com/CptWesley/Roslynaut</PackageProjectUrl>
     <RepositoryUrl>https://github.com/CptWesley/Roslynaut</RepositoryUrl>
   </PropertyGroup>
 
@@ -50,6 +52,7 @@
   <ItemGroup>
     <ProjectReference Include="..\Roslynaut.CallCounter\Roslynaut.CallCounter.csproj" />
     <ProjectReference Include="..\Roslynaut.JitHost\Roslynaut.JitHost.csproj" />
+    <ProjectReference Include="..\Roslynaut.ScriptHost\Roslynaut.ScriptHost.csproj" />
   </ItemGroup>
 
 </Project>
