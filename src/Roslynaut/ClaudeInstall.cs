@@ -39,27 +39,43 @@ internal static partial class ClaudeInstall
     {
         var config = Read(configFile);
         var servers = (config["mcpServers"] ??= new JsonObject()).AsObject();
-        if (servers.Any(server => server.Key.Equals(Name, StringComparison.OrdinalIgnoreCase)))
-            log.WriteLine($"Claude Code already has an MCP server named {Name} in {configFile}; left it as it is.");
+        var server = new JsonObject { ["type"] = "stdio", ["command"] = command[0], ["args"] = Strings(command[1..]) };
+        // Whatever the case of its name, as Claude Code would run both.
+        var found = servers.Where(entry => entry.Key.Equals(Name, StringComparison.OrdinalIgnoreCase)).ToList();
+        if (found is [{ Key: Name, Value: var value }] && JsonNode.DeepEquals(value, server))
+            log.WriteLine($"The MCP server {Name} in {configFile} is up to date.");
         else
         {
-            servers[Name] = new JsonObject { ["type"] = "stdio", ["command"] = command[0], ["args"] = Strings(command[1..]) };
+            foreach (var entry in found)
+                servers.Remove(entry.Key);
+            servers[Name] = server;
             Write(configFile, config);
-            log.WriteLine($"Added the MCP server {Name} to {configFile}.");
+            log.WriteLine($"{(found is [] ? "Added" : "Updated")} the MCP server {Name} in {configFile}.");
         }
 
         var settings = Read(settingsFile);
-        var preToolUse = (settings["hooks"] ??= new JsonObject())["PreToolUse"] ??= new JsonArray();
-        // By the option alone, so the hook of a server that moved, or one the user changed, counts too.
-        if (preToolUse.ToJsonString().Contains(HookOption))
-            log.WriteLine($"Claude Code already has the Roslynaut hook in {settingsFile}; left it as it is.");
+        var groups = ((settings["hooks"] ??= new JsonObject())["PreToolUse"] ??= new JsonArray()).AsArray();
+        // Exec form (args), so no shell has to quote the path.
+        var hook = new JsonObject { ["type"] = "command", ["command"] = command[0], ["args"] = Strings([.. command[1..], HookOption]) };
+        var group = new JsonObject { ["matcher"] = "Read|Grep|Bash", ["hooks"] = new JsonArray(hook) };
+        // By the option alone, so the hook of a server that moved, or of an older version, counts too.
+        static bool Ours(JsonNode? node) => node?.ToJsonString().Contains(HookOption) == true;
+        var ours = groups.Where(Ours).ToList();
+        if (ours is [var installed] && JsonNode.DeepEquals(installed, group))
+            log.WriteLine($"The Roslynaut hook in {settingsFile} is up to date.");
         else
         {
-            // Exec form (args), so no shell has to quote the path.
-            var hook = new JsonObject { ["type"] = "command", ["command"] = command[0], ["args"] = Strings([.. command[1..], HookOption]) };
-            preToolUse.AsArray().Add(new JsonObject { ["matcher"] = "Read|Grep|Bash", ["hooks"] = new JsonArray(hook) });
+            // Other hooks that share a group with an old one stay.
+            foreach (var old in ours)
+            {
+                var hooks = old!["hooks"]!.AsArray();
+                hooks.RemoveAll(Ours);
+                if (hooks.Count == 0)
+                    groups.Remove(old);
+            }
+            groups.Add(group);
             Write(settingsFile, settings);
-            log.WriteLine($"Added the Roslynaut hook, which suggests its tools when Claude reads or greps C# files, to {settingsFile}.");
+            log.WriteLine($"{(ours is [] ? "Added" : "Updated")} the Roslynaut hook, which suggests its tools when Claude reads or greps C# files, in {settingsFile}.");
         }
     }
 
