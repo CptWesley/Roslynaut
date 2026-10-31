@@ -57,7 +57,7 @@ public class LaunchTracingTests
             static class Busy
             {
                 public static void Fail() => throw new InvalidOperationException("No such order");
-                // Mostly managed code: on Linux, TickCount64 waits in native code for each sample, and the stacks stop there.
+                // Mostly managed code: a thread that spins on TickCount64 waits in its GC poll for each sample, where stacks lose their caller.
                 public static void Spin() { var end = Environment.TickCount64 + 20; while (Environment.TickCount64 < end) for (var i = 0; i < 100_000; i++) Sink += i % 7; }
                 public static long Sink;
             }
@@ -81,7 +81,9 @@ public class LaunchTracingTests
             {
                 [Test] public void Spins() => Work();
                 [Test] public void Other() { }
-                private static void Work() { var end = System.Environment.TickCount64 + 1500; while (System.Environment.TickCount64 < end) { } }
+                // Mostly managed code, as in Busy.Spin.
+                private static void Work() { var end = System.Environment.TickCount64 + 1500; while (System.Environment.TickCount64 < end) for (var i = 0; i < 100_000; i++) Sink += i % 7; }
+                private static long Sink;
             }
             """);
     }
@@ -113,8 +115,6 @@ public class LaunchTracingTests
     {
         var samples = await ProcessTracing.SampleAsync(new TraceTarget(null, new(tests, [], "FullyQualifiedName~Spin.SpinTests.Spins", workspace)), AtMost, CancellationToken.None);
 
-        // Work itself, not its callee Environment.TickCount64: the sampler stops a thread where the runtime lets it, which on a busy machine can
-        // always be back in Work.
         var profile = ProcessTracing.Analyze("1", samples, null, new(null, null, new("SpinTests\\.Work"), null), top: 30);
         profile.Methods.Should().Contain(method => method.Method.Contains("SpinTests.Work"));
     }
