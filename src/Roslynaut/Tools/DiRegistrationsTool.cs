@@ -48,7 +48,7 @@ public sealed partial class DiRegistrationsTool(WorkspaceService workspace) : IM
         // What each implementation is registered as, to tell a singleton that takes a shorter-lived service.
         var lifetimes = found.Where(registration => registration.Implementation is not null)
             .GroupBy(registration => registration.Implementation!, SymbolEqualityComparer.Default)
-            .ToDictionary(group => (ITypeSymbol)group.Key!, group => group.Last().Lifetime, SymbolEqualityComparer.Default);
+            .ToDictionary(group => (ITypeSymbol)group.Key!, group => group.Last().Lifetime, (IEqualityComparer<ITypeSymbol>)SymbolEqualityComparer.Default);
         return [.. found.GroupBy(registration => registration.Service, SymbolEqualityComparer.Default).Select(group =>
         {
             var service = (ITypeSymbol)group.Key!;
