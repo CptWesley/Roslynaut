@@ -37,6 +37,8 @@ Most tools take `projectPath`, the path of a `.csproj`, `.sln` or `.slnx`. Rosly
 
 The server tells agents which tool to use for what, so an agent picks them up without further instructions.
 
+On Linux, each loaded project or solution watches its files through a few inotify instances, and many distributions allow 128 per user, for all programs together. If tools fail with "The configured user limit (128) on the number of inotify instances has been reached", raise the limit: `sudo sysctl fs.inotify.max_user_instances=1024`.
+
 ## Tools
 
 - **Navigation**: `definition`, `references`, `implementations`, `callers`, `callees`, `call_paths`, `type_hierarchy`, `document_symbols`, `list_symbols`, `find_symbols`, `workspace_symbols`, `symbol_source`, `document_highlight`, `search_pattern`, `find_operations`, `generated_sources`

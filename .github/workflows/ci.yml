@@ -20,6 +20,10 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
+      # The end-to-end tests load about a hundred projects into one server, each watched by an inotify instance of its own, and Ubuntu
+      # allows 128 per user.
+      - if: runner.os == 'Linux'
+        run: sudo sysctl -w fs.inotify.max_user_instances=1024
       # The JIT host and the call counter target .NET 8.
       - uses: actions/setup-dotnet@v5
         with:
