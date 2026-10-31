@@ -9,6 +9,10 @@ public static class Program
 {
     public static async Task<int> Main(params string[] args)
     {
+        // Before the services, as Claude Code runs the hook on every read and grep.
+        if (args is [ClaudeInstall.HookOption])
+            return ClaudeInstall.Hook();
+
         await using var services = Services();
         var server = services.GetRequiredService<McpServerService>();
         var names = server.Tools.Select(tool => tool.ProtocolTool.Name).ToArray();
@@ -23,9 +27,20 @@ public static class Program
             Description = "Leave these tools out, also when --enable-tools names them.", HelpName = "tool", AllowMultipleArgumentsPerToken = true,
         }.AcceptOnlyFromAmong(names);
         var noInstructions = new Option<bool>("--no-instructions") { Description = "Leave out the server instructions, which tell agents which tool to use for what." };
-        var root = new RootCommand("An MCP server that exposes Roslyn and MSBuild to agents.") { protocol, enable, disable, noInstructions };
+        var install = new Option<string>("--install")
+        {
+            Description = "Register the server with this agent for all projects, with a hook that suggests its tools when the agent reads or greps C# files, and exit.",
+            HelpName = "agent",
+        }.AcceptOnlyFromAmong("claude");
+        var root = new RootCommand("An MCP server that exposes Roslyn and MSBuild to agents.") { protocol, enable, disable, noInstructions, install };
         root.SetAction(async parsed =>
         {
+            if (parsed.GetValue(install) is not null)
+            {
+                ClaudeInstall.Run();
+                return;
+            }
+
             var (only, without) = (parsed.GetValue(enable), parsed.GetValue(disable) ?? []);
             var tools = server.Tools.Where(tool => (only is not [_, ..] || only.Contains(tool.ProtocolTool.Name)) && !without.Contains(tool.ProtocolTool.Name));
             await server.StartAsync(Enum.Parse<McpProtocol>(parsed.GetValue(protocol)!, ignoreCase: true), [.. tools], !parsed.GetValue(noInstructions));
