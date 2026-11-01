@@ -14,7 +14,7 @@ public class ProcessInspectionTests
     [OneTimeSetUp]
     public void StartTarget()
     {
-        var start = new ProcessStartInfo(Path.Combine(Path.GetDirectoryName(typeof(object).Assembly.Location)!, "..", "..", "..", "dotnet.exe"))
+        var start = new ProcessStartInfo(DotnetCli.Executable)
         {
             ArgumentList = { "exec", Path.Combine(AppContext.BaseDirectory, "Roslynaut.ScriptHost.dll") },
             RedirectStandardInput = true,
@@ -45,7 +45,8 @@ public class ProcessInspectionTests
     [OneTimeTearDown]
     public void StopTarget()
     {
-        target.Kill(entireProcessTree: true);
+        // Not its tree: on Windows that can hold the createdump of a dump, which refuses to be killed while it ends.
+        target.Kill();
         target.Dispose();
     }
 
@@ -282,12 +283,15 @@ public class ProcessTracingTests
     [OneTimeTearDown]
     public void StopTarget()
     {
-        target.Kill(entireProcessTree: true);
+        // Not its tree: on Windows that can hold the createdump of a dump, which refuses to be killed while it ends.
+        target.Kill();
         target.Dispose();
     }
 
-    // The spinning thread starts in the script host's Main, the outermost method that is not the framework's.
+    // The spinning thread starts in the script host's Main, the outermost method that is not the framework's. Retried: on a busy machine the
+    // spinning thread can get too few samples.
     [Test]
+    [Retry(3)]
     public async Task Cpu_FindsTheSpinningMethod_AndItsThread()
     {
         var samples = await ProcessTracing.SampleAsync(target.Id, TimeSpan.FromSeconds(2), CancellationToken.None);

@@ -83,8 +83,9 @@ public class DiagnosticsTests
         }
     }
 
-    // Downloads Meziantou.Analyzer from nuget.org, as the project's package sources say.
+    // Downloads Meziantou.Analyzer from nuget.org, as the project's package sources say; retried, as downloads can time out.
     [Test]
+    [Retry(3, RetryExceptions = [typeof(ModelContextProtocol.McpException)])]
     public async Task AnalyzerPackages_RunWithoutAReference()
     {
         var directory = Directory.CreateTempSubdirectory("roslynaut-analyzerpackage-");

@@ -517,7 +517,7 @@ public class TestingPlatformRunTests
         RunTestsTool.UsesTestingPlatform(project).Should().BeTrue();
 
         var run = await RunTestsTool.RunTestsAsync(project);
-        (run.Succeeded, run.Total, run.Passed, run.Failed).Should().Be((false, 2, 1, 1));
+        (run.Succeeded, run.Total, run.Passed, run.Failed).Should().Be((false, 2, 1, 1), run.Output ?? string.Join("\n", run.BuildErrors));
         run.Failures.Should().ContainSingle().Which.Message.Should().Contain("3");
 
         var filtered = await RunTestsTool.RunTestsAsync(project, $"FullyQualifiedName~{name}.Tests.Passes", workspace: new WorkspaceService());
@@ -575,8 +575,9 @@ public class MutationTests
     [OneTimeTearDown]
     public void DeleteProjects() => directory.Delete(recursive: true);
 
-    // Max(1, 1) cannot tell > from >=, nor either branch from the other.
+    // Max(1, 1) cannot tell > from >=, nor either branch from the other. Retried, as installing Stryker.NET downloads it and can time out.
     [Test]
+    [Retry(3, RetryExceptions = [typeof(ModelContextProtocol.McpException)])]
     public async Task Mutate_ReportsTheChangesNoTestNoticed()
     {
         var calc = Path.Combine(directory.FullName, "Lib", "Calc.cs");

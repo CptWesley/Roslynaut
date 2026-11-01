@@ -236,7 +236,7 @@ public static partial class ProcessInspection
 
         var entry = processId is { } id ? Describe(id) ?? new(id, "?", null, null) : new(0, Path.GetFileName(dumpPath!), null, dumpPath);
         if (processId is not { } running)
-            return entry with { Runtime = runtime.ClrInfo.Version.ToString(), Modules = modules };
+            return entry with { Runtime = RuntimeVersionOf(runtime.ClrInfo), Modules = modules };
 
         var client = new DiagnosticsClient(running);
         IReadOnlyDictionary<string, string>? environment = null;
@@ -250,7 +250,7 @@ public static partial class ProcessInspection
             // An old runtime, or one that went away.
         }
 
-        return entry with { Runtime = runtime.ClrInfo.Version.ToString(), CommandLine = CommandLineOf(running), Environment = environment, Modules = modules };
+        return entry with { Runtime = RuntimeVersionOf(runtime.ClrInfo), CommandLine = CommandLineOf(running), Environment = environment, Modules = modules };
     }
 
     /// <summary>
@@ -486,17 +486,38 @@ public static partial class ProcessInspection
         {
             return (processId, dumpPath) switch
             {
-                ({ } id, null) => DataTarget.CreateSnapshotAndAttach(id),
+                ({ } id, null) => Snapshot(id),
                 (null, { } path) => DataTarget.LoadDump(Path.GetFullPath(path)),
                 _ => throw new McpException("Pass either a processId or a dumpPath."),
             };
         }
-        catch (Exception e) when (e is ArgumentException or InvalidOperationException or ClrDiagnosticsException or UnauthorizedAccessException
+        catch (Exception e) when (e is ArgumentException or InvalidOperationException or ClrDiagnosticsException or UnauthorizedAccessException or DiagnosticsClientException
             or IOException or InvalidDataException or NotSupportedException)
         {
             throw new McpException($"Cannot inspect {(dumpPath is null ? $"process {processId}" : $"dump {dumpPath}")}: {e.Message}");
         }
     }
+
+    // ponytail: one more try on EndOfStreamException, which a Linux snapshot (a dump the runtime writes through its diagnostics port) now and
+    // then ends in on CI, cause unknown; find the cause if one retry does not cover it.
+    private static DataTarget Snapshot(int processId)
+    {
+        try
+        {
+            return DataTarget.CreateSnapshotAndAttach(processId);
+        }
+        catch (EndOfStreamException)
+        {
+            return DataTarget.CreateSnapshotAndAttach(processId);
+        }
+    }
+
+    // Linux's libcoreclr.so has no version resource, so ClrMD reads 0.0.0.0 there; a shared runtime's directory, such as
+    // shared/Microsoft.NETCore.App/10.0.14, still names it.
+    private static string RuntimeVersionOf(ClrInfo clr) =>
+        clr.Version.Major == 0 && Path.GetFileName(Path.GetDirectoryName(clr.ModuleInfo.FileName)) is { } directory && Version.TryParse(directory.Split('-')[0], out _)
+            ? directory
+            : clr.Version.ToString();
 
     public static ClrRuntime RuntimeOf(DataTarget target)
     {

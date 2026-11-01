@@ -182,8 +182,8 @@ internal static class SymbolEdits
         var node = await reference.GetSyntaxAsync(cancellationToken);
 
         // A field, event or local declares its symbols in variable declarators; edit the whole declaration.
-        if (node is VariableDeclaratorSyntax { Parent.Parent: BaseFieldDeclarationSyntax or LocalDeclarationStatementSyntax } declarator)
-            node = declarator.Parent.Parent;
+        if (node is VariableDeclaratorSyntax { Parent.Parent: (BaseFieldDeclarationSyntax or LocalDeclarationStatementSyntax) and { } declaration })
+            node = declaration;
         if (symbol is IMethodSymbol { MethodKind: MethodKind.Constructor } && node is TypeDeclarationSyntax)
             throw new McpException($"{symbol.ToDisplayString()} is the primary constructor of {symbol.ContainingType.ToDisplayString()}: edit the type's parameter list instead.");
 

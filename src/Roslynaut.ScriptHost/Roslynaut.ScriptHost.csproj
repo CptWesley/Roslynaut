@@ -5,6 +5,9 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <!-- Shipped inside the Roslynaut tool package. -->
+    <IsPackable>false</IsPackable>
+    <RollForward>Major</RollForward>
   </PropertyGroup>
 
   <ItemGroup>
