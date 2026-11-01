@@ -55,11 +55,11 @@ jobs:
       - run: dotnet nuget push artifacts/*.nupkg --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
       # GitHub Packages links the package to this repository through its RepositoryUrl.
       - run: dotnet nuget push artifacts/*.nupkg --api-key ${{ secrets.GITHUB_TOKEN }} --source https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json --skip-duplicate
-      # A tag made in GitHub's web interface comes with its release, which keeps its notes and gets the package. A pushed tag gets a
-      # new release, a prerelease for a version with a suffix, such as v1.2.3-beta, as it is on nuget.org.
+      # The tag gets a release with generated notes and the package, a prerelease for a version with a suffix, such as v1.2.3-beta,
+      # as it is on nuget.org. An immutable release takes no assets once published, so gh keeps it a draft until the package is
+      # attached. A release that exists already, as one made in GitHub's web interface, published before this ran, stays as it is.
       - run: |
           gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1 ||
-            gh release create "$GITHUB_REF_NAME" --generate-notes --verify-tag --prerelease=${{ contains(github.ref_name, '-') }}
-          gh release upload "$GITHUB_REF_NAME" artifacts/*.nupkg --clobber
+            gh release create "$GITHUB_REF_NAME" artifacts/*.nupkg --generate-notes --verify-tag --prerelease=${{ contains(github.ref_name, '-') }}
         env:
           GH_TOKEN: ${{ github.token }}
