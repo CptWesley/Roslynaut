@@ -32,13 +32,15 @@ jobs:
             10.0.x
       - run: dotnet test src/Roslynaut.Tests
 
-  # A tag v1.2.3 publishes version 1.2.3, through nuget.org trusted publishing: no API key is stored.
+  # A tag v1.2.3 publishes version 1.2.3 to nuget.org, through trusted publishing: no API key is stored. It also pushes the package
+  # to GitHub Packages and attaches it to a GitHub release, both with the workflow's own token.
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: test
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
+      packages: write
       id-token: write
     steps:
       - uses: actions/checkout@v5
@@ -51,3 +53,13 @@ jobs:
         with:
           user: ${{ secrets.NUGET_USER }}
       - run: dotnet nuget push artifacts/*.nupkg --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
+      # GitHub Packages links the package to this repository through its RepositoryUrl.
+      - run: dotnet nuget push artifacts/*.nupkg --api-key ${{ secrets.GITHUB_TOKEN }} --source https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json --skip-duplicate
+      # A tag made in GitHub's web interface comes with its release, which keeps its notes and gets the package. A pushed tag gets a
+      # new release, a prerelease for a version with a suffix, such as v1.2.3-beta, as it is on nuget.org.
+      - run: |
+          gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1 ||
+            gh release create "$GITHUB_REF_NAME" --generate-notes --verify-tag --prerelease=${{ contains(github.ref_name, '-') }}
+          gh release upload "$GITHUB_REF_NAME" artifacts/*.nupkg --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
