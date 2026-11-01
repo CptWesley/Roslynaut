@@ -23,6 +23,7 @@ public class ProcessInspectionTests
         target = Process.Start(start)!;
 
         // A second thread waits for the lock the sleeping one holds, which gives the lock a sync block. A third holds a System.Threading.Lock.
+        // They sleep until the teardown kills the target: a timed sleep would end the script, and the target, before a slow machine ran every test.
         const string code = """
             class Marker { public int Count = 42; public string Name = "marker"; }
             static async System.Threading.Tasks.Task Inner(System.Threading.SemaphoreSlim gate) => await gate.WaitAsync();
@@ -30,11 +31,11 @@ public class ProcessInspectionTests
             var pending = Outer(new System.Threading.SemaphoreSlim(0));
             var kept = new Marker();
             var gate = new System.Threading.Lock();
-            new System.Threading.Thread(() => { lock (gate) { System.Threading.Thread.Sleep(60000); } }) { IsBackground = true }.Start();
+            new System.Threading.Thread(() => { lock (gate) { System.Threading.Thread.Sleep(System.Threading.Timeout.Infinite); } }) { IsBackground = true }.Start();
             lock (kept)
             {
                 new System.Threading.Thread(() => { lock (kept) { } }) { IsBackground = true }.Start();
-                System.Threading.Thread.Sleep(60000);
+                System.Threading.Thread.Sleep(System.Threading.Timeout.Infinite);
             }
             kept
             """;

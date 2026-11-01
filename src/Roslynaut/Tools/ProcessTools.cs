@@ -486,7 +486,7 @@ public static partial class ProcessInspection
         {
             return (processId, dumpPath) switch
             {
-                ({ } id, null) => Snapshot(id),
+                ({ } id, null) => DataTarget.CreateSnapshotAndAttach(id),
                 (null, { } path) => DataTarget.LoadDump(Path.GetFullPath(path)),
                 _ => throw new McpException("Pass either a processId or a dumpPath."),
             };
@@ -495,20 +495,6 @@ public static partial class ProcessInspection
             or IOException or InvalidDataException or NotSupportedException)
         {
             throw new McpException($"Cannot inspect {(dumpPath is null ? $"process {processId}" : $"dump {dumpPath}")}: {e.Message}");
-        }
-    }
-
-    // ponytail: one more try on EndOfStreamException, which a Linux snapshot (a dump the runtime writes through its diagnostics port) now and
-    // then ends in on CI, cause unknown; find the cause if one retry does not cover it.
-    private static DataTarget Snapshot(int processId)
-    {
-        try
-        {
-            return DataTarget.CreateSnapshotAndAttach(processId);
-        }
-        catch (EndOfStreamException)
-        {
-            return DataTarget.CreateSnapshotAndAttach(processId);
         }
     }
 
