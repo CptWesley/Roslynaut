@@ -10,7 +10,7 @@
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>roslynaut</ToolCommandName>
     <RollForward>Major</RollForward>
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
     <Authors>Wesley Baartman</Authors>
     <Copyright>Copyright (c) 2026 Wesley Baartman</Copyright>
     <Description>An MCP server that exposes Roslyn and MSBuild to agents: navigation, analysis, refactoring, builds and tests, IL/JIT disassembly, decompilation, process inspection and debugging of C# projects.</Description>
