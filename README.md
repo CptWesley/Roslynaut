@@ -12,10 +12,12 @@ An MCP server that gives coding agents what an IDE knows about C# code. It loads
 
 ```sh
 dotnet tool install -g Roslynaut
-roslynaut --install claude
+roslynaut --install claude    # or: roslynaut --install opencode
 ```
 
 `--install claude` registers Roslynaut with Claude Code for all your projects, as the user-scope MCP server `roslynaut` in `~/.claude.json`. It also adds a hook to `~/.claude/settings.json`. When Claude reads or greps C# files, the hook suggests Roslynaut's tools for the job. The hook only adds that suggestion: it never blocks or approves a tool call. Both files go under `CLAUDE_CONFIG_DIR` when that is set. Restart Claude Code afterwards. `dotnet tool update -g Roslynaut` keeps the registration, as the command stays the same.
+
+`--install opencode` registers Roslynaut with OpenCode for all your projects, as the MCP server `roslynaut` in the global `opencode.json(c)` (under `~/.config/opencode`, or `XDG_CONFIG_HOME` when that is set). It also adds a plugin to `~/.config/opencode/plugins/roslynaut.js`. When OpenCode reads or greps C# files, the plugin appends the same suggestion to the tool result. The plugin only adds that suggestion: it never blocks or approves a tool call. OpenCode reloads its configuration and plugins without a restart.
 
 ### Other MCP clients
 
@@ -62,8 +64,8 @@ On Linux, each loaded project or solution watches its files through a few inotif
 | `--enable-tools <tool>...` | Serve only these tools. |
 | `--disable-tools <tool>...` | Leave these tools out. |
 | `--no-instructions` | Leave out the server instructions that tell agents which tool to use for what. |
-| `--install claude` | Register with Claude Code, then exit. |
-| `--uninstall claude` | Remove that registration, then exit. |
+| `--install claude\|opencode` | Register with Claude Code or OpenCode, then exit. |
+| `--uninstall claude\|opencode` | Remove that registration, then exit. |
 
 | Environment variable | Effect |
 | --- | --- |
@@ -91,11 +93,11 @@ Some tools download:
 ## Uninstall
 
 ```sh
-roslynaut --uninstall claude
+roslynaut --uninstall claude    # and: roslynaut --uninstall opencode
 dotnet tool uninstall -g Roslynaut
 ```
 
-Run `--uninstall claude` first. It removes the server and its hook from Claude Code. Once the tool is gone, Claude Code could no longer start the hook.
+Run `--uninstall` first, for every agent you installed for. It removes the server and its hook or plugin. Once the tool is gone, Claude Code and OpenCode could no longer start the hook or plugin.
 
 ## License
 

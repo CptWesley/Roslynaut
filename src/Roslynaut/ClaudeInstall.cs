@@ -1,5 +1,3 @@
-using System.Text.Encodings.Web;
-using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 
@@ -26,8 +24,6 @@ internal static partial class ClaudeInstall
         "This searches C# code. The roslynaut MCP server knows symbols where text search does not: find_symbols and workspace_symbols find "
         + "declarations, references finds every use of a symbol, and search_pattern also searches generated code.";
 
-    private static readonly JsonSerializerOptions Indented = new() { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
-
     public static void Run(bool uninstall)
     {
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
@@ -40,17 +36,14 @@ internal static partial class ClaudeInstall
             return;
         }
 
-        var process = Environment.ProcessPath!;
-        // Started as dotnet Roslynaut.dll, the process is dotnet itself.
-        string[] command = Path.GetFileNameWithoutExtension(process) == "dotnet" ? [process, typeof(ClaudeInstall).Assembly.Location] : [process];
-        Install(configFile, settingsFile, command, Console.Out);
+        Install(configFile, settingsFile, AgentInstall.Command(), Console.Out);
     }
 
     internal static void Install(string configFile, string settingsFile, string[] command, TextWriter log)
     {
-        var config = Read(configFile);
+        var config = JsonFile.Read(configFile);
         var servers = (config["mcpServers"] ??= new JsonObject()).AsObject();
-        var server = new JsonObject { ["type"] = "stdio", ["command"] = command[0], ["args"] = Strings(command[1..]) };
+        var server = new JsonObject { ["type"] = "stdio", ["command"] = command[0], ["args"] = JsonFile.Strings(command[1..]) };
         var found = Servers(servers);
         if (found is [{ Key: Name, Value: var value }] && JsonNode.DeepEquals(value, server))
             log.WriteLine($"The MCP server {Name} in {configFile} is up to date.");
@@ -59,14 +52,14 @@ internal static partial class ClaudeInstall
             foreach (var entry in found)
                 servers.Remove(entry.Key);
             servers[Name] = server;
-            Write(configFile, config);
+            JsonFile.Write(configFile, config);
             log.WriteLine($"{(found is [] ? "Added" : "Updated")} the MCP server {Name} in {configFile}.");
         }
 
-        var settings = Read(settingsFile);
+        var settings = JsonFile.Read(settingsFile);
         var groups = ((settings["hooks"] ??= new JsonObject())["PreToolUse"] ??= new JsonArray()).AsArray();
         // Exec form (args), so no shell has to quote the path.
-        var hook = new JsonObject { ["type"] = "command", ["command"] = command[0], ["args"] = Strings([.. command[1..], HookOption]) };
+        var hook = new JsonObject { ["type"] = "command", ["command"] = command[0], ["args"] = JsonFile.Strings([.. command[1..], HookOption]) };
         var group = new JsonObject { ["matcher"] = Matcher, ["hooks"] = new JsonArray(hook) };
         var ours = groups.Where(Ours).ToList();
         if (ours is [var installed] && JsonNode.DeepEquals(installed, group))
@@ -75,7 +68,7 @@ internal static partial class ClaudeInstall
         {
             RemoveHooks(groups, ours);
             groups.Add(group);
-            Write(settingsFile, settings);
+            JsonFile.Write(settingsFile, settings);
             log.WriteLine($"{(ours is [] ? "Added" : "Updated")} the Roslynaut hook, which suggests its tools when Claude reads or greps C# files, in {settingsFile}.");
         }
     }
@@ -86,22 +79,22 @@ internal static partial class ClaudeInstall
     /// </summary>
     internal static void Uninstall(string configFile, string settingsFile, TextWriter log)
     {
-        var config = Read(configFile);
+        var config = JsonFile.Read(configFile);
         if (config["mcpServers"] is JsonObject servers && Servers(servers) is [_, ..] found)
         {
             foreach (var entry in found)
                 servers.Remove(entry.Key);
-            Write(configFile, config);
+            JsonFile.Write(configFile, config);
             log.WriteLine($"Removed the MCP server {Name} from {configFile}.");
         }
         else
             log.WriteLine($"There is no MCP server {Name} in {configFile}.");
 
-        var settings = Read(settingsFile);
+        var settings = JsonFile.Read(settingsFile);
         if (settings["hooks"]?["PreToolUse"] is JsonArray groups && groups.Where(Ours).ToList() is [_, ..] ours)
         {
             RemoveHooks(groups, ours);
-            Write(settingsFile, settings);
+            JsonFile.Write(settingsFile, settings);
             log.WriteLine($"Removed the Roslynaut hook from {settingsFile}.");
         }
         else
@@ -135,21 +128,29 @@ internal static partial class ClaudeInstall
         return 0;
     }
 
-    internal static string? Hint(JsonNode? call)
+    internal static string? Hint(JsonNode? call) => Context(call) is { } context
+        ? new JsonObject { ["hookSpecificOutput"] = new JsonObject { ["hookEventName"] = "PreToolUse", ["additionalContext"] = context } }.ToJsonString()
+        : null;
+
+    /// <summary>
+    /// The suggestion for a read, grep or shell tool call that touches C# code, in the shapes Claude Code (<c>tool_name</c> and
+    /// <c>tool_input</c>) and OpenCode (<c>tool</c> and <c>input</c>) pass. Null when the call does not touch C# code.
+    /// </summary>
+    internal static string? Context(JsonNode? call)
     {
-        var input = call?["tool_input"];
-        string? Text(string name) => input?[name] is JsonValue value && value.TryGetValue(out string? text) ? text : null;
-        bool CSharp(string name) => Text(name) is { } text && CSharpFile().IsMatch(text);
-        var context = (string?)call?["tool_name"] switch
+        var input = call?["tool_input"] ?? call?["input"];
+        string? Text(JsonNode? node) => node is JsonValue value && value.TryGetValue(out string? text) ? text : null;
+        string? Arg(string name) => Text(input?[name]);
+        bool CSharp(string name) => Arg(name) is { } text && CSharpFile().IsMatch(text);
+        // Claude Code's tool names are capitalized, OpenCode's are not.
+        return (Text(call?["tool_name"]) ?? Text(call?["tool"]))?.ToLowerInvariant() switch
         {
-            "Read" when CSharp("file_path") => ReadHint,
-            "Grep" when Text("type") == "cs" || CSharp("path") || CSharp("glob") => GrepHint,
+            "read" when CSharp("file_path") || CSharp("filePath") => ReadHint,
+            "grep" when Arg("type") == "cs" || CSharp("path") || CSharp("glob") || CSharp("include") => GrepHint,
             // ponytail: guesses from the command text which programs run on which files; parse the command line if the guesses miss too often.
-            _ when CSharp("command") => SearchCommand().IsMatch(Text("command")!) ? GrepHint : ReadCommand().IsMatch(Text("command")!) ? ReadHint : null,
+            _ when CSharp("command") => SearchCommand().IsMatch(Arg("command")!) ? GrepHint : ReadCommand().IsMatch(Arg("command")!) ? ReadHint : null,
             _ => null,
         };
-        return context is null ? null
-            : new JsonObject { ["hookSpecificOutput"] = new JsonObject { ["hookEventName"] = "PreToolUse", ["additionalContext"] = context } }.ToJsonString();
     }
 
     // Not .csproj or .cshtml. The type options are ripgrep's.
@@ -162,17 +163,4 @@ internal static partial class ClaudeInstall
 
     [GeneratedRegex(@"\b(?:cat|head|tail|less|more|sed|awk|Get-Content|gc|type)\b", RegexOptions.IgnoreCase)]
     private static partial Regex ReadCommand();
-
-    private static JsonArray Strings(string[] values) => new([.. values.Select(value => JsonValue.Create(value))]);
-
-    // A file that is not JSON throws here, before anything is written.
-    private static JsonNode Read(string path) => (File.Exists(path) ? JsonNode.Parse(File.ReadAllText(path)) : null) ?? new JsonObject();
-
-    // Through a temporary file, so a failed write cannot leave the configuration half written.
-    private static void Write(string path, JsonNode json)
-    {
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        File.WriteAllText(path + ".tmp", json.ToJsonString(Indented));
-        File.Move(path + ".tmp", path, overwrite: true);
-    }
 }
