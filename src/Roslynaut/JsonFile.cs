@@ -7,12 +7,24 @@ namespace Roslynaut;
 /// <summary>Reads and writes the JSON or JSONC files that agents keep their configuration in.</summary>
 internal static class JsonFile
 {
-    private static readonly JsonSerializerOptions Indented = new() { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
-    private static readonly JsonDocumentOptions Lenient = new() { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true };
+    private static readonly JsonSerializerOptions Indented = new()
+    {
+        WriteIndented = true,
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
+    
+    private static readonly JsonDocumentOptions Lenient = new()
+    {
+        CommentHandling = JsonCommentHandling.Skip,
+        AllowTrailingCommas = true,
+    };
 
     // A file that is not JSON throws here, before anything is written. Comments and trailing commas are read, as JSONC files have them, but
     // a write does not keep them.
-    public static JsonNode Read(string path) => (File.Exists(path) ? JsonNode.Parse(File.ReadAllText(path), documentOptions: Lenient) : null) ?? new JsonObject();
+    public static JsonNode Read(string path)
+        => File.Exists(path) && JsonNode.Parse(File.ReadAllText(path), documentOptions: Lenient) is { } node
+        ? node
+        : new JsonObject();
 
     // Through a temporary file, so a failed write cannot leave the configuration half written.
     public static void Write(string path, JsonNode json)
