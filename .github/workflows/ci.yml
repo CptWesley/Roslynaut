@@ -42,12 +42,16 @@ jobs:
       contents: write
       packages: write
       id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: 10.0.x
       - run: dotnet pack src/Roslynaut -o artifacts -p:Version=${GITHUB_REF_NAME#v}
+      - uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: artifacts/*.nupkg
       - uses: NuGet/login@v1
         id: login
         with:
