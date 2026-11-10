@@ -16,6 +16,7 @@ dotnet run --project src/Roslynaut -- --protocol stdio|http|sse              # n
 dotnet run --project src/Roslynaut -- --enable-tools build run_tests         # only these tools; --disable-tools leaves tools out
 dotnet run --project src/Roslynaut -- --no-instructions                      # no server instructions
 dotnet run --project src/Roslynaut -- --install claude                       # register with Claude Code and exit
+dotnet run --project src/Roslynaut -- --install opencode                     # register with OpenCode and exit
 dotnet run --project src/Roslynaut -- --uninstall claude                     # remove that registration and exit
 dotnet pack src/Roslynaut -o artifacts                                       # the dotnet tool package
 ```
@@ -25,6 +26,8 @@ The package is a dotnet tool (`PackAsTool`, command `roslynaut`) of the server's
 `.github/workflows/ci.yml` runs all the tests on Ubuntu and Windows. A tag `v1.2.3` packs version 1.2.3 and pushes it to nuget.org through trusted publishing: the repository secret `NUGET_USER` holds the nuget.org profile name, and nuget.org needs a trusted publishing policy for the workflow file `ci.yml`. It also pushes the package to GitHub Packages and attaches it to the tag's GitHub release. The workflow creates the release, with generated notes, a prerelease for a tag such as `v1.2.3-beta`, as a draft until the package is attached: an immutable release takes no assets once published. So push the tag: a release made in GitHub's web interface is published before the workflow runs, and stays without the package.
 
 `--install claude` (`ClaudeInstall`) adds this executable as the user-scope MCP server `roslynaut` to `~/.claude.json`, and a PreToolUse hook for `Read`, `Grep`, the shells (`Bash`, `PowerShell`) and MCP shell tools to `~/.claude/settings.json` (both under `CLAUDE_CONFIG_DIR` when set). It replaces an earlier installation, the hook found by its `--claude-hook` argument, and writes nothing when both are up to date. `--uninstall claude` removes both, of any version, to run before `dotnet tool uninstall`: a hook whose executable is gone fails on every call it matches. The hook runs the executable with `--claude-hook`, which `Main` handles before building the services, and only adds context suggesting Roslynaut's tools for `.cs` files: it never blocks or approves a call.
+
+`--install opencode` (`OpenCodeInstall`) adds this executable as the MCP server `roslynaut` under `mcp.servers` in OpenCode's global `opencode.json(c)` (under `~/.config/opencode`, or `XDG_CONFIG_HOME` when set), and a plugin to `~/.config/opencode/plugins/roslynaut.js`. The plugin runs the executable with `--opencode-hook` after OpenCode reads or greps C# files, and appends the suggestion it returns to the tool result; it supports OpenCode 1 (`tool.execute.after`) and 2 (`ctx.tool.hook("execute.after")`). It leaves a plugin file it did not write alone, and replaces its own by the marker at its first line. `--uninstall opencode` removes both, of any version. Both installers share `AgentInstall.Command()` and the `JsonFile` reader and writer, and `ClaudeInstall.Context` decides which tool calls touch C# code for both agents.
 
 Environment variables:
 - `ROSLYNAUT_ALLOW_EVALUATE=true` enables the `evaluate` and `benchmark` tools, which run arbitrary code. They are off by default.

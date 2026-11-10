@@ -9,9 +9,11 @@ public static class Program
 {
     public static async Task<int> Main(params string[] args)
     {
-        // Before the services, as Claude Code runs the hook on every read and grep.
+        // Before the services, as the agents run these on every read and grep.
         if (args is [ClaudeInstall.HookOption])
             return ClaudeInstall.Hook();
+        if (args is [OpenCodeInstall.HookOption])
+            return OpenCodeInstall.Hook();
 
         await using var services = Services();
         var server = services.GetRequiredService<McpServerService>();
@@ -29,19 +31,26 @@ public static class Program
         var noInstructions = new Option<bool>("--no-instructions") { Description = "Leave out the server instructions, which tell agents which tool to use for what." };
         var install = new Option<string>("--install")
         {
-            Description = "Register the server with this agent for all projects, with a hook that suggests its tools when the agent reads or greps C# files, and exit.",
+            Description =
+                "Register the server with this agent for all projects, and exit. Claude Code also gets a hook, and OpenCode a plugin, that suggests "
+                + "its tools when the agent reads or greps C# files.",
             HelpName = "agent",
-        }.AcceptOnlyFromAmong("claude");
+        }.AcceptOnlyFromAmong("claude", "opencode");
         var uninstall = new Option<string>("--uninstall")
         {
-            Description = "Remove the server and its hook from this agent, as before uninstalling the tool, and exit.", HelpName = "agent",
-        }.AcceptOnlyFromAmong("claude");
+            Description = "Remove the server and its hook or plugin from this agent, as before uninstalling the tool, and exit.", HelpName = "agent",
+        }.AcceptOnlyFromAmong("claude", "opencode");
         var root = new RootCommand("An MCP server that exposes Roslyn and MSBuild to agents.") { protocol, enable, disable, noInstructions, install, uninstall };
         root.SetAction(async parsed =>
         {
-            if (parsed.GetValue(install) is not null || parsed.GetValue(uninstall) is not null)
+            var (installAgent, uninstallAgent) = (parsed.GetValue(install), parsed.GetValue(uninstall));
+            if (installAgent is not null || uninstallAgent is not null)
             {
-                ClaudeInstall.Run(uninstall: parsed.GetValue(uninstall) is not null);
+                var uninstall = uninstallAgent is not null;
+                if ((uninstallAgent ?? installAgent) == "claude")
+                    ClaudeInstall.Run(uninstall);
+                else
+                    OpenCodeInstall.Run(uninstall);
                 return;
             }
 
