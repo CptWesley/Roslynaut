@@ -147,27 +147,44 @@ public sealed class BuildProblemsTool : IMcpTool
 
     private static string? Value(IDictionary<string, string> properties, string key) => properties.TryGetValue(key, out var value) ? value : null;
 
-    // ResolveAssemblyReference's results hold each conflict as "There was a conflict between "A, Version=1" and "A, Version=2"." with what it chose
-    // and, per version, the references that depend on it.
+    // ResolveAssemblyReference's results hold each conflict as "There was a conflict between "A, Version=1" and "A, Version=2"." with what it chose.
+    // The references that depend on each version are in the logMessageDetails of its UnresolvedAssemblyConflicts output item: MSBuild 18 no longer
+    // logs them under the conflict.
     private static IReadOnlyList<ReferenceConflict> ReferenceConflicts(Build build) =>
     [
         .. build.FindChildrenRecursive<ResolveAssemblyReferenceTask>()
             .SelectMany(task => (task.Results?.Children.OfType<Parameter>() ?? []).Where(result => result.Name.StartsWith("There was a conflict between")).Select(conflict =>
             {
-                var items = conflict.Children.OfType<Item>().ToList();
-                var chosen = items.Select(item => Chosen.Match(item.Text)).FirstOrDefault(match => match.Success);
+                var chosen = conflict.Children.OfType<Item>().Select(item => Chosen.Match(item.Text)).FirstOrDefault(match => match.Success);
                 var assembly = Quoted.Match(conflict.Name).Groups["value"].Value.Split(',')[0];
+                var details = task.FindChildrenRecursive<Metadata>(metadata => metadata.Name == "logMessageDetails" && metadata.Parent is Item item && item.Text == assembly)
+                    .FirstOrDefault()?.Value;
                 var project = task.GetNearestParent<Project>();
                 return new ReferenceConflict(
                     project is null ? "" : BuildLog.Name(project),
                     assembly,
                     chosen?.Groups["identity"].Value,
                     chosen?.Groups["reason"].Value,
-                    [.. items.Where(item => item.Text.StartsWith("References which depend on")).Select(item =>
-                        new ConflictingVersion(Quoted.Match(item.Text).Groups["value"].Value, [.. item.Children.OfType<Item>().Select(reference => reference.Text)]))],
+                    details is null ? [] : [.. Versions(details)],
                     project?.FindChildrenRecursive<Warning>(warning => warning.Code == "MSB3277" && warning.Text.Contains($"\"{assembly}\"")).FirstOrDefault()?.Text);
             })),
     ];
+
+    // Each version is a line "References which depend on "A, Version=1" [path].", then its references one level in, each with what caused it deeper in.
+    private static IEnumerable<ConflictingVersion> Versions(string details)
+    {
+        const string Header = "References which depend on";
+        static int Indent(string line) => line.Length - line.TrimStart().Length;
+        var lines = details.Split('\n').Select(line => line.TrimEnd('\r')).Where(line => line.Trim().Length > 0).ToList();
+        for (var i = 0; i < lines.Count; i++)
+        {
+            if (!lines[i].TrimStart().StartsWith(Header))
+                continue;
+            var block = lines.Skip(i + 1).TakeWhile(line => !line.TrimStart().StartsWith(Header)).ToList();
+            var indent = block.Count == 0 ? 0 : block.Min(Indent);
+            yield return new(Quoted.Match(lines[i]).Groups["value"].Value, [.. block.Where(line => Indent(line) == indent).Select(line => line.Trim())]);
+        }
+    }
 
     public sealed record BuildProblems(IReadOnlyList<DoubleWrite> DoubleWrites, IReadOnlyList<DuplicateBuild> DuplicateBuilds, IReadOnlyList<ReferenceConflict> ReferenceConflicts);
 

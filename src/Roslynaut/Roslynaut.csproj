@@ -11,11 +11,14 @@
     <ToolCommandName>roslynaut</ToolCommandName>
     <RollForward>Major</RollForward>
     <Version>0.2.1</Version>
-    <PackageReleaseNotes>Projects load with the .NET SDK's MSBuild, as dotnet build uses, instead of Visual Studio's MSBuild.exe, which failed with MSB4236 where Visual Studio Build Tools lack the .NET SDK component.</PackageReleaseNotes>
+    <PackageReleaseNotes>
+- Projects load with the .NET SDK's MSBuild, as dotnet build uses, instead of Visual Studio's MSBuild.exe, which failed with MSB4236 where Visual Studio Build Tools lack the .NET SDK component.
+- build_problems lists each version of a conflicting assembly again, with the references that depend on it, for builds with MSBuild 18, which no longer logs them under the conflict.
+    </PackageReleaseNotes>
     <Authors>Wesley Baartman</Authors>
     <Copyright>Copyright (c) 2026 Wesley Baartman</Copyright>
     <Description>An MCP server that exposes Roslyn and MSBuild to agents: navigation, analysis, refactoring, builds and tests, IL/JIT disassembly, decompilation, process inspection and debugging of C# projects.</Description>
-    <PackageTags>mcp;roslyn;msbuild;csharp;agents</PackageTags>
+    <PackageTags>mcp;roslyn;msbuild;csharp;agents;opencode;claude;llm;agentic</PackageTags>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageProjectUrl>https://github.com/CptWesley/Roslynaut</PackageProjectUrl>
