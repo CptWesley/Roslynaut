@@ -19,7 +19,8 @@ public enum McpProtocol
 }
 
 /// <summary>Owns the lifetime of the MCP server. Tools are discovered through DI.</summary>
-public sealed class McpServerService(IEnumerable<IMcpTool> tools)
+/// <param name="serializerOptions">How tools read their arguments and write their results.</param>
+public sealed class McpServerService(IEnumerable<IMcpTool> tools, JsonSerializerOptions serializerOptions)
 {
     /// <summary>
     /// What clients put in front of the agent before it calls any tool, such as in its system prompt, where it may only see tool names: which
@@ -77,9 +78,15 @@ public sealed class McpServerService(IEnumerable<IMcpTool> tools)
           ROSLYNAUT_ALLOW_EVALUATE=true.
         """;
 
+    /// <summary>How deep the JSON of tool results may nest, instead of the 64 levels of System.Text.Json's default.</summary>
+    internal const int MaxJsonDepth = 256;
+
     /// <summary>Every tool, as the server serves it.</summary>
     public IReadOnlyList<McpServerTool> Tools { get; } =
-        [.. tools.Select(tool => (McpServerTool)new ExplainingTool(McpServerTool.Create(tool.Handler), tool.Handler.Method))];
+    [
+        .. tools.Select(tool => (McpServerTool)new ExplainingTool(
+            McpServerTool.Create(tool.Handler, new() { SerializerOptions = serializerOptions }), tool.Handler.Method, serializerOptions)),
+    ];
 
     /// <summary>Starts the server with some of <see cref="Tools"/>; the returned task completes when the server shuts down.</summary>
     public async Task StartAsync(McpProtocol protocol, IReadOnlyList<McpServerTool> serverTools, bool instructions)
@@ -120,7 +127,8 @@ public sealed class McpServerService(IEnumerable<IMcpTool> tools)
 /// A tool whose failures say what went wrong. The SDK passes on only the message of an <see cref="McpException"/>, and turns any other
 /// exception into "An error occurred invoking 'tool'.", such as those of binding the arguments to the handler's parameters.
 /// </summary>
-internal sealed class ExplainingTool(McpServerTool tool, MethodInfo handler) : DelegatingMcpServerTool(tool)
+/// <param name="serializerOptions">The options the tool binds its arguments with.</param>
+internal sealed class ExplainingTool(McpServerTool tool, MethodInfo handler, JsonSerializerOptions serializerOptions) : DelegatingMcpServerTool(tool)
 {
     public override async ValueTask<CallToolResult> InvokeAsync(RequestContext<CallToolRequestParams> request, CancellationToken cancellationToken = default)
     {
@@ -134,7 +142,7 @@ internal sealed class ExplainingTool(McpServerTool tool, MethodInfo handler) : D
         }
         catch (Exception e) when (e is not (McpException or OperationCanceledException or InputRequiredException))
         {
-            throw new McpException(Explain(e, ProtocolTool.InputSchema, handler, arguments), e);
+            throw new McpException(Explain(e, ProtocolTool.InputSchema, handler, arguments, serializerOptions), e);
         }
     }
 
@@ -149,13 +157,13 @@ internal sealed class ExplainingTool(McpServerTool tool, MethodInfo handler) : D
     /// What went wrong: binding throws a <see cref="JsonException"/> that does not name the argument which does not convert to its parameter's
     /// type, so that argument is looked for; the tool's own exceptions keep their type and message.
     /// </summary>
-    internal static string Explain(Exception exception, JsonElement schema, MethodInfo handler, IDictionary<string, JsonElement> arguments)
+    internal static string Explain(Exception exception, JsonElement schema, MethodInfo handler, IDictionary<string, JsonElement> arguments, JsonSerializerOptions options)
     {
         if (exception is JsonException)
         {
             foreach (var parameter in handler.GetParameters())
             {
-                if (parameter.Name is { } name && arguments.TryGetValue(name, out var value) && !Converts(value, parameter.ParameterType))
+                if (parameter.Name is { } name && arguments.TryGetValue(name, out var value) && !Converts(value, parameter.ParameterType, options))
                     return $"Argument {name} has to be {TypeOf(schema, name)}, not {Shorten(value.GetRawText())}.";
             }
         }
@@ -163,11 +171,11 @@ internal sealed class ExplainingTool(McpServerTool tool, MethodInfo handler) : D
         return $"{exception.GetType().Name}: {exception.Message}";
     }
 
-    private static bool Converts(JsonElement value, Type type)
+    private static bool Converts(JsonElement value, Type type, JsonSerializerOptions options)
     {
         try
         {
-            JsonSerializer.Deserialize(value, type, McpJsonUtilities.DefaultOptions);
+            JsonSerializer.Deserialize(value, type, options);
             return true;
         }
         catch (JsonException)
