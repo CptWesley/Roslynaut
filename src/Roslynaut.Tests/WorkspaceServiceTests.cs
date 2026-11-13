@@ -118,6 +118,30 @@ public class WorkspaceLoadErrorTests
             directory.Delete(recursive: true);
         }
     }
+
+    // Buildalyzer would take Visual Studio's MSBuild.exe for a project whose file names no target framework, which fails where Build Tools
+    // lack the .NET SDK resolver; this machine need not have Visual Studio for the choice to show.
+    [Test]
+    public void Environment_OfSdkProjectWithFrameworkFromImport_IsTheSdksMSBuild()
+    {
+        var directory = Directory.CreateTempSubdirectory("roslynaut-imported-tfm-");
+        try
+        {
+            File.WriteAllText(Path.Combine(directory.FullName, "Directory.Build.props"),
+                "<Project><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>");
+            var project = Path.Combine(directory.FullName, "Imported.csproj");
+            File.WriteAllText(project, """<Project Sdk="Microsoft.NET.Sdk" ToolsVersion="15.0" />""");
+
+            var environment = WorkspaceService.EnvironmentOf(new Buildalyzer.AnalyzerManager().GetProject(Buildalyzer.IO.IOPath.Parse(project))!,new Buildalyzer.Environment.EnvironmentOptions());
+
+            environment.MsBuildExePath.Should().EndWith("MSBuild.dll").And.StartWith(Path.GetDirectoryName(DotnetCli.Executable));
+            environment.DotnetExePath.Should().Be(DotnetCli.Executable);
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
+    }
 }
 
 [NonParallelizable]

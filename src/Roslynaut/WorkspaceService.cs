@@ -799,15 +799,44 @@ public sealed class WorkspaceService
         if (analyzer is null)
             return (null, ["The project file does not exist."]);
 
-        var results = analyzer.Build(options);
+        var environment = EnvironmentOf(analyzer, options);
+        var results = analyzer.Build(environment);
         if (results.FirstOrDefault() is { CompilerArguments.Length: 0 } outer
             && outer.GetProperty("TargetFrameworks")?.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries) is [var first, ..] frameworks)
-            results = analyzer.Build(frameworks.FirstOrDefault(framework => string.Equals(framework, targetFramework, StringComparison.OrdinalIgnoreCase)) ?? first, options);
+            results = analyzer.Build(frameworks.FirstOrDefault(framework => string.Equals(framework, targetFramework, StringComparison.OrdinalIgnoreCase)) ?? first, environment);
 
         var result = results.FirstOrDefault();
         return (result, result is { CompilerArguments.Length: > 0 }
             ? []
             : [.. results.BuildEventArguments.OfType<BuildErrorEventArgs>().Select(error => error.Code is { Length: > 0 } ? $"{error.Code}: {error.Message}" : $"{error.Message}").Distinct()]);
+    }
+
+    /// <summary>
+    /// The .NET SDK's MSBuild for an SDK-style project, the one global.json picks, as dotnet build uses. Buildalyzer reads the project file
+    /// without evaluating it, and takes Visual Studio's MSBuild.exe when it finds no target framework there (as when Directory.Build.props sets
+    /// it), a ToolsVersion, or only .NET Framework ones; Visual Studio Build Tools without the .NET SDK component then cannot resolve
+    /// Microsoft.NET.Sdk (MSB4236). Other projects, and an SDK that does not run here, get Buildalyzer's choice.
+    /// </summary>
+    internal static BuildEnvironment EnvironmentOf(IProjectAnalyzer analyzer, EnvironmentOptions options)
+    {
+        if (!analyzer.ProjectFile.UsesSdk)
+            return analyzer.EnvironmentFactory.GetBuildEnvironment(options)!;
+
+        var (exitCode, output) = DotnetCli.RunAsync(["--version"], TimeSpan.FromMinutes(1), CancellationToken.None, workingDirectory: Path.GetDirectoryName(analyzer.ProjectFile.Path))
+            .GetAwaiter().GetResult();
+        var sdk = Path.Combine(Path.GetDirectoryName(DotnetCli.Executable)!, "sdk", output.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).LastOrDefault() ?? "");
+        if (exitCode != 0 || !File.Exists(Path.Combine(sdk, "MSBuild.dll")))
+            return analyzer.EnvironmentFactory.GetBuildEnvironment(options)!;
+
+        // What Buildalyzer's own environment for the .NET SDK sets.
+        return new BuildEnvironment(options.DesignTime, options.Restore, [.. options.TargetsToBuild], Path.Combine(sdk, "MSBuild.dll"), DotnetCli.Executable,
+            options.Arguments, options.GlobalProperties, new Dictionary<string, string>(options.EnvironmentVariables)
+            {
+                ["MSBuildExtensionsPath"] = sdk,
+                ["MSBuildSDKsPath"] = Path.Combine(sdk, "Sdks"),
+                ["COREHOST_TRACE"] = "0",
+                ["DOTNET_HOST_PATH"] = DotnetCli.Executable,
+            }, options.WorkingDirectory);
     }
 }
 
