@@ -339,6 +339,57 @@ public class ProcessTracingTests
 
     private static ProcessTracing.CallTree Tree(string method, double total, double? self, params ProcessTracing.CallTree[] children) => new(method, total, self, children);
 
+    // As the server writes results.
+    private static readonly System.Text.Json.JsonSerializerOptions Deep = new(ModelContextProtocol.McpJsonUtilities.DefaultOptions) { MaxDepth = McpServerService.MaxJsonDepth };
+
+    // Each level nests twice in JSON, which the server writes up to its MaxDepth; one level more would not fit.
+    [Test]
+    public void Analyze_EndsDeepCallTrees_SoTheyStillSerialize()
+    {
+        string[] frames = [.. Enumerable.Range(0, 300).Reverse().Select(depth => $"F{depth}()")];
+        var profile = ProcessTracing.Analyze("1", new(TimeSpan.FromSeconds(1), [Stack(1, 10, frames)]), null, NoFilters with { Root = new(@"^F0\("), Leaf = new(@"^F299\(") }, top: 1);
+
+        static int Depth(ProcessTracing.CallTree tree) => 1 + (tree.Children.Count == 0 ? 0 : tree.Children.Max(Depth));
+        (Depth(profile.Callees!.Single()), Depth(profile.Callers!.Single())).Should().Be((ProcessTracing.MaxTreeDepth, ProcessTracing.MaxTreeDepth));
+        FluentActions.Invoking(() => System.Text.Json.JsonSerializer.Serialize(profile, Deep)).Should().NotThrow();
+
+        static ProcessTracing.CallTree Chain(int depth) => new("F()", 1, null, depth == 1 ? [] : [Chain(depth - 1)]);
+        FluentActions.Invoking(() => System.Text.Json.JsonSerializer.Serialize(profile with { Callees = [Chain(ProcessTracing.MaxTreeDepth + 2)] }, Deep))
+            .Should().Throw<System.Text.Json.JsonException>();
+    }
+
+    // The trace ends when the process exits rather than when the time is up, and keeps what it sampled until then.
+    [Test]
+    public async Task Cpu_OfAProcessThatExits_KeepsItsSamples()
+    {
+        var start = new ProcessStartInfo(DotnetCli.Executable)
+        {
+            ArgumentList = { "exec", Path.Combine(AppContext.BaseDirectory, "Roslynaut.ScriptHost.dll") },
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+        };
+        using var shortLived = Process.Start(start)!;
+        try
+        {
+            const string code = "var end = System.DateTime.UtcNow.AddSeconds(6); long x = 0; while (System.DateTime.UtcNow < end) x++; x";
+            shortLived.StandardInput.Write(System.Text.Json.JsonSerializer.Serialize(new { Code = code, References = Array.Empty<string>() }));
+            shortLived.StandardInput.Close();
+            for (var attempt = 0; attempt < 40 && !DiagnosticsClient.GetPublishedProcesses().Contains(shortLived.Id); attempt++)
+                await Task.Delay(250);
+
+            var watch = Stopwatch.StartNew();
+            var samples = await ProcessTracing.SampleAsync(shortLived.Id, TimeSpan.FromSeconds(60), CancellationToken.None);
+
+            shortLived.HasExited.Should().BeTrue();
+            watch.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(30));
+            samples.Stacks.Should().NotBeEmpty();
+        }
+        finally
+        {
+            shortLived.Kill();
+        }
+    }
+
     // Ties on Self go by Total.
     [Test]
     public void Analyze_AgainstABaseline_PutsTheBiggestChangesFirst()

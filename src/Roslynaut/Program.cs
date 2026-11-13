@@ -1,5 +1,7 @@
 using System.CommandLine;
+using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
+using ModelContextProtocol;
 using Roslynaut.Debugging;
 using Roslynaut.Tools;
 
@@ -65,6 +67,7 @@ public static class Program
 
     private static ServiceProvider Services() =>
         new ServiceCollection()
+            .AddSingleton(new JsonSerializerOptions(McpJsonUtilities.DefaultOptions) { MaxDepth = McpServerService.MaxJsonDepth })
             .AddSingleton<WorkspaceService>()
             .AddSingleton<ResultCache>()
             .AddSingleton<AssemblyLoader>()

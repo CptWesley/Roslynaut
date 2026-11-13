@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text.Json;
+using ModelContextProtocol;
 
 namespace Roslynaut.Tests;
 
@@ -22,7 +23,7 @@ public class ExplainingToolTests
     [Test]
     public void Explain_AnExceptionOfTheTool_GivesItsTypeAndMessage()
     {
-        ExplainingTool.Explain(new InvalidOperationException("Boom."), Schema, Handler, Arguments("""{ "path": "a", "line": 2 }"""))
+        ExplainingTool.Explain(new InvalidOperationException("Boom."), Schema, Handler, Arguments("""{ "path": "a", "line": 2 }"""), McpJsonUtilities.DefaultOptions)
             .Should().Be("InvalidOperationException: Boom.");
     }
 
@@ -30,14 +31,14 @@ public class ExplainingToolTests
     [Test]
     public void Explain_AJsonExceptionOfTheTool_GivesItsTypeAndMessage()
     {
-        ExplainingTool.Explain(new JsonException("Bad file."), Schema, Handler, Arguments("""{ "path": "a", "line": 2 }"""))
+        ExplainingTool.Explain(new JsonException("Bad file."), Schema, Handler, Arguments("""{ "path": "a", "line": 2 }"""), McpJsonUtilities.DefaultOptions)
             .Should().Be("JsonException: Bad file.");
     }
 
     [Test]
     public void Explain_AnArgumentThatDoesNotConvert_NamesIt()
     {
-        ExplainingTool.Explain(new JsonException("The JSON value could not be converted."), Schema, Handler, Arguments("""{ "path": "a", "line": "two" }"""))
+        ExplainingTool.Explain(new JsonException("The JSON value could not be converted."), Schema, Handler, Arguments("""{ "path": "a", "line": "two" }"""), McpJsonUtilities.DefaultOptions)
             .Should().Be("Argument line has to be integer, not \"two\".");
     }
 

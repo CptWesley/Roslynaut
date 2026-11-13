@@ -125,16 +125,25 @@ internal static class ProcessTracing
             node!.Self += stack.Count;
         }
 
-        return [.. roots.OrderByDescending(root => root.Value.Total).Select(root => TreeOf(root.Key, root.Value, root.Value.Total))];
+        return [.. roots.OrderByDescending(root => root.Value.Total).Select(root => TreeOf(root.Key, root.Value, root.Value.Total, depth: 1))];
 
         // ponytail: paths under 1% of their root's samples are left out; take the share as a parameter if agents need finer trees.
-        CallTree TreeOf(string method, Node node, int rootSamples) => new(
+        CallTree TreeOf(string method, Node node, int rootSamples, int depth) => new(
             method,
             Percent(node.Total, samples),
             inward ? Percent(node.Self, samples) : null,
-            [.. node.Children.Where(child => child.Value.Total * 100 >= rootSamples).OrderByDescending(child => child.Value.Total)
-                .Select(child => TreeOf(child.Key, child.Value, rootSamples))]);
+            depth == MaxTreeDepth
+                ? []
+                : [.. node.Children.Where(child => child.Value.Total * 100 >= rootSamples).OrderByDescending(child => child.Value.Total)
+                    .Select(child => TreeOf(child.Key, child.Value, rootSamples, depth + 1))]);
     }
+
+    /// <summary>
+    /// How many calls deep call trees go, 126. Each level nests twice in JSON, as an object and its Children, below the profile and its
+    /// Callees, and the server writes no deeper than <see cref="McpServerService.MaxJsonDepth"/>; a deeper method passed as root or leaf
+    /// shows what lies further.
+    /// </summary>
+    internal const int MaxTreeDepth = McpServerService.MaxJsonDepth / 2 - 2;
 
     private sealed class Node
     {
@@ -453,7 +462,7 @@ internal static class ProcessTracing
                 await stream.CopyToAsync(file);
             }, cancellationToken);
 
-            using var log = new TraceLog(TraceLog.CreateFromEventPipeDataFile(trace, Path.Combine(directory.FullName, "trace.etlx"), new() { ContinueOnError = target.Program is not null }));
+            using var log = new TraceLog(TraceLog.CreateFromEventPipeDataFile(trace, Path.Combine(directory.FullName, "trace.etlx"), new() { ContinueOnError = true }));
             return read(log, elapsed);
         }
         finally
@@ -488,18 +497,18 @@ internal static class ProcessTracing
             var reading = Task.Run(() => read(session.EventStream), CancellationToken.None);
             try
             {
-                // A launched program's stream ends when it exits.
-                await Task.WhenAny(Task.Delay(duration, cancellationToken), launched is null ? Task.Delay(Timeout.Infinite, cancellationToken) : reading);
+                // The stream ends when the process exits, whether launched or attached to.
+                await Task.WhenAny(Task.Delay(duration, cancellationToken), reading);
                 cancellationToken.ThrowIfCancellationRequested();
             }
             finally
             {
-                // Stopping ends the stream, after the rundown if there is one; a program that exited has ended it already.
+                // Stopping ends the stream, after the rundown if there is one; a process that exited has ended it already.
                 try
                 {
                     session.Stop();
                 }
-                catch (Exception e) when (launched is not null && e is ServerNotAvailableException or IOException or EndOfStreamException or TimeoutException)
+                catch (Exception e) when (e is ServerNotAvailableException || launched is not null && e is IOException or EndOfStreamException or TimeoutException)
                 {
                 }
 
@@ -507,9 +516,9 @@ internal static class ProcessTracing
                 {
                     await reading;
                 }
-                catch (FormatException) when (launched is not null)
+                catch (FormatException)
                 {
-                    // A program that was killed, as VSTest ends its test host, cuts its stream off mid-block; the events before count.
+                    // A process that was killed, as VSTest ends its test host, cuts its stream off mid-block; the events before count.
                 }
             }
 
@@ -554,7 +563,8 @@ internal static class ProcessTracing
 
     /// <param name="Total">The percentage of samples whose stack runs through this path.</param>
     /// <param name="Self">In Callees: the percentage of samples in which the path ends here, with this method running itself.</param>
-    /// <param name="Children">What it calls, in Callees; its callers, in Callers. Paths under 1% of their root's samples are left out.</param>
+    /// <param name="Children">What it calls, in Callees; its callers, in Callers. Paths under 1% of their root's samples are left out, and trees end
+    /// 126 calls deep: pass a method further down as root or leaf to see on.</param>
     public sealed record CallTree(string Method, double Total, double? Self, IReadOnlyList<CallTree> Children);
 
     /// <param name="Bytes">
@@ -655,7 +665,7 @@ public sealed class ProcessEventsTool(WorkspaceService workspace) : IMcpTool
         [Description(TraceTarget.LaunchDescription)] string? launch = null,
         [Description(TraceTarget.ArgumentsDescription)] string[]? arguments = null,
         [Description(TraceTarget.TestFilterDescription)] string? testFilter = null,
-        [Description("How long to listen; the process should do the work to look at meanwhile. With launch, at most this long.")] int seconds = 5,
+        [Description("How long to listen; the process should do the work to look at meanwhile. At most this long: it ends when the process exits.")] int seconds = 5,
         [Description("Optional regex: the exception types or stacks, the log categories, the waiting stacks or the routes and hosts to keep, e.g. 'MyApp\\.'.")] string? filter = null,
         [Description("For Logs: the least level, Debug, Information, Warning, Error or Critical.")] string level = "Debug",
         [Description("How many groups, messages, stacks or collections to return.")] int top = 20,
@@ -704,7 +714,7 @@ public sealed class ProcessCpuTool(WorkspaceService workspace) : IMcpTool
         [Description(TraceTarget.LaunchDescription)] string? launch = null,
         [Description(TraceTarget.ArgumentsDescription)] string[]? arguments = null,
         [Description(TraceTarget.TestFilterDescription)] string? testFilter = null,
-        [Description("How long to sample; the process should be busy with the work to look at meanwhile. With launch, at most this long.")] int seconds = 5,
+        [Description("How long to sample; the process should be busy with the work to look at meanwhile. At most this long: it ends when the process exits.")] int seconds = 5,
         [Description("The Profile of an earlier result, to analyze its samples again instead of sampling.")] string? profile = null,
         [Description("The Profile of an earlier result to compare with: methods come in order of how much their share changed.")] string? compareTo = null,
         [Description("Optional regex: counts only the threads that ran a method whose name matches, e.g. 'WorldLoop\\.OnDay'.")] string? threads = null,
@@ -751,7 +761,7 @@ public sealed class ProcessAllocationsTool(WorkspaceService workspace) : IMcpToo
         [Description(TraceTarget.LaunchDescription)] string? launch = null,
         [Description(TraceTarget.ArgumentsDescription)] string[]? arguments = null,
         [Description(TraceTarget.TestFilterDescription)] string? testFilter = null,
-        [Description("How long to sample; the process should be busy with the work to look at meanwhile. With launch, at most this long.")] int seconds = 5,
+        [Description("How long to sample; the process should be busy with the work to look at meanwhile. At most this long: it ends when the process exits.")] int seconds = 5,
         [Description("Optional regex: counts only the threads that allocated from a method whose name matches, e.g. 'WorldLoop\\.OnDay'.")] string? threads = null,
         [Description("How many types and stacks to return, those that allocate the most first.")] int top = 20,
         [Description("How many frames to return per stack, from the innermost.")] int maxFrames = 10,
