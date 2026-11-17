@@ -12,16 +12,22 @@ An MCP server that gives coding agents what an IDE knows about C# code. It loads
 
 ```sh
 dotnet tool install -g Roslynaut
-roslynaut --install claude    # or: roslynaut --install opencode
+roslynaut --install claude    # or: opencode, vscode, copilot
 ```
 
 `--install claude` registers Roslynaut with Claude Code for all your projects, as the user-scope MCP server `roslynaut` in `~/.claude.json`. It also adds hooks to `~/.claude/settings.json`. They suggest Roslynaut's tools for the job, along with the solution to pass them: when a session starts (or resumes, or is compacted) in a C# repository, when Claude reads, finds or greps C# files, after it edits one, and when it runs `dotnet build` or `dotnet test`. The hooks only add that suggestion: they never block or approve a tool call. Both files go under `CLAUDE_CONFIG_DIR` when that is set. Restart Claude Code afterwards. `dotnet tool update -g Roslynaut` keeps the registration, as the command stays the same.
 
 `--install opencode` registers Roslynaut with OpenCode for all your projects, as the MCP server `roslynaut` in the global `opencode.json(c)` (under `~/.config/opencode`, or `XDG_CONFIG_HOME` when that is set). It also adds a plugin to `~/.config/opencode/plugins/roslynaut.js`. When OpenCode reads or greps C# files, the plugin appends the same suggestion to the tool result. The plugin only adds that suggestion: it never blocks or approves a tool call. OpenCode reloads its configuration and plugins without a restart.
 
+`--install vscode` registers Roslynaut with VS Code for all your workspaces, as the MCP server `roslynaut` in the user profile's `mcp.json` (`%APPDATA%\Code\User` on Windows, `~/Library/Application Support/Code/User` on macOS, `~/.config/Code/User` on Linux). It writes the default profile of VS Code stable only; for Insiders or another profile, add the same entry through **MCP: Open User Configuration**.
+
+`--install copilot` registers Roslynaut with the GitHub Copilot CLI for all your projects, as the MCP server `roslynaut` with all its tools in `~/.copilot/mcp-config.json` (under `COPILOT_HOME` when that is set).
+
+These two only register the server, without a hook: the server instructions tell the agent which tool to use for what.
+
 ### Other MCP clients
 
-Run the command `roslynaut`, which serves MCP over stdio. For example, in VS Code's `.vscode/mcp.json`:
+Run the command `roslynaut`, which serves MCP over stdio. For example, for one VS Code workspace, in its `.vscode/mcp.json`:
 
 ```json
 {
@@ -64,8 +70,8 @@ On Linux, each loaded project or solution watches its files through a few inotif
 | `--enable-tools <tool>...` | Serve only these tools. |
 | `--disable-tools <tool>...` | Leave these tools out. |
 | `--no-instructions` | Leave out the server instructions that tell agents which tool to use for what. |
-| `--install claude\|opencode` | Register with Claude Code or OpenCode, then exit. |
-| `--uninstall claude\|opencode` | Remove that registration, then exit. |
+| `--install claude\|opencode\|vscode\|copilot` | Register with Claude Code, OpenCode, VS Code or the Copilot CLI, then exit. |
+| `--uninstall claude\|opencode\|vscode\|copilot` | Remove that registration, then exit. |
 
 | Environment variable | Effect |
 | --- | --- |
@@ -93,7 +99,7 @@ Some tools download:
 ## Uninstall
 
 ```sh
-roslynaut --uninstall claude    # and: roslynaut --uninstall opencode
+roslynaut --uninstall claude    # and: opencode, vscode, copilot
 dotnet tool uninstall -g Roslynaut
 ```
 

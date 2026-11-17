@@ -9,6 +9,8 @@ namespace Roslynaut;
 
 public static class Program
 {
+    private static readonly string[] Agents = ["claude", "opencode", "vscode", "copilot"];
+
     public static async Task<int> Main(params string[] args)
     {
         // Before the services, as the agents run these on every read and grep.
@@ -34,25 +36,28 @@ public static class Program
         var install = new Option<string>("--install")
         {
             Description =
-                "Register the server with this agent for all projects, and exit. Claude Code also gets a hook, and OpenCode a plugin, that suggests "
-                + "its tools when the agent reads or greps C# files.",
+                "Register the server with this agent for all projects, and exit: Claude Code, OpenCode, VS Code or the GitHub Copilot CLI. Claude Code "
+                + "also gets a hook, and OpenCode a plugin, that suggests its tools when the agent reads or greps C# files.",
             HelpName = "agent",
-        }.AcceptOnlyFromAmong("claude", "opencode");
+        }.AcceptOnlyFromAmong(Agents);
         var uninstall = new Option<string>("--uninstall")
         {
             Description = "Remove the server and its hook or plugin from this agent, as before uninstalling the tool, and exit.", HelpName = "agent",
-        }.AcceptOnlyFromAmong("claude", "opencode");
+        }.AcceptOnlyFromAmong(Agents);
         var root = new RootCommand("An MCP server that exposes Roslyn and MSBuild to agents.") { protocol, enable, disable, noInstructions, install, uninstall };
         root.SetAction(async parsed =>
         {
             var (installAgent, uninstallAgent) = (parsed.GetValue(install), parsed.GetValue(uninstall));
             if (installAgent is not null || uninstallAgent is not null)
             {
-                var uninstall = uninstallAgent is not null;
-                if ((uninstallAgent ?? installAgent) == "claude")
-                    ClaudeInstall.Run(uninstall);
-                else
-                    OpenCodeInstall.Run(uninstall);
+                Action<bool> run = (uninstallAgent ?? installAgent) switch
+                {
+                    "claude" => ClaudeInstall.Run,
+                    "opencode" => OpenCodeInstall.Run,
+                    "vscode" => VsCodeInstall.Run,
+                    _ => CopilotInstall.Run,
+                };
+                run(uninstallAgent is not null);
                 return;
             }
 
