@@ -21,6 +21,22 @@ dotnet tool install -g Roslynaut
 roslynaut --install claude    # or: opencode, codex, vscode, visualstudio, copilot, cursor, gemini, junie
 ```
 
+### Without installing, through `dnx`
+
+If `dotnet tool install -g` fails, for example because you lack permission to write to the global tools directory, run Roslynaut through `dnx` (.NET 10 SDK), which downloads the package into your NuGet packages folder and runs it from there:
+
+```sh
+dnx Roslynaut@1.2.3 --yes --install claude    # or any other agent
+```
+
+Give a fixed version, the latest of which you find on [nuget.org](https://www.nuget.org/packages/Roslynaut/) (the badge above), or with:
+
+```sh
+dotnet package search Roslynaut --exact-match    # every version; add --prerelease for previews
+```
+
+`--install` registers the copy that runs, in the NuGet packages folder (`~/.nuget/packages/roslynaut/<version>`), so the agent starts that version until you install another. Clearing that folder, as `dotnet nuget locals all --clear` does, removes it: run the `dnx` command again to bring it back. To upgrade, run it with the new version. To uninstall, run `dnx Roslynaut@<version> --yes --uninstall claude`.
+
 ### Claude Code
 
 `--install claude` registers Roslynaut with Claude Code for all your projects, as the user-scope MCP server `roslynaut` in `~/.claude.json`. It also adds hooks to `~/.claude/settings.json`. They suggest Roslynaut's tools for the job, along with the solution to pass them: when a session starts (or resumes, or is compacted) in a C# repository, when Claude reads, finds or greps C# files, after it edits one, and when it runs `dotnet build` or `dotnet test`. The hooks only add that suggestion: they never block or approve a tool call. Both files go under `CLAUDE_CONFIG_DIR` when that is set. Restart Claude Code afterwards. `dotnet tool update -g Roslynaut` keeps the registration, as the command stays the same.
