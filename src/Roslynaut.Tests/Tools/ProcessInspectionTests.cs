@@ -455,8 +455,9 @@ public class ProcessTracingTests
         profile.Threads[0].Entry.Should().Be("Submission#0+Churn.Run()");
         profile.Threads[0].Bytes.Should().BeGreaterThan(profile.Bytes / 2);
         profile.Stacks.Should().Contain(stack => stack.Type == "System.Byte[]" && stack.Stack.Any(frame => frame.Contains("Churn.Run")) && stack.Stack.Count <= 5);
-        // The allocation ticks name the nested type Fin, the runtime Submission#0+Fin.
-        profile.Finalizable.Should().ContainSingle().Which.Type.Should().Be("Submission#0+Fin");
+        // The allocation ticks name the nested type Fin, the runtime Submission#0+Fin. The runtime's own finalizable objects, such as
+        // DynamicResolver+DestroyScout, can follow it.
+        profile.Finalizable[0].Type.Should().Be("Submission#0+Fin");
         (await ProcessTracing.AllocationsAsync(target.Id, TimeSpan.FromSeconds(1), new(@"Churn\.Run"), top: 10, maxFrames: 5, CancellationToken.None))
             .Threads.Should().ContainSingle().Which.Entry.Should().Be("Submission#0+Churn.Run()");
     }

@@ -341,7 +341,9 @@ internal static class ProcessTracing
                 else if (item.EventName == "Contention/Stop" && started.Remove(item.ThreadID, out var start))
                 {
                     var milliseconds = item.PayloadByName("DurationNs") is { } nanoseconds ? Convert.ToDouble(nanoseconds) / 1e6 : item.TimeStampRelativeMSec - start.Start.TimeStampRelativeMSec;
-                    var owner = start.Start.PayloadByName("LockOwnerThreadID") is { } id && Convert.ToUInt64(id) != 0 ? $"thread 0x{Convert.ToUInt64(id):x}" : null;
+                    // A pointer-sized payload that TraceEvent reads as a long: on Linux the id is a pthread_t, an address that can have its high bit set.
+                    var owner = start.Start.PayloadByName("LockOwnerThreadID") is { } id && (id is long signed ? unchecked((ulong)signed) : Convert.ToUInt64(id)) is var thread and not 0
+                        ? $"thread 0x{thread:x}" : null;
                     waits.Add((start.Stack, milliseconds, owner));
                 }
             }
