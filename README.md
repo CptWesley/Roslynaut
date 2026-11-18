@@ -21,9 +21,15 @@ dotnet tool install -g Roslynaut
 roslynaut --install claude    # or: opencode, codex, vscode, visualstudio, copilot, cursor, gemini, junie
 ```
 
+### Claude Code
+
 `--install claude` registers Roslynaut with Claude Code for all your projects, as the user-scope MCP server `roslynaut` in `~/.claude.json`. It also adds hooks to `~/.claude/settings.json`. They suggest Roslynaut's tools for the job, along with the solution to pass them: when a session starts (or resumes, or is compacted) in a C# repository, when Claude reads, finds or greps C# files, after it edits one, and when it runs `dotnet build` or `dotnet test`. The hooks only add that suggestion: they never block or approve a tool call. Both files go under `CLAUDE_CONFIG_DIR` when that is set. Restart Claude Code afterwards. `dotnet tool update -g Roslynaut` keeps the registration, as the command stays the same.
 
+### OpenCode
+
 `--install opencode` registers Roslynaut with OpenCode for all your projects, as the MCP server `roslynaut` in the global `opencode.json(c)` (under `~/.config/opencode`, or `XDG_CONFIG_HOME` when that is set). It also adds a plugin to `~/.config/opencode/plugins/roslynaut.js`. When OpenCode reads or greps C# files, the plugin appends the same suggestion to the tool result. The plugin only adds that suggestion: it never blocks or approves a tool call. OpenCode reloads its configuration and plugins without a restart.
+
+### Other supported MCP clients
 
 The other agents get the MCP server `roslynaut`, for all your projects, in their user configuration, without a hook: the server instructions tell the agent which tool to use for what.
 
@@ -37,7 +43,7 @@ The other agents get the MCP server `roslynaut`, for all your projects, in their
 | `gemini` (Gemini CLI) | `mcpServers` in `~/.gemini/settings.json` |
 | `junie` (Junie in JetBrains IDEs, and its CLI) | `mcpServers` in `~/.junie/mcp/mcp.json` |
 
-### Other MCP clients
+### Other Unsupported MCP clients
 
 Run the command `roslynaut`, which serves MCP over stdio. For example, for one VS Code workspace, in its `.vscode/mcp.json`:
 
