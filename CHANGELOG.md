@@ -15,6 +15,7 @@ Every release of the [Roslynaut](https://www.nuget.org/packages/Roslynaut/) pack
 - The Claude Code and OpenCode hooks suggest resources for .resx files and verify_pending for received snapshots and after dotnet test.
 - diagnostics with analyzerPackages loads packages whose analyzers are not in a roslyn* folder, where it failed with "Sequence contains no elements".
 - The package is precompiled (ReadyToRun) for Windows, Linux and macOS on x64 and Arm64, so the server starts and answers its first calls sooner. It comes as a package per platform, which dotnet tool install and dnx pick, and a framework-dependent one for other platforms.
+- process_events with kind Contention reports the threads that held a lock on Linux too, where it failed with "Value was either too large or too small for a UInt64".
 
 ## 0.2.1 (2026-11-13)
 
