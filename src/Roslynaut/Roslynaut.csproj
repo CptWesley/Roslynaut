@@ -34,14 +34,9 @@
     <RepositoryUrl>https://github.com/CptWesley/Roslynaut</RepositoryUrl>
   </PropertyGroup>
 
-  <!-- Release precompiles the server and its dependencies, which spares the JIT time of Roslyn, MSBuild and the rest on each start.
-       ReadyToRun code is for one platform: dotnet pack makes a package per runtime, a framework-dependent one for the others (any), and
-       the package Roslynaut that points the tool's install at the right one. -->
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
     <RuntimeIdentifiers>win-x64;win-arm64;linux-x64;linux-arm64;linux-musl-x64;linux-musl-arm64;osx-x64;osx-arm64;any</RuntimeIdentifiers>
     <PublishReadyToRun>true</PublishReadyToRun>
-    <!-- With an app host, the tool's command would launch it by its path in the tool store, which changes with every version, and
-         --install would register that path; on Windows the command would also be a .cmd, which Node.js cannot start without a shell. -->
     <UseAppHost>false</UseAppHost>
   </PropertyGroup>
 
