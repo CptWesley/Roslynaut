@@ -73,7 +73,7 @@ public class McpConfigInstallTests
 
             [profiles.fast]
             model = "y"
-            """);
+            """.ReplaceLineEndings("\n"));
         try
         {
             CodexInstall.Install(file, [@"C:\tools\roslynaut.exe", "é"], TextWriter.Null);

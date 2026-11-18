@@ -104,7 +104,8 @@ internal static class CodexInstall
     };
 
     // Parsed rather than built, which sets the layout: a blank line before it, as between the other tables. Builds and tests through the
-    // server take longer than Codex's default of 60 seconds a tool call.
+    // server take longer than Codex's default of 60 seconds a tool call. Line breaks are Codex's own \n, not this source file's, which a
+    // Windows checkout can turn into \r\n.
     internal static TableSyntax Table(string[] command)
     {
         var document = SyntaxParser.ParseStrict($"""
@@ -114,7 +115,7 @@ internal static class CodexInstall
             args = {new ArraySyntax(command[1..])}
             tool_timeout_sec = 1800
 
-            """, validate: true);
+            """.ReplaceLineEndings("\n"), validate: true);
         var table = (TableSyntax)document.Tables.GetChild(0)!;
         document.Tables.RemoveChildAt(0);
         return table;

@@ -183,6 +183,9 @@ public static class Program
             .AddSingleton<IMcpTool, EndpointsTool>()
             .AddSingleton<IMcpTool, DiRegistrationsTool>()
             .AddSingleton<IMcpTool, FindDuplicatesTool>()
+            .AddSingleton<IMcpTool, VerifyPendingTool>()
+            .AddSingleton<IMcpTool, RegexTestTool>()
+            .AddSingleton<IMcpTool, ResourcesTool>()
             .AddSingleton<McpServerService>()
             .BuildServiceProvider();
 }

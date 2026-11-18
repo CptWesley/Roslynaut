@@ -262,7 +262,7 @@ public class ProcessTests : EndToEndTest
         (await Server.CallFailingAsync("process_cpu", new() { ["profile"] = "none" }))
             .Should().Be("An error occurred invoking 'process_cpu': There is no profile none; only the last 10 are kept, until the server restarts.");
         (await Server.CallFailingAsync("process_cpu", new() { ["processId"] = app.Id, ["profile"] = profile.Profile }))
-            .Should().Be("An error occurred invoking 'process_cpu': Pass one of processId, launch or profile.");
+            .Should().Be("An error occurred invoking 'process_cpu': Pass one of processId, launch, trace or profile.");
     }
 
     // The app allocates nothing once it waits, so what shows is little; the call still sorts it.

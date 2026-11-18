@@ -54,8 +54,9 @@ public sealed class McpServerService(IEnumerable<IMcpTool> tools, JsonSerializer
           the whole solution. code_actions lists an IDE's light bulb (add using, implement interface, extract method), apply_code_action applies
           one; fix_all fixes one diagnostic id everywhere; format and organize_usings tidy a file. All of them write to disk. preview_edit
           shows the errors text edits would cause, without writing. An edit refused because a file changed meanwhile can be called again.
-        - Check: diagnostics gives compiler and analyzer errors without building, the quick check after an edit. build and run_tests run the
-          dotnet CLI; run_tests can add coverage, repeat (flaky tests), hangTimeout (hangs) and mutate (tests that miss bugs).
+        - Check: diagnostics gives compiler and analyzer errors without building, the quick check after an edit, and with aot the trim and
+          native AOT warnings a publish would give. build and run_tests run the dotnet CLI; run_tests can add coverage, repeat (flaky tests),
+          hangTimeout (hangs) and mutate (tests that miss bugs); verify_pending reviews and accepts the snapshots Verify tests received.
           workspace_options switches the target framework or configuration that code under #if is seen for.
         - MSBuild: msbuild_evaluate and msbuild_property_trace read the project as evaluated; project_info and project_graph describe it.
           build with binlogPath keeps a binary log for build_target_why, build_property_trace, build_file_origin, build_problems,
@@ -70,10 +71,13 @@ public sealed class McpServerService(IEnumerable<IMcpTool> tools, JsonSerializer
           process_objects and process_roots (what keeps it alive).
         - Running processes: dotnet_processes finds them. process_threads for hangs and deadlocks, process_async for awaits that never finish,
           process_events for exceptions, logs, lock contention, garbage collections and HTTP requests. process_dump keeps a moment; the
-          inspection tools read dumps too.
+          inspection tools read dumps too, and process_cpu, process_allocations and process_events read a .nettrace that dotnet-trace
+          recorded elsewhere (trace).
         - Debugger: debug_start, debug_test or debug_attach, then debug_inspect, debug_set, debug_resume and debug_breakpoints; debug_stop
           ends it. One session at a time; needs netcoredbg.
-        - Quality: unused_symbols, find_duplicates, code_metrics, namespace_graph (layering cycles).
+        - Quality: unused_symbols, find_duplicates, code_metrics, namespace_graph (layering cycles), resources (.resx translations that lack
+          resources, and resources no code uses).
+        - regex_test runs a .NET regex against sample inputs, with its groups and replacements.
         - Run code: evaluate runs C# against the projects' code, and benchmark measures it; both need the server started with
           ROSLYNAUT_ALLOW_EVALUATE=true.
         """;

@@ -112,6 +112,11 @@ public class ClaudeInstallTests
     [TestCase("Bash", """{ "command": "dotnet build src/App.slnx" }""", true)]
     [TestCase("PowerShell", """{ "command": "dotnet test src/App.Tests --filter Name=X" }""", true)]
     [TestCase("Bash", """{ "command": "dotnet run --project src/App" }""", false)]
+    [TestCase("Read", """{ "file_path": "C:/src/Resources/Strings.de.resx" }""", true)]
+    [TestCase("Read", """{ "file_path": "C:/src/Tests/OrderTests.Total.received.txt" }""", true)]
+    [TestCase("Read", """{ "file_path": "C:/src/Tests/OrderTests.Total.verified.txt" }""", false)]
+    [TestCase("Read", """{ "file_path": "C:/src/received.d/notes.txt" }""", false)]
+    [TestCase("Glob", """{ "pattern": "**/*.received.*" }""", true)]
     public void Hint_OnlyForCSharpFiles(string tool, string input, bool hints)
     {
         var hint = ClaudeInstall.Hint(JsonNode.Parse($$"""{ "tool_name": "{{tool}}", "tool_input": {{input}} }"""));

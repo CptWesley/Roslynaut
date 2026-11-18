@@ -305,6 +305,48 @@ public class ProcessTracingTests
         ProcessTracing.Analyze("1", samples, null, NoFilters with { Exclude = new(@"Spin\.Work") }, top: 10).Methods.Should().NotContain(method => method.Method.Contains("Spin.Work"));
     }
 
+    // A trace recorded as dotnet-trace collect records it, with the rundown that names the methods, read afterwards.
+    [Test]
+    [Retry(3)]
+    public async Task TraceFile_IsReadInsteadOfTracing()
+    {
+        var directory = Directory.CreateTempSubdirectory("roslynaut-tracefile-");
+        try
+        {
+            var trace = Path.Combine(directory.FullName, "spin.nettrace");
+            using (var session = new DiagnosticsClient(target.Id).StartEventPipeSession(
+                [
+                    new("Microsoft-DotNETCore-SampleProfiler", System.Diagnostics.Tracing.EventLevel.Informational),
+                    new("Microsoft-Windows-DotNETRuntime", System.Diagnostics.Tracing.EventLevel.Informational, (long)Microsoft.Diagnostics.Tracing.Parsers.ClrTraceEventParser.Keywords.Default),
+                ], requestRundown: true))
+            {
+                await using var file = File.Create(trace);
+                var copying = session.EventStream.CopyToAsync(file);
+                await Task.Delay(TimeSpan.FromSeconds(2));
+                session.Stop();
+                await copying;
+            }
+
+            var samples = await ProcessTracing.SampleAsync(TraceTarget.Of(null, null, null, null, null!, trace), TimeSpan.Zero, CancellationToken.None);
+
+            samples.Duration.Should().BeGreaterThan(TimeSpan.FromSeconds(1));
+            ProcessTracing.Analyze("1", samples, null, NoFilters, top: 10).Methods[0].Method.Should().Contain("Spin.Work");
+            (await ProcessTracing.ContentionAsync(new TraceTarget(null, TraceFile: trace), TimeSpan.Zero, null, 10, 10, CancellationToken.None)).Seconds.Should().BePositive();
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
+    }
+
+    [Test]
+    public void TraceFile_ThatIsMissing_IsReported()
+    {
+        FluentActions.Invoking(() => TraceTarget.Of(null, null, null, null, null!, Path.Combine(Path.GetTempPath(), "missing.nettrace")))
+            .Should().Throw<ModelContextProtocol.McpException>().WithMessage("Trace file not found*");
+        FluentActions.Invoking(() => TraceTarget.Of(1, null, null, null, null!, "x.nettrace")).Should().Throw<ModelContextProtocol.McpException>().WithMessage("Pass one of*");
+    }
+
     private static ProcessTracing.StackSamples Stack(int thread, int count, params string[] frames) => new(thread, frames, count);
 
     private static readonly ProcessTracing.CpuSamples Profile = new(TimeSpan.FromSeconds(1),

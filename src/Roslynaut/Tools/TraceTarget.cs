@@ -7,9 +7,11 @@ namespace Roslynaut.Tools;
 
 /// <summary>
 /// What the tracing tools trace: a running process, or a program they start, whose runtime waits at startup until the trace begins, so the
-/// trace starts at its first instruction. A test project runs its tests, and the trace is of the process that runs them.
+/// trace starts at its first instruction. A test project runs its tests, and the trace is of the process that runs them. Or a trace recorded
+/// earlier, to read instead of tracing.
 /// </summary>
-public sealed record TraceTarget(int? ProcessId, TraceTarget.Launch? Program = null)
+/// <param name="TraceFile">A .nettrace file, as dotnet-trace collect writes, to read instead of tracing.</param>
+public sealed record TraceTarget(int? ProcessId, TraceTarget.Launch? Program = null, string? TraceFile = null)
 {
     public static implicit operator TraceTarget(int processId) => new(processId);
 
@@ -26,13 +28,20 @@ public sealed record TraceTarget(int? ProcessId, TraceTarget.Launch? Program = n
 
     public const string TestFilterDescription = "With launch of a test project: the tests to run, as run_tests' filter takes them.";
 
-    /// <summary>The target the tools' parameters name: a process id, or else a program to launch.</summary>
-    public static TraceTarget Of(int? processId, string? launch, IReadOnlyList<string>? arguments, string? testFilter, WorkspaceService workspace) => (processId, launch) switch
-    {
-        ({ } id, null) => new(id),
-        (null, { } path) => new(null, new(path, arguments ?? [], testFilter, workspace)),
-        _ => throw new McpException("Pass either a processId or a program to launch."),
-    };
+    public const string TraceDescription = "Instead of processId or launch: a .nettrace file recorded earlier, such as by dotnet-trace collect on CI "
+        + "or another machine, to read instead of tracing; seconds does not apply. It has only the events its providers recorded: dotnet-trace's "
+        + "default profile has the CPU samples, exceptions, contention and collections, its gc-verbose profile the allocations, and logs and "
+        + "requests need the Microsoft-Extensions-Logging and System.Diagnostics.Metrics providers.";
+
+    /// <summary>The target the tools' parameters name: a process id, a program to launch, or a trace file.</summary>
+    public static TraceTarget Of(int? processId, string? launch, IReadOnlyList<string>? arguments, string? testFilter, WorkspaceService workspace, string? trace = null) =>
+        (processId, launch, trace) switch
+        {
+            ({ } id, null, null) => new(id),
+            (null, { } path, null) => new(null, new(path, arguments ?? [], testFilter, workspace)),
+            (null, null, { } file) => File.Exists(file) ? new(null, TraceFile: System.IO.Path.GetFullPath(file)) : throw new McpException($"Trace file not found: {file}"),
+            _ => throw new McpException("Pass one of processId, launch or trace."),
+        };
 
     /// <summary>
     /// Starts the program with its runtime pointed at a diagnostic port the server listens on, and waits for that runtime to connect. It stays
