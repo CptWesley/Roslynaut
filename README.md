@@ -35,7 +35,7 @@ Give a fixed version, the latest of which you find on [nuget.org](https://www.nu
 dotnet package search Roslynaut --exact-match    # every version; add --prerelease for previews
 ```
 
-`--install` registers the copy that runs, in the NuGet packages folder (`~/.nuget/packages/roslynaut/<version>`), so the agent starts that version until you install another. Clearing that folder, as `dotnet nuget locals all --clear` does, removes it: run the `dnx` command again to bring it back. To upgrade, run it with the new version. To uninstall, run `dnx Roslynaut@<version> --yes --uninstall claude`.
+`--install` registers the copy that runs, in the NuGet packages folder (`~/.nuget/packages/roslynaut.<platform>/<version>`, such as `roslynaut.linux-x64`), so the agent starts that version until you install another. Clearing that folder, as `dotnet nuget locals all --clear` does, removes it: run the `dnx` command again to bring it back. To upgrade, run it with the new version. To uninstall, run `dnx Roslynaut@<version> --yes --uninstall claude`.
 
 ### Claude Code
 
