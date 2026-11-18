@@ -10,12 +10,11 @@
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>roslynaut</ToolCommandName>
     <RollForward>Major</RollForward>
-    <Version>0.2.1</Version>
+    <Version>0.3.0</Version>
     <PackageReleaseNotes>
-- Projects load with the .NET SDK's MSBuild, as dotnet build uses, instead of Visual Studio's MSBuild.exe, which failed with MSB4236 where Visual Studio Build Tools lack the .NET SDK component.
-- build_problems lists each version of a conflicting assembly again, with the references that depend on it, for builds with MSBuild 18, which no longer logs them under the conflict.
-- process_cpu, process_allocations and process_events stop when a process they attached to exits, and return what they recorded until then, instead of waiting out the seconds and failing with "Process is not running".
-- process_cpu returns call trees up to 126 calls deep, where root and leaf failed with "A possible object cycle was detected" on trees deeper than about 30.
+- --install and --uninstall take more agents: codex (Codex CLI, IDE extension and app, in ~/.codex/config.toml or under CODEX_HOME, with a tool timeout of 30 minutes for builds and tests), vscode (the user profile's mcp.json), visualstudio (~/.mcp.json), copilot (GitHub Copilot CLI, in ~/.copilot/mcp-config.json or under COPILOT_HOME), cursor (~/.cursor/mcp.json), gemini (Gemini CLI, ~/.gemini/settings.json) and junie (~/.junie/mcp/mcp.json). They get the MCP server for all projects, without a hook.
+- --install codex edits config.toml in place, keeping the rest of the file, comments included.
+- The README describes running Roslynaut through dnx, without installing the tool, where dotnet tool install -g fails.
     </PackageReleaseNotes>
     <Authors>Wesley Baartman</Authors>
     <Copyright>Copyright (c) 2026 Wesley Baartman</Copyright>
@@ -54,6 +53,7 @@
     <PackageReference Include="NuGet.Protocol" Version="7.9.0" />
     <PackageReference Include="System.CommandLine" Version="2.0.14" />
     <PackageReference Include="System.Security.Cryptography.Xml" Version="10.0.13" />
+    <PackageReference Include="Tomlyn" Version="2.11.1" />
   </ItemGroup>
 
   <ItemGroup>

@@ -27,10 +27,12 @@ internal static class JsonFile
         : new JsonObject();
 
     // Through a temporary file, so a failed write cannot leave the configuration half written.
-    public static void Write(string path, JsonNode json)
+    public static void Write(string path, JsonNode json) => WriteText(path, json.ToJsonString(Indented));
+
+    public static void WriteText(string path, string text)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        File.WriteAllText(path + ".tmp", json.ToJsonString(Indented));
+        File.WriteAllText(path + ".tmp", text);
         File.Move(path + ".tmp", path, overwrite: true);
     }
 
