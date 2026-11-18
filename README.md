@@ -84,12 +84,12 @@ On Linux, each loaded project or solution watches its files through a few inotif
 ## Tools
 
 - **Navigation**: `definition`, `references`, `implementations`, `callers`, `callees`, `call_paths`, `type_hierarchy`, `document_symbols`, `list_symbols`, `find_symbols`, `workspace_symbols`, `symbol_source`, `document_highlight`, `search_pattern`, `find_operations`, `generated_sources`
-- **Code analysis**: `diagnostics`, `expression_info`, `signature_help`, `completion`, `inlay_hints`, `syntax_tree`, `control_flow`, `data_flow`, `throws`, `code_metrics`, `find_duplicates`, `unused_symbols`, `public_api`, `api_diff`, `namespace_graph`, `di_registrations`, `aspnet_endpoints`
+- **Code analysis**: `diagnostics`, `expression_info`, `signature_help`, `completion`, `inlay_hints`, `syntax_tree`, `control_flow`, `data_flow`, `throws`, `code_metrics`, `find_duplicates`, `unused_symbols`, `public_api`, `api_diff`, `namespace_graph`, `di_registrations`, `aspnet_endpoints`, `resources`, `regex_test`
 - **Code actions and refactoring**: `code_actions`, `apply_code_action`, `fix_all`, `format`, `organize_usings`, `rename_symbol`, `change_signature`, `extract_interface`, `move_to_namespace`, `safe_delete_symbol`
 - **Symbol edits**: `replace_symbol_body`, `insert_before_symbol`, `insert_after_symbol`, `preview_edit`
 - **Projects and MSBuild**: `project_graph`, `project_info`, `workspace_options`, `msbuild_evaluate`, `msbuild_property_trace`
 - **Builds and binary logs**: `build`, `build_problems`, `build_diff`, `build_file_origin`, `build_incrementality`, `build_log_search`, `build_property_trace`, `build_target_why`
-- **Tests**: `find_tests`, `run_tests` (also mutation testing with Stryker.NET), `affected_tests`
+- **Tests**: `find_tests`, `run_tests` (also mutation testing with Stryker.NET), `affected_tests`, `verify_pending`
 - **NuGet packages**: `packages`, `package_info`, `package_search`, `package_why`, `package_upgrade_check`, `package_licenses`, `package_contents`, `package_assembly`, `nuget_config`
 - **IL, JIT and decompilation**: `symbol_il`, `symbol_asm`, `assembly_il`, `assembly_asm`, `type_layout`, `decompile`, `assembly_sources`, `resolve_stack_trace`
 - **Running code**: `evaluate`, `benchmark` (off by default, see below)

@@ -236,9 +236,8 @@ internal static class ProcessTracing
     {
         EventPipeProvider[] providers = [new("System.Runtime", EventLevel.Informational, -1, new Dictionary<string, string> { ["EventCounterIntervalSec"] = "1" })];
         var values = new ConcurrentDictionary<string, CounterValue>();
-        await RecordAsync(target, providers, requestRundown: false, duration, stream =>
+        await ListenAsync(target, providers, duration, source =>
         {
-            using var source = new EventPipeEventSource(stream);
             source.Dynamic.All += item =>
             {
                 if (item.EventName != "EventCounters" || item.PayloadValue(0) is not IDictionary<string, object> { } outer || outer["Payload"] is not IDictionary<string, object> payload)
@@ -251,8 +250,6 @@ internal static class ProcessTracing
                 values[name] = new(name, Text("DisplayName") ?? name, Convert.ToDouble(payload[rate ? "Increment" : "Mean"]),
                     rate ? $"{Text("DisplayUnits") ?? "count"} per second" : Text("DisplayUnits"));
             };
-            source.Process();
-            return Task.CompletedTask;
         }, cancellationToken);
 
         return [.. values.Values.OrderBy(value => value.Name, StringComparer.Ordinal)];
@@ -300,9 +297,8 @@ internal static class ProcessTracing
         // FormattedMessage and JsonMessage.
         EventPipeProvider[] providers = [new("Microsoft-Extensions-Logging", EventLevel.Verbose, 0x4 | 0x8)];
         var logs = new List<LogEntry>();
-        var elapsed = await RecordAsync(target, providers, requestRundown: false, duration, stream =>
+        var elapsed = await ListenAsync(target, providers, duration, source =>
         {
-            using var source = new EventPipeEventSource(stream);
             source.Dynamic.All += item =>
             {
                 if (item.PayloadByName("LoggerName") is not string logger || item.PayloadByName("Level") is not { } value || Convert.ToInt32(value) < level
@@ -318,8 +314,6 @@ internal static class ProcessTracing
                         logs[^1] = logs[^1] with { Exception = exception };
                 }
             };
-            source.Process();
-            return Task.CompletedTask;
         }, cancellationToken);
 
         return new(Math.Round(elapsed.TotalSeconds, 1), Logs: [.. logs.TakeLast(top)]);
@@ -409,12 +403,12 @@ internal static class ProcessTracing
             ["MaxHistograms"] = "1000",
         })];
         var intervals = new List<(string Kind, string Key, string Method, string Status, long Count, IReadOnlyDictionary<string, double> Quantiles, double Scale)>();
-        var elapsed = await RecordAsync(target, providers, requestRundown: false, duration, stream =>
+        var elapsed = await ListenAsync(target, providers, duration, source =>
         {
-            using var source = new EventPipeEventSource(stream);
             source.Dynamic.All += item =>
             {
-                if (item.EventName != "HistogramValuePublished" || item.PayloadByName("sessionId") as string != session || item.PayloadByName("count") is not { } count
+                // A trace file's session had an id of its own.
+                if (item.EventName != "HistogramValuePublished" || (target.TraceFile is null && item.PayloadByName("sessionId") as string != session) || item.PayloadByName("count") is not { } count
                     || Convert.ToInt64(count) == 0)
                     return;
 
@@ -428,8 +422,6 @@ internal static class ProcessTracing
                     intervals.Add((server ? "Served" : "Sent", key, tags.GetValueOrDefault("http.request.method") ?? "?", tags.GetValueOrDefault("http.response.status_code") ?? "-",
                         Convert.ToInt64(count), quantiles, scale));
             };
-            source.Process();
-            return Task.CompletedTask;
         }, cancellationToken);
 
         return new(Math.Round(elapsed.TotalSeconds, 1), Requests: [.. intervals
@@ -449,26 +441,53 @@ internal static class ProcessTracing
             .Select(pair => pair.Split('=', 2)).Where(pair => pair.Length == 2).GroupBy(pair => pair[0]).ToDictionary(pair => pair.Key, pair => pair.First()[1]);
     }
 
-    /// <summary>Records a trace, with the rundown at its end that names the methods that ran, and reads it with how long it ran.</summary>
+    /// <summary>
+    /// Records a trace, with the rundown at its end that names the methods that ran, and reads it with how long it ran; or reads a trace file,
+    /// with how long its session ran.
+    /// </summary>
     private static async Task<T> TraceAsync<T>(TraceTarget target, EventPipeProvider[] providers, TimeSpan duration, Func<TraceLog, TimeSpan, T> read, CancellationToken cancellationToken)
     {
         var directory = Directory.CreateTempSubdirectory("roslynaut-trace-");
         try
         {
-            var trace = Path.Combine(directory.FullName, "trace.nettrace");
-            var elapsed = await RecordAsync(target, providers, requestRundown: true, duration, async stream =>
+            var trace = target.TraceFile ?? Path.Combine(directory.FullName, "trace.nettrace");
+            var elapsed = target.TraceFile is not null ? (TimeSpan?)null : await RecordAsync(target, providers, requestRundown: true, duration, async stream =>
             {
                 await using var file = File.Create(trace);
                 await stream.CopyToAsync(file);
             }, cancellationToken);
 
             using var log = new TraceLog(TraceLog.CreateFromEventPipeDataFile(trace, Path.Combine(directory.FullName, "trace.etlx"), new() { ContinueOnError = true }));
-            return read(log, elapsed);
+            return read(log, elapsed ?? log.SessionDuration);
         }
         finally
         {
             directory.Delete(recursive: true);
         }
+    }
+
+    /// <summary>
+    /// Hands the events of a session, or of a trace file, to what subscribes to them as they come, without the rundown. Returns how long the
+    /// session ran.
+    /// </summary>
+    private static async Task<TimeSpan> ListenAsync(
+        TraceTarget target, EventPipeProvider[] providers, TimeSpan duration, Action<EventPipeEventSource> subscribe, CancellationToken cancellationToken)
+    {
+        if (target.TraceFile is { } trace)
+        {
+            using var file = new EventPipeEventSource(trace);
+            subscribe(file);
+            file.Process();
+            return file.SessionDuration;
+        }
+
+        return await RecordAsync(target, providers, requestRundown: false, duration, stream =>
+        {
+            using var source = new EventPipeEventSource(stream);
+            subscribe(source);
+            source.Process();
+            return Task.CompletedTask;
+        }, cancellationToken);
     }
 
     /// <summary>
@@ -658,13 +677,15 @@ public sealed class ProcessEventsTool(WorkspaceService workspace) : IMcpTool
         + "also those caught and logged nowhere. Logs: the Microsoft.Extensions.Logging messages from Debug up, without a restart (needs the "
         + "EventSource logger, which the default hosts add). Contention: the time threads waited for locks, by the stack that waited. Collections: "
         + "the garbage collections with their pauses and reasons, and who called GC.Collect. Requests: the HTTP requests served (by route) and "
-        + "sent (by host) with their p50, p95 and p99 durations, from .NET 8. The process keeps running.")]
+        + "sent (by host) with their p50, p95 and p99 durations, from .NET 8. The process keeps running. With trace, it reads a .nettrace "
+        + "recorded earlier instead, such as on CI.")]
     private Task<ProcessTracing.ProcessEvents> ListenAsync(
         [Description("Exceptions, Logs, Contention, Collections or Requests.")] EventKind kind,
         [Description("The process id, e.g. from dotnet_processes; or else pass launch.")] int? processId = null,
         [Description(TraceTarget.LaunchDescription)] string? launch = null,
         [Description(TraceTarget.ArgumentsDescription)] string[]? arguments = null,
         [Description(TraceTarget.TestFilterDescription)] string? testFilter = null,
+        [Description(TraceTarget.TraceDescription)] string? trace = null,
         [Description("How long to listen; the process should do the work to look at meanwhile. At most this long: it ends when the process exits.")] int seconds = 5,
         [Description("Optional regex: the exception types or stacks, the log categories, the waiting stacks or the routes and hosts to keep, e.g. 'MyApp\\.'.")] string? filter = null,
         [Description("For Logs: the least level, Debug, Information, Warning, Error or Critical.")] string level = "Debug",
@@ -672,7 +693,7 @@ public sealed class ProcessEventsTool(WorkspaceService workspace) : IMcpTool
         [Description("How many frames to return per stack, from the innermost.")] int maxFrames = 10,
         CancellationToken cancellationToken = default)
     {
-        var target = TraceTarget.Of(processId, launch, arguments, testFilter, workspace);
+        var target = TraceTarget.Of(processId, launch, arguments, testFilter, workspace, trace);
         var (duration, pattern) = (TimeSpan.FromSeconds(seconds), ProcessDefaults.Pattern(filter, "filter"));
         return kind switch
         {
@@ -708,12 +729,14 @@ public sealed class ProcessCpuTool(WorkspaceService workspace) : IMcpTool
         + "tree under a method, leaf the call paths into one. Each result has a Profile, to analyze the same samples again with other filters, or "
         + "to compare a later profile with, as before and after a change. For slow code and high CPU; symbol_asm shows the code of a hot method. "
         + "The process keeps running. With launch, it starts a program or a test project instead and profiles it from its start, for code "
-        + "that ends before it could be attached to, such as a slow test.")]
+        + "that ends before it could be attached to, such as a slow test. With trace, it reads a .nettrace recorded earlier instead, such as by "
+        + "dotnet-trace collect on CI or another machine.")]
     private async Task<ProcessTracing.CpuProfile> SampleAsync(
-        [Description("The process id, e.g. from dotnet_processes; or else pass launch or profile.")] int? processId = null,
+        [Description("The process id, e.g. from dotnet_processes; or else pass launch, trace or profile.")] int? processId = null,
         [Description(TraceTarget.LaunchDescription)] string? launch = null,
         [Description(TraceTarget.ArgumentsDescription)] string[]? arguments = null,
         [Description(TraceTarget.TestFilterDescription)] string? testFilter = null,
+        [Description(TraceTarget.TraceDescription)] string? trace = null,
         [Description("How long to sample; the process should be busy with the work to look at meanwhile. At most this long: it ends when the process exits.")] int seconds = 5,
         [Description("The Profile of an earlier result, to analyze its samples again instead of sampling.")] string? profile = null,
         [Description("The Profile of an earlier result to compare with: methods come in order of how much their share changed.")] string? compareTo = null,
@@ -728,12 +751,12 @@ public sealed class ProcessCpuTool(WorkspaceService workspace) : IMcpTool
         var filters = new ProcessTracing.CpuFilters(
             ProcessDefaults.Pattern(threads, "threads"), ProcessDefaults.Pattern(exclude, "exclude"), ProcessDefaults.Pattern(root, "root"), ProcessDefaults.Pattern(leaf, "leaf"));
         var baseline = compareTo is null ? null : Stored(compareTo);
-        if ((processId, launch, profile) is (null, null, { } id))
+        if ((processId, launch, trace, profile) is (null, null, null, { } id))
             return ProcessTracing.Analyze(id, Stored(id), baseline, filters, top);
         if (profile is not null)
-            throw new McpException("Pass one of processId, launch or profile.");
+            throw new McpException("Pass one of processId, launch, trace or profile.");
 
-        var target = TraceTarget.Of(processId, launch, arguments, testFilter, workspace);
+        var target = TraceTarget.Of(processId, launch, arguments, testFilter, workspace, trace);
         var samples = await ProcessTracing.SampleAsync(target, TimeSpan.FromSeconds(seconds), cancellationToken);
         var stored = Interlocked.Increment(ref _lastId).ToString();
         _profiles[stored] = samples;
@@ -755,18 +778,20 @@ public sealed class ProcessAllocationsTool(WorkspaceService workspace) : IMcpToo
         + "with the runtime's allocation ticks, one about every 100 KB, and estimates the bytes by thread, by type and by the stack that allocated "
         + "them; and lists the types allocated that have a finalizer, which cost more than their bytes. For GC pressure: process_counters gives the "
         + "allocation rate and GC counts, process_heap what stays alive. The process keeps running. With launch, it starts a program or a test "
-        + "project instead and profiles it from its start; finalizers then go unnoticed.")]
+        + "project instead and profiles it from its start; finalizers then go unnoticed. With trace, it reads a .nettrace recorded earlier "
+        + "instead, as dotnet-trace collect --profile gc-verbose writes.")]
     private Task<ProcessTracing.AllocationProfile> ProfileAsync(
         [Description("The process id, e.g. from dotnet_processes; or else pass launch.")] int? processId = null,
         [Description(TraceTarget.LaunchDescription)] string? launch = null,
         [Description(TraceTarget.ArgumentsDescription)] string[]? arguments = null,
         [Description(TraceTarget.TestFilterDescription)] string? testFilter = null,
+        [Description(TraceTarget.TraceDescription)] string? trace = null,
         [Description("How long to sample; the process should be busy with the work to look at meanwhile. At most this long: it ends when the process exits.")] int seconds = 5,
         [Description("Optional regex: counts only the threads that allocated from a method whose name matches, e.g. 'WorldLoop\\.OnDay'.")] string? threads = null,
         [Description("How many types and stacks to return, those that allocate the most first.")] int top = 20,
         [Description("How many frames to return per stack, from the innermost.")] int maxFrames = 10,
         CancellationToken cancellationToken = default) =>
-        ProcessTracing.AllocationsAsync(TraceTarget.Of(processId, launch, arguments, testFilter, workspace), TimeSpan.FromSeconds(seconds),
+        ProcessTracing.AllocationsAsync(TraceTarget.Of(processId, launch, arguments, testFilter, workspace, trace), TimeSpan.FromSeconds(seconds),
             ProcessDefaults.Pattern(threads, "threads"), top, maxFrames, cancellationToken);
 }
 

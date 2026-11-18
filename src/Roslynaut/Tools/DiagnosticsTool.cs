@@ -4,6 +4,7 @@ using System.ComponentModel;
 using System.Text.Json.Serialization;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.Diagnostics;
+using Microsoft.CodeAnalysis.Text;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
 
@@ -28,7 +29,8 @@ public sealed class DiagnosticsTool(WorkspaceService workspace, ResultCache cach
         + "with the severities the project's .editorconfig and build settings give them; for a project that did not load, such as one "
         + "whose restore failed, the MSBuild errors that say why; and warnings where the server's compiler is older than the SDK's: options it "
         + "does not know, such as a newer language version, and analyzers or generators it cannot load. With analyzerPackages, also the rules of "
-        + "analyzer packages the project does not reference, without changing it; with allRules, every rule, also those turned off. Paged.")]
+        + "analyzer packages the project does not reference, without changing it; with allRules, every rule, also those turned off; with aot, the "
+        + "trim, native AOT and single-file warnings (IL2xxx, IL3xxx) that publishing with PublishTrimmed or PublishAot would give. Paged.")]
     private async Task<PagedResult<DiagnosticEntry>> GetDiagnosticsAsync(
         [Description(ToolDefaults.ProjectPath)] string projectPath,
         [Description("Optional path of a C# file to limit diagnostics to.")] string? filePath = null,
@@ -39,6 +41,9 @@ public sealed class DiagnosticsTool(WorkspaceService workspace, ResultCache cach
             + "folder from the project's package sources. code_actions knows only the project's own analyzers.")] string[]? analyzerPackages = null,
         [Description("Turns on every rule of the analyzers, also those off by default or turned off by .editorconfig, a global config or the "
             + "SDK's analysis level, as warnings (or errors, if that is their default); combine with ids to keep the result short.")] bool allRules = false,
+        [Description("Also runs the trim, native AOT and single-file analyzers, as IsAotCompatible turns them on, without changing the project: "
+            + "the code a trimmed or native AOT publish would break, such as reflection, Type.GetType by name and dynamic code. Downloads "
+            + "Microsoft.NET.ILLink.Tasks into the global packages folder.")] bool aot = false,
         [Description("Optional regex for the diagnostic ids to return, e.g. '^CA18' or '^(RCS|MA)'.")] string? ids = null,
         [Description(ToolDefaults.Page)] int page = 0,
         [Description(ToolDefaults.PageSize)] int pageSize = ToolDefaults.DefaultPageSize,
@@ -47,10 +52,12 @@ public sealed class DiagnosticsTool(WorkspaceService workspace, ResultCache cach
         var loaded = await workspace.GetAsync(projectPath);
         var idPattern = ProcessDefaults.Pattern(ids, "ids");
         var packages = analyzerPackages ?? [];
-        return await cache.GetPageAsync(loaded.Solution, $"diagnostics|{filePath}|{severity}|{analyzers}|{string.Join(',', packages)}|{allRules}|{ids}", page, pageSize, async () =>
+        return await cache.GetPageAsync(loaded.Solution, $"diagnostics|{filePath}|{severity}|{analyzers}|{string.Join(',', packages)}|{allRules}|{aot}|{ids}", page, pageSize, async () =>
         {
             var solution = packages.Length == 0 ? loaded.Solution : await WithAnalyzerPackagesAsync(loaded.Solution, projectPath, packages, nuget, cancellationToken);
-            return (await CollectAsync(solution, filePath, (DiagnosticSeverity)severity, analyzers || packages.Length > 0, loaded.LoadErrors, loaded.Warnings, cancellationToken, allRules))
+            if (aot)
+                solution = await WithAotAnalyzersAsync(solution, projectPath, nuget, cancellationToken);
+            return (await CollectAsync(solution, filePath, (DiagnosticSeverity)severity, analyzers || packages.Length > 0 || aot, loaded.LoadErrors, loaded.Warnings, cancellationToken, allRules))
                 .Where(entry => idPattern is null || idPattern.IsMatch(entry.Id));
         });
     }
@@ -80,6 +87,28 @@ public sealed class DiagnosticsTool(WorkspaceService workspace, ResultCache cach
             .Aggregate(solution, (current, project) => current.AddAnalyzerReferences(project.Id, references));
     }
 
+    /// <summary>
+    /// The solution with the trim, AOT and single-file analyzers turned on in its C# projects, as IsAotCompatible turns them on: the analyzers
+    /// of the package the SDK takes them from, and a global config with the MSBuild properties they read. Its level is above the default of
+    /// the config the build generates, which may set them otherwise.
+    /// </summary>
+    internal static async Task<Solution> WithAotAnalyzersAsync(Solution solution, string projectPath, NuGetService nuget, CancellationToken cancellationToken)
+    {
+        solution = await WithAnalyzerPackagesAsync(solution, projectPath, ["Microsoft.NET.ILLink.Tasks"], nuget, cancellationToken);
+        var config = SourceText.From("""
+            is_global = true
+            global_level = 1000
+            build_property.EnableTrimAnalyzer = true
+            build_property.EnableAotAnalyzer = true
+            build_property.EnableSingleFileAnalyzer = true
+            """, System.Text.Encoding.UTF8);
+        return solution.Projects.Where(project => project.Language == LanguageNames.CSharp).Select(project => project.Id).Aggregate(solution, (current, id) =>
+        {
+            var directory = Path.GetDirectoryName(current.GetProject(id)!.FilePath ?? Path.GetFullPath(projectPath))!;
+            return current.GetProject(id)!.AddAnalyzerConfigDocument("roslynaut-aot.globalconfig", config, filePath: Path.Combine(directory, "roslynaut-aot.globalconfig")).Project.Solution;
+        });
+    }
+
     internal static IReadOnlyList<string> AnalyzerFilesOf(string packageDirectory)
     {
         var root = Path.Combine(packageDirectory, "analyzers", "dotnet");
@@ -89,7 +118,7 @@ public sealed class DiagnosticsTool(WorkspaceService workspace, ResultCache cach
         var newest = Directory.EnumerateDirectories(root, "roslyn*")
             .Select(folder => (Folder: folder, Version: Version.TryParse(Path.GetFileName(folder)["roslyn".Length..], out var version) ? version : null))
             .Where(folder => folder.Version is not null && folder.Version <= CompilerVersion)
-            .MaxBy(folder => folder.Version).Folder ?? root;
+            .OrderByDescending(folder => folder.Version).Select(folder => folder.Folder).FirstOrDefault() ?? root;
         return [.. ((string[])[newest, Path.Combine(newest, "cs")]).Where(Directory.Exists).SelectMany(folder => Directory.EnumerateFiles(folder, "*.dll"))];
     }
 

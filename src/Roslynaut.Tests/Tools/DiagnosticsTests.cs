@@ -106,6 +106,41 @@ public class DiagnosticsTests
             directory.Delete(recursive: true);
         }
     }
+
+    // Downloads Microsoft.NET.ILLink.Tasks from nuget.org; the analyzers stay off without the properties the SDK would set.
+    [Test]
+    [Retry(3, RetryExceptions = [typeof(ModelContextProtocol.McpException)])]
+    public async Task Aot_ReportsWhatTrimmingAndNativeAotBreak()
+    {
+        var directory = Directory.CreateTempSubdirectory("roslynaut-aot-");
+        try
+        {
+            var project = Path.Combine(directory.FullName, "Sample.csproj");
+            File.WriteAllText(project, "<Project />");
+            var solution = TestSolution.Create("""
+                using System.Diagnostics.CodeAnalysis;
+                public class C
+                {
+                    [RequiresUnreferencedCode("Reflects.")] static void Reflect() { }
+                    [RequiresDynamicCode("Emits.")] static void Emit() { }
+                    public void Run() { Reflect(); Emit(); }
+                }
+                """).Projects.Single()
+                // As a project that turns them off would have it in the config the build generates.
+                .AddAnalyzerConfigDocument("Sample.GeneratedMSBuildEditorConfig.editorconfig", SourceText.From("is_global = true\nbuild_property.EnableTrimAnalyzer = false\nbuild_property.EnableAotAnalyzer = false\n", Encoding.UTF8),
+                    filePath: Path.Combine(directory.FullName, "Sample.GeneratedMSBuildEditorConfig.editorconfig")).Project.Solution;
+
+            var withAot = await DiagnosticsTool.WithAotAnalyzersAsync(solution, project, new NuGetService(new WorkspaceService()), CancellationToken.None);
+
+            (await Collect(withAot, DiagnosticSeverity.Warning, analyzers: true)).Should().Contain("IL2026 Warning").And.Contain("IL3050 Warning");
+            (await Collect(await DiagnosticsTool.WithAnalyzerPackagesAsync(solution, project, ["Microsoft.NET.ILLink.Tasks"], new NuGetService(new WorkspaceService()), CancellationToken.None),
+                DiagnosticSeverity.Warning, analyzers: true)).Should().NotContain(entry => entry.StartsWith("IL"));
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
+    }
     /// <summary>Reports every named type.</summary>
 #pragma warning disable RS1036, RS1038, RS1041, RS2008 // A test analyzer: never loaded by a compiler, and never released.
     [DiagnosticAnalyzer(LanguageNames.CSharp)]

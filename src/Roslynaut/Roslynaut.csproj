@@ -15,6 +15,13 @@
 - --install and --uninstall take more agents: codex (Codex CLI, IDE extension and app, in ~/.codex/config.toml or under CODEX_HOME, with a tool timeout of 30 minutes for builds and tests), vscode (the user profile's mcp.json), visualstudio (~/.mcp.json), copilot (GitHub Copilot CLI, in ~/.copilot/mcp-config.json or under COPILOT_HOME), cursor (~/.cursor/mcp.json), gemini (Gemini CLI, ~/.gemini/settings.json) and junie (~/.junie/mcp/mcp.json). They get the MCP server for all projects, without a hook.
 - --install codex edits config.toml in place, keeping the rest of the file, comments included.
 - The README describes running Roslynaut through dnx, without installing the tool, where dotnet tool install -g fails.
+- process_cpu, process_allocations and process_events take trace: a .nettrace file recorded earlier, such as by dotnet-trace collect on CI or another machine, to analyze instead of tracing a process.
+- diagnostics takes aot: the trim, native AOT and single-file warnings (IL2xxx, IL3xxx) that PublishTrimmed or PublishAot would give, without changing the project or publishing.
+- verify_pending lists the snapshots Verify tests received with their diffs from the verified ones, and accepts or rejects them.
+- regex_test runs a .NET regular expression against sample inputs, with each match's groups and the result of a replacement, without evaluate.
+- resources checks .resx files against their translations (resources a culture lacks or only it has) and finds the resources no C# code uses.
+- The Claude Code and OpenCode hooks suggest resources for .resx files and verify_pending for received snapshots and after dotnet test.
+- diagnostics with analyzerPackages loads packages whose analyzers are not in a roslyn* folder, where it failed with "Sequence contains no elements".
     </PackageReleaseNotes>
     <Authors>Wesley Baartman</Authors>
     <Copyright>Copyright (c) 2026 Wesley Baartman</Copyright>

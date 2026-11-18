@@ -56,8 +56,18 @@ internal static partial class ClaudeInstall
 
     private static readonly Suggestion TestHint = new(
         "The roslynaut MCP server's affected_tests finds the tests a change can break, with a Filter for its run_tests, which can also add "
-        + "coverage, repeat flaky tests and dump hangs.",
-        ["affected_tests", "run_tests"]);
+        + "coverage, repeat flaky tests and dump hangs; verify_pending shows and accepts the snapshots Verify tests received.",
+        ["affected_tests", "run_tests", "verify_pending"]);
+
+    private static readonly Suggestion ResourcesHint = new(
+        "This is a .resx resource file. The roslynaut MCP server's resources compares it with its translations, the resources each culture "
+        + "lacks or only it has, and finds the resources no code uses.",
+        ["resources"]);
+
+    private static readonly Suggestion SnapshotHint = new(
+        "This is a snapshot that a Verify test received. The roslynaut MCP server's verify_pending lists the received snapshots with their diffs "
+        + "from the verified ones, and accepts or rejects them.",
+        ["verify_pending"]);
 
     private static readonly Suggestion SessionHint = new(
         "This is a C# repository. The roslynaut MCP server sees its code as the compiler does: prefer document_symbols, symbol_source, "
@@ -225,6 +235,9 @@ internal static partial class ClaudeInstall
         {
             "" => (SessionHint, null),
             "read" when CSharp("file_path") || CSharp("filePath") => (ReadHint, file),
+            "read" when file is not null && ResourceFile().IsMatch(file) => (ResourcesHint, file),
+            "read" when file is not null && ReceivedFile().IsMatch(file) => (SnapshotHint, file),
+            "glob" when Arg("pattern") is { } pattern && ReceivedFile().IsMatch(pattern) => (SnapshotHint, Arg("path")),
             "edit" or "write" or "multiedit" when CSharp("file_path") || CSharp("filePath") => (EditHint, file),
             "grep" when Arg("type") == "cs" || CSharp("path") || CSharp("glob") || CSharp("include") => (GrepHint, Arg("path")),
             "glob" when CSharp("pattern") => (GlobHint, Arg("path")),
@@ -303,6 +316,13 @@ internal static partial class ClaudeInstall
     // Not .csproj or .cshtml. The type options are ripgrep's.
     [GeneratedRegex(@"\.cs\b|(?:-t ?|--type[= ])cs\b", RegexOptions.IgnoreCase)]
     private static partial Regex CSharpFile();
+
+    [GeneratedRegex(@"\.resx$", RegexOptions.IgnoreCase)]
+    private static partial Regex ResourceFile();
+
+    // Verify names them Type.Method.received.txt and the like.
+    [GeneratedRegex(@"\.received\.[^/\\]*$", RegexOptions.IgnoreCase)]
+    private static partial Regex ReceivedFile();
 
     [GeneratedRegex(@"\bdotnet\s+(build|test)\b", RegexOptions.IgnoreCase)]
     private static partial Regex DotnetCommand();
