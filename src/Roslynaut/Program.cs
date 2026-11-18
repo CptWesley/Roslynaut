@@ -9,7 +9,7 @@ namespace Roslynaut;
 
 public static class Program
 {
-    private static readonly string[] Agents = ["claude", "opencode", "vscode", "copilot"];
+    private static readonly string[] Agents = ["claude", "opencode", "codex", .. McpConfigInstall.Agents.Keys];
 
     public static async Task<int> Main(params string[] args)
     {
@@ -36,8 +36,8 @@ public static class Program
         var install = new Option<string>("--install")
         {
             Description =
-                "Register the server with this agent for all projects, and exit: Claude Code, OpenCode, VS Code or the GitHub Copilot CLI. Claude Code "
-                + "also gets a hook, and OpenCode a plugin, that suggests its tools when the agent reads or greps C# files.",
+                "Register the server with this agent for all projects, and exit. Claude Code also gets a hook, and OpenCode a plugin, that suggests "
+                + "its tools when the agent reads or greps C# files.",
             HelpName = "agent",
         }.AcceptOnlyFromAmong(Agents);
         var uninstall = new Option<string>("--uninstall")
@@ -50,14 +50,15 @@ public static class Program
             var (installAgent, uninstallAgent) = (parsed.GetValue(install), parsed.GetValue(uninstall));
             if (installAgent is not null || uninstallAgent is not null)
             {
-                Action<bool> run = (uninstallAgent ?? installAgent) switch
-                {
-                    "claude" => ClaudeInstall.Run,
-                    "opencode" => OpenCodeInstall.Run,
-                    "vscode" => VsCodeInstall.Run,
-                    _ => CopilotInstall.Run,
-                };
-                run(uninstallAgent is not null);
+                var (agent, uninstall) = (uninstallAgent ?? installAgent!, uninstallAgent is not null);
+                if (agent == "claude")
+                    ClaudeInstall.Run(uninstall);
+                else if (agent == "opencode")
+                    OpenCodeInstall.Run(uninstall);
+                else if (agent == "codex")
+                    CodexInstall.Run(uninstall);
+                else
+                    McpConfigInstall.Run(agent, uninstall);
                 return;
             }
 
