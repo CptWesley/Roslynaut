@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using Roslynaut.Tests.EndToEnd;
@@ -30,7 +31,9 @@ public class ToolPackageTests
             source = source.Parent ?? throw new InvalidOperationException($"No Roslynaut/Roslynaut.csproj above {AppContext.BaseDirectory}.");
 
         var server = Path.Combine(source.FullName, "Roslynaut");
-        var (packed, packOutput) = await DotnetCli.RunAsync(["pack", "-o", In("packages")], Timeout, CancellationToken.None, workingDirectory: server);
+        // The package of this machine's platform alone, beside the one that points at it: each platform's takes a minute to compile.
+        var (packed, packOutput) = await DotnetCli.RunAsync(
+            ["pack", "-o", In("packages"), $"-p:RuntimeIdentifiers=\"{RuntimeInformation.RuntimeIdentifier};any\""], Timeout, CancellationToken.None, workingDirectory: server);
         packed.Should().Be(0, packOutput);
 
         // Only the package just packed, not one of the same version from nuget.org.
@@ -84,7 +87,8 @@ public class ToolPackageTests
     public void Package_NoticesEveryPackageItShips()
     {
         var store = In("tools", ".store");
-        var notices = File.ReadAllText(Directory.GetFiles(store, "THIRD-PARTY-NOTICES.txt", SearchOption.AllDirectories).Single());
+        // In the package that points at the platform's and in the platform's, which ships the files.
+        var notices = Directory.GetFiles(store, "THIRD-PARTY-NOTICES.txt", SearchOption.AllDirectories).Select(File.ReadAllText).Distinct().Single();
         var shipped = Directory.GetFiles(store, "*.deps.json", SearchOption.AllDirectories)
             .Select(file => JsonNode.Parse(File.ReadAllText(file))!)
             .SelectMany(deps => deps["targets"]!.AsObject().SelectMany(target => target.Value!.AsObject())

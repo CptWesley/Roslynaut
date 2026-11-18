@@ -56,9 +56,15 @@ jobs:
         id: login
         with:
           user: ${{ secrets.NUGET_USER }}
-      - run: dotnet nuget push artifacts/*.nupkg --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
-      # GitHub Packages links the package to this repository through its RepositoryUrl.
-      - run: dotnet nuget push artifacts/*.nupkg --api-key ${{ secrets.GITHUB_TOKEN }} --source https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json --skip-duplicate
+      # The platform packages (Roslynaut.any, Roslynaut.linux-x64 and so on) first, Roslynaut.<version> last: it only points at them,
+      # and installs fail while it points at packages the feed lacks, as after a push that failed halfway.
+      - run: |
+          dotnet nuget push artifacts/Roslynaut.[a-z]*.nupkg --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
+          dotnet nuget push artifacts/Roslynaut.[0-9]*.nupkg --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
+      # GitHub Packages links the packages to this repository through their RepositoryUrl.
+      - run: |
+          dotnet nuget push artifacts/Roslynaut.[a-z]*.nupkg --api-key ${{ secrets.GITHUB_TOKEN }} --source https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json --skip-duplicate
+          dotnet nuget push artifacts/Roslynaut.[0-9]*.nupkg --api-key ${{ secrets.GITHUB_TOKEN }} --source https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json --skip-duplicate
       # The tag gets a release with generated notes and the package, a prerelease for a version with a suffix, such as v1.2.3-beta,
       # as it is on nuget.org. An immutable release takes no assets once published, so gh keeps it a draft until the package is
       # attached. A release that exists already, as one made in GitHub's web interface, published before this ran, stays as it is.
