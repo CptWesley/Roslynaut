@@ -10,20 +10,10 @@
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>roslynaut</ToolCommandName>
     <RollForward>Major</RollForward>
-    <Version>0.3.0</Version>
+    <Version>0.3.1</Version>
     <PackageReleaseNotes>
-- --install and --uninstall take more agents: codex (Codex CLI, IDE extension and app, in ~/.codex/config.toml or under CODEX_HOME, with a tool timeout of 30 minutes for builds and tests), vscode (the user profile's mcp.json), visualstudio (~/.mcp.json), copilot (GitHub Copilot CLI, in ~/.copilot/mcp-config.json or under COPILOT_HOME), cursor (~/.cursor/mcp.json), gemini (Gemini CLI, ~/.gemini/settings.json) and junie (~/.junie/mcp/mcp.json). They get the MCP server for all projects, without a hook.
-- --install codex edits config.toml in place, keeping the rest of the file, comments included.
-- The README describes running Roslynaut through dnx, without installing the tool, where dotnet tool install -g fails.
-- process_cpu, process_allocations and process_events take trace: a .nettrace file recorded earlier, such as by dotnet-trace collect on CI or another machine, to analyze instead of tracing a process.
-- diagnostics takes aot: the trim, native AOT and single-file warnings (IL2xxx, IL3xxx) that PublishTrimmed or PublishAot would give, without changing the project or publishing.
-- verify_pending lists the snapshots Verify tests received with their diffs from the verified ones, and accepts or rejects them.
-- regex_test runs a .NET regular expression against sample inputs, with each match's groups and the result of a replacement, without evaluate.
-- resources checks .resx files against their translations (resources a culture lacks or only it has) and finds the resources no C# code uses.
-- The Claude Code and OpenCode hooks suggest resources for .resx files and verify_pending for received snapshots and after dotnet test.
-- diagnostics with analyzerPackages loads packages whose analyzers are not in a roslyn* folder, where it failed with "Sequence contains no elements".
-- The package is precompiled (ReadyToRun) for Windows, Linux and macOS on x64 and Arm64, so the server starts and answers its first calls sooner. It comes as a package per platform, which dotnet tool install and dnx pick, and a framework-dependent one for other platforms.
-- process_events with kind Contention reports the threads that held a lock on Linux too, where it failed with "Value was either too large or too small for a UInt64".
+- Projects that build with the .NET 11 SDK load with their C# 15 code and the analyzers and source generators built for its compiler, such as the Razor generator. Roslynaut's compiler (Roslyn 5.9) left those out, with warnings CS1617 and CS9057 from diagnostics; it is now Roslyn 5.12. Projects on older SDKs load as before.
+- The README's requirements say which SDKs Roslynaut needs to install and run, and up to which C# version it reads code.
     </PackageReleaseNotes>
     <Authors>Wesley Baartman</Authors>
     <Copyright>Copyright (c) 2026 Wesley Baartman</Copyright>
@@ -53,9 +43,9 @@
   <ItemGroup>
     <PackageReference Include="Buildalyzer" Version="9.0.0" />
     <PackageReference Include="ICSharpCode.Decompiler" Version="11.1.0.9782" />
-    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Features" Version="5.9.0" />
-    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" Version="5.9.0" />
-    <PackageReference Include="Microsoft.CodeAnalysis.VisualBasic.Workspaces" Version="5.9.0" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Features" Version="5.12.0" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" Version="5.12.0" />
+    <PackageReference Include="Microsoft.CodeAnalysis.VisualBasic.Workspaces" Version="5.12.0" />
     <PackageReference Include="Microsoft.Diagnostics.NETCore.Client" Version="0.2.750501" />
     <PackageReference Include="Microsoft.Diagnostics.Runtime" Version="4.2.751201" />
     <PackageReference Include="Microsoft.Diagnostics.Tracing.TraceEvent" Version="3.2.5" />

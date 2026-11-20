@@ -4,6 +4,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Text;
 using Roslynaut.Tools;
+using TypeLayout = Roslynaut.Tools.TypeLayout;
 
 namespace Roslynaut.Tests.Tools;
 

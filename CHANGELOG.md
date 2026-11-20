@@ -2,7 +2,12 @@
 
 Every release of the [Roslynaut](https://www.nuget.org/packages/Roslynaut/) package, newest first. The entry of the latest version is also its `PackageReleaseNotes` in `src/Roslynaut/Roslynaut.csproj`, which nuget.org shows.
 
-## 0.3.0 (unreleased)
+## 0.3.1 (unreleased)
+
+- Projects that build with the .NET 11 SDK load with their C# 15 code and the analyzers and source generators built for its compiler, such as the Razor generator. Roslynaut's compiler (Roslyn 5.9) left those out, with warnings CS1617 and CS9057 from diagnostics; it is now Roslyn 5.12. Projects on older SDKs load as before.
+- The README's requirements say which SDKs Roslynaut needs to install and run, and up to which C# version it reads code.
+
+## 0.3.0 (2026-11-18)
 
 - --install and --uninstall take more agents: codex (Codex CLI, IDE extension and app, in ~/.codex/config.toml or under CODEX_HOME, with a tool timeout of 30 minutes for builds and tests), vscode (the user profile's mcp.json), visualstudio (~/.mcp.json), copilot (GitHub Copilot CLI, in ~/.copilot/mcp-config.json or under COPILOT_HOME), cursor (~/.cursor/mcp.json), gemini (Gemini CLI, ~/.gemini/settings.json) and junie (~/.junie/mcp/mcp.json). They get the MCP server for all projects, without a hook.
 - --install codex edits config.toml in place, keeping the rest of the file, comments included.

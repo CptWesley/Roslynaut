@@ -10,8 +10,9 @@ An MCP server that gives coding agents what an IDE knows about C# code. It loads
 
 ## Requirements
 
-- The .NET 10 runtime or later, to run the tool.
-- The .NET SDK your projects build with, as their `global.json` picks it. Roslynaut loads projects through MSBuild design-time builds.
+- The .NET 10 runtime or later, to run the tool. Installing it with `dotnet tool install` or running it with `dnx` takes the .NET 10 SDK or later.
+- The .NET SDK your projects build with, as their `global.json` picks it. Roslynaut loads projects through MSBuild design-time builds, and it does not need to be the SDK of the runtime that runs the tool.
+- Roslynaut reads code with its own bundled Roslyn version (5.12), which knows C# up to the version the .NET 11 SDK builds. A project on a newer SDK loads without the language version and analyzers that compiler lacks, and `diagnostics` reports them as warnings CS1617 and CS9057: update Roslynaut to read it fully.
 - For the debug tools, [netcoredbg](https://github.com/Samsung/netcoredbg), on the `PATH` or at the path in `NETCOREDBG`.
 
 ## Install
