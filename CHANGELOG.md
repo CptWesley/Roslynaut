@@ -2,7 +2,11 @@
 
 Every release of the [Roslynaut](https://www.nuget.org/packages/Roslynaut/) package, newest first. The entry of the latest version is also its `PackageReleaseNotes` in `src/Roslynaut/Roslynaut.csproj`, which nuget.org shows.
 
-## 0.3.1 (unreleased)
+## 0.3.2 (unreleased)
+
+- A solution whose projects reference each other loads all of them when none was restored yet. The design-time builds restored in parallel, each also restoring the projects it references, and could break one another's restore (NETSDK1004): a project then loaded without its code, so tools missed it, as change_signature missed the calls in a referencing project.
+
+## 0.3.1 (2026-11-20)
 
 - Projects that build with the .NET 11 SDK load with their C# 15 code and the analyzers and source generators built for its compiler, such as the Razor generator. Roslynaut's compiler (Roslyn 5.9) left those out, with warnings CS1617 and CS9057 from diagnostics; it is now Roslyn 5.12. Projects on older SDKs load as before.
 - The README's requirements say which SDKs Roslynaut needs to install and run, and up to which C# version it reads code.
