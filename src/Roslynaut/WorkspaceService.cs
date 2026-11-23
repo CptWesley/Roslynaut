@@ -619,6 +619,13 @@ public sealed class WorkspaceService
         if (settings.Configuration is { } configuration)
             options.GlobalProperties["Configuration"] = configuration;
 
+        // A build that restores restores the projects it references too, so builds in parallel restore a project they share at the same time,
+        // and one of them then misses its assets file (NETSDK1004) and gives no compiler command line. Restore once first; if that fails,
+        // each build restores for itself, which reports the errors per project.
+        string[] restore = ["restore", path, "-v:q", .. settings.Configuration is { } restored ? [$"-p:Configuration={restored}"] : Array.Empty<string>()];
+        if (DotnetCli.RunAsync(restore, TimeSpan.FromMinutes(10), CancellationToken.None, workingDirectory: Path.GetDirectoryName(path)).GetAwaiter().GetResult().ExitCode == 0)
+            options.Restore = false;
+
         // Build level by level, following project references (Buildalyzer's addProjectReferences would build them with the defaults above).
         // Like Buildalyzer's own GetWorkspace: builds run in parallel and take the first target framework of each project, or the chosen one.
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
