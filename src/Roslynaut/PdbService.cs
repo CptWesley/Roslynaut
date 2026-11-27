@@ -410,7 +410,7 @@ public sealed class PdbService : IDisposable
         {
             return await download.WaitAsync(cancellationToken);
         }
-        catch (McpException)
+        catch when (download.IsFaulted)
         {
             _downloads.TryRemove(new(symbols.Key, download));
             throw;
