@@ -106,6 +106,7 @@ On Linux, each loaded project or solution watches its files through a few inotif
 | `--disable-tools <tool>...` | Leave these tools out. With `--install`, the agent starts the server without them. |
 | `--no-instructions` | Leave out the server instructions that tell agents which tool to use for what. |
 | `--install <agent>` | Register with an agent (`claude`, `opencode`, `codex`, `vscode`, `visualstudio`, `copilot`, `cursor`, `gemini`, `junie`), then exit. |
+| `--no-hooks` | With `--install`, register the server alone: Claude Code gets no hooks and OpenCode no plugin, and those of an earlier installation are removed. |
 | `--uninstall <agent>` | Remove that registration, then exit. |
 
 | Environment variable | Effect |

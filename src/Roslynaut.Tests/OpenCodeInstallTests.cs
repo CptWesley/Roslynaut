@@ -57,6 +57,25 @@ public class OpenCodeInstallTests
     }
 
     [Test]
+    public void Install_WithoutPlugin_AddsServerAlone_AndRemovesAnEarlierPlugin()
+    {
+        var dir = Directory.CreateTempSubdirectory().FullName;
+        var (config, plugin) = (Path.Combine(dir, "opencode.json"), Path.Combine(dir, "plugins", "roslynaut.js"));
+        try
+        {
+            OpenCodeInstall.Install(config, plugin, ["dotnet", "Roslynaut.dll"], TextWriter.Null);
+            OpenCodeInstall.Install(config, plugin, ["dotnet", "Roslynaut.dll"], TextWriter.Null, withPlugin: false);
+
+            JsonNode.Parse(File.ReadAllText(config))!["mcp"]!["servers"]!["roslynaut"].Should().NotBeNull();
+            File.Exists(plugin).Should().BeFalse();
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Test]
     public void Install_LeavesAPluginItDidNotWriteAlone()
     {
         var dir = Directory.CreateTempSubdirectory().FullName;
