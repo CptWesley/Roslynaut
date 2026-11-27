@@ -481,6 +481,10 @@ public sealed class PdbService : IDisposable
             if (symbols.Checksums is not null)
                 request.Headers.Add("SymbolChecksum", symbols.Checksums);
             using var response = await _http.SendAsync(request);
+
+            // A server error or throttling is no miss: misses are remembered, failures retried.
+            if ((int)response.StatusCode is >= 500 or 429 or 408)
+                response.EnsureSuccessStatusCode();
             return response.IsSuccessStatusCode ? await response.Content.ReadAsByteArrayAsync() : [];
         }
     }
