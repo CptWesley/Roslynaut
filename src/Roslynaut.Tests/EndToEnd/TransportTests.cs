@@ -93,4 +93,49 @@ public class TransportTests : EndToEndTest
 
         server.Client.ServerInstructions.Should().BeNull();
     }
+
+    [Test]
+    public async Task Install_PassesTheDescriptionOptionsOn()
+    {
+        var config = Directory.CreateTempSubdirectory().FullName;
+        try
+        {
+            var start = new System.Diagnostics.ProcessStartInfo("dotnet", ["exec", ServerAssembly, "--install", "claude", "--no-hooks", "--tool-descriptions", "none", "--field-descriptions", "caveman"])
+            {
+                RedirectStandardOutput = true, Environment = { ["CLAUDE_CONFIG_DIR"] = config },
+            };
+            using var process = System.Diagnostics.Process.Start(start)!;
+            var output = await process.StandardOutput.ReadToEndAsync();
+            await process.WaitForExitAsync();
+
+            process.ExitCode.Should().Be(0, output);
+            System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(Path.Combine(config, ".claude.json")))!["mcpServers"]!["roslynaut"]!["args"]!.ToJsonString()
+                .Should().EndWith("""
+                    "--tool-descriptions","none","--field-descriptions","caveman"]
+                    """);
+        }
+        finally
+        {
+            Directory.Delete(config, recursive: true);
+        }
+    }
+
+    // The agent gets what was left out from explain_tool, which keeps its own descriptions so that the agent knows to call it.
+    [Test]
+    public async Task NoDescriptions_LeaveThemToExplainTool()
+    {
+        await using var server = await ServerProcess.StartAsync(null, "--enable-tools", "references", "explain_tool", "--tool-descriptions", "none", "--field-descriptions", "none");
+
+        var tools = (await server.Client.ListToolsAsync()).ToDictionary(tool => tool.Name);
+        tools["references"].Description.Should().BeNullOrEmpty();
+        tools["references"].JsonSchema.GetRawText().Should().NotContain("\"description\"");
+        tools["explain_tool"].Description.Should().NotBeNullOrEmpty();
+        tools["explain_tool"].JsonSchema.GetRawText().Should().Contain("\"description\"");
+        server.Client.ServerInstructions.Should().Contain("explain_tool");
+
+        var explained = (await server.CallAsync<ToolExplanation[]>("explain_tool", new() { ["tools"] = new[] { "mcp__roslynaut__references" } })).Single();
+        explained.Name.Should().Be("references");
+        explained.Description.Should().StartWith("Finds all references");
+        explained.InputSchema.GetProperty("properties").GetProperty("symbol").GetProperty("description").GetString().Should().Contain("Symbol path");
+    }
 }

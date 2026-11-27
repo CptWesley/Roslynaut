@@ -1,5 +1,7 @@
 using System.Reflection;
 using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -18,69 +20,74 @@ public enum McpProtocol
     Stdio,
 }
 
+/// <summary>How much of the tools' or their parameters' descriptions the schemas carry; explain_tool gives them in full.</summary>
+public enum DescriptionMode
+{
+    Full,
+    /// <summary>The first sentence.</summary>
+    Short,
+    /// <summary>The text of <see cref="CavemanDescriptions"/>: without articles and filler, keeping identifiers and search keywords.</summary>
+    Caveman,
+    None,
+}
+
 /// <summary>Owns the lifetime of the MCP server. Tools are discovered through DI.</summary>
 /// <param name="serializerOptions">How tools read their arguments and write their results.</param>
-public sealed class McpServerService(IEnumerable<IMcpTool> tools, JsonSerializerOptions serializerOptions)
+public sealed partial class McpServerService(IEnumerable<IMcpTool> tools, JsonSerializerOptions serializerOptions)
 {
     /// <summary>
     /// What clients put in front of the agent before it calls any tool, such as in its system prompt, where it may only see tool names: which
-    /// tool answers which question, and how they work together. The tools' own descriptions say what each one does.
+    /// tool answers which question, and how they work together. The tools' own descriptions say what each one does. Claude Code cuts
+    /// instructions off after about 4,000 characters, so they have to stay below <see cref="MaxInstructionsLength"/>.
     /// </summary>
-    private const string Instructions = """
-        Roslynaut sees C# code as the compiler does, and edits it through Roslyn. Prefer its tools to reading whole files and searching text:
-        they tell overloads, partial types, generated code and calls through interfaces apart, which text search does not.
+    internal const string Instructions = """
+        Roslynaut sees C# code as the compiler does and edits it through Roslyn. Prefer its tools to reading whole files and grepping: they
+        tell overloads, partial types, generated code and interface calls apart.
 
-        Every tool on code takes projectPath, a .csproj, .sln or .slnx. Pass the solution, so results cover all its projects, and keep passing
-        the same path: the first call loads it, which takes a while, and later calls reuse that load. Files that change on disk, by these tools
-        or by anything else, show up in the next call. Point at a symbol by path, such as 'OrderService.Submit' or 'OrderService.Submit(Order)',
-        or by filePath, line and column; a result's Container plus '.' plus its Name is a path. Paged results say whether more follow (hasMore).
+        Every code tool takes projectPath: pass the solution, and the same path each time, as the first call loads it and later calls reuse
+        that. Changes on disk show up in the next call. Point at a symbol by path ('OrderService.Submit(Order)') or by filePath, line and
+        column.
 
-        Which tool for what:
-        - Find code: workspace_symbols by name as an IDE's Go to symbol; find_symbols by regex and structure (attribute, base type, modifiers);
-          find_operations by what code does (every throw of a type, call to a method, lock, await); search_pattern for text, comments included;
-          document_symbols outlines a file, list_symbols a type or namespace.
-        - Read code: symbol_source returns one declaration instead of a whole file, from a referenced assembly's PDB too; definition gives
-          signature and documentation, and for a referenced symbol the AssemblyPath that decompile, assembly_il and assembly_asm take;
-          decompile shows what an assembly really contains, and with lowered the closures, state machines and hidden allocations;
-          generated_sources shows source generators' output.
-        - Relations: references (reads, writes, calls), callers, callees, call_paths (how one member reaches another), implementations,
-          type_hierarchy, throws, find_tests and affected_tests (the tests to run after a change, with a Filter for run_tests),
-          di_registrations (which class an injected interface gets), aspnet_endpoints (which code handles a URL), resolve_stack_trace (a stack
-          trace from a log or CI mapped to current source).
-        - Understand a spot: expression_info, signature_help, completion, inlay_hints, document_highlight, control_flow (which conditions reach
-          a line), data_flow, syntax_tree.
-        - Edit: replace_symbol_body (the declaration as symbol_source returned it), insert_before_symbol, insert_after_symbol and
-          safe_delete_symbol edit by symbol, not by line. rename_symbol, change_signature, extract_interface and move_to_namespace update
-          the whole solution. code_actions lists an IDE's light bulb (add using, implement interface, extract method), apply_code_action applies
-          one; fix_all fixes one diagnostic id everywhere; format and organize_usings tidy a file. All of them write to disk. preview_edit
-          shows the errors text edits would cause, without writing. An edit refused because a file changed meanwhile can be called again.
-        - Check: diagnostics gives compiler and analyzer errors without building, the quick check after an edit, and with aot the trim and
-          native AOT warnings a publish would give. build and run_tests run the dotnet CLI; run_tests can add coverage, repeat (flaky tests),
-          hangTimeout (hangs) and mutate (tests that miss bugs); verify_pending reviews and accepts the snapshots Verify tests received.
-          workspace_options switches the target framework or configuration that code under #if is seen for.
-        - MSBuild: msbuild_evaluate and msbuild_property_trace read the project as evaluated; project_info and project_graph describe it.
-          build with binlogPath keeps a binary log for build_target_why, build_property_trace, build_file_origin, build_problems,
-          build_incrementality, build_log_search and build_diff (a passing and a failing build).
-        - Packages: package_search, package_info, package_why, packages (outdated, vulnerable), package_licenses, package_contents (what
-          reaches the build), nuget_config (restore errors).
-          package_assembly downloads a package so decompile or assembly_sources can read its API before adding it; package_upgrade_check
-          shows what an upgrade would break; public_api and api_diff show what a change breaks for callers.
-        - Speed: process_cpu profiles a running process, or a program or test it launches; symbol_asm shows a hot method's machine code (with
-          pgoWorkload, as long-running code gets it); symbol_il, type_layout; process_calls counts calls exactly; benchmark compares versions.
-        - Memory: process_counters (rates), process_allocations (what allocates), process_heap twice with compareTo (what grows), then
-          process_objects and process_roots (what keeps it alive).
-        - Running processes: dotnet_processes finds them. process_threads for hangs and deadlocks, process_async for awaits that never finish,
-          process_events for exceptions, logs, lock contention, garbage collections and HTTP requests. process_dump keeps a moment; the
-          inspection tools read dumps too, and process_cpu, process_allocations and process_events read a .nettrace that dotnet-trace
-          recorded elsewhere (trace).
-        - Debugger: debug_start, debug_test or debug_attach, then debug_inspect, debug_set, debug_resume and debug_breakpoints; debug_stop
-          ends it. One session at a time; needs netcoredbg.
-        - Quality: unused_symbols, find_duplicates, code_metrics, namespace_graph (layering cycles), resources (.resx translations that lack
-          resources, and resources no code uses).
-        - regex_test runs a .NET regex against sample inputs, with its groups and replacements.
-        - Run code: evaluate runs C# against the projects' code, and benchmark measures it; both need the server started with
-          ROSLYNAUT_ALLOW_EVALUATE=true.
+        - Find: workspace_symbols by name; find_symbols by regex and structure (attribute, base type, modifiers); find_operations by what
+          code does (throws, calls, locks, awaits); search_pattern for text, comments too; document_symbols outlines a file, list_symbols a type.
+        - Read: symbol_source gives one declaration, from a referenced assembly's PDB too; definition gives signature, docs and the
+          AssemblyPath for decompile, assembly_il and assembly_asm; decompile with lowered shows closures, state machines and hidden
+          allocations; generated_sources.
+        - Relations: references, callers, callees, call_paths, implementations, type_hierarchy, throws, di_registrations (which class an
+          interface gets), aspnet_endpoints (which code handles a URL), resolve_stack_trace (logged stack trace to source),
+          find_tests, affected_tests (the tests to run after a change, with a run_tests Filter).
+        - At a spot: expression_info, signature_help, completion, inlay_hints, document_highlight, control_flow, data_flow, syntax_tree.
+        - Edit, all writing to disk: replace_symbol_body (the declaration as symbol_source gave it), insert_before_symbol,
+          insert_after_symbol, safe_delete_symbol; rename_symbol, change_signature, extract_interface, move_to_namespace across the
+          solution; code_actions and apply_code_action (an IDE's light bulb); fix_all, format, organize_usings. preview_edit shows the
+          errors text edits would cause. Retry an edit refused because a file changed.
+        - Check: diagnostics without building, after each edit (aot: trim and AOT warnings); build; run_tests (coverage, repeat, hangTimeout,
+          mutate); verify_pending for Verify snapshots; workspace_options picks the framework or configuration #if code is seen for.
+        - MSBuild: msbuild_evaluate, msbuild_property_trace, project_info, project_graph. build with binlogPath keeps a log for
+          build_problems, build_target_why, build_property_trace, build_file_origin, build_incrementality, build_log_search, build_diff.
+        - Packages: package_search, package_info, package_why, packages (outdated, vulnerable), package_licenses, package_contents,
+          nuget_config (restore errors), package_assembly (a package's API before adding it), package_upgrade_check; public_api and
+          api_diff show what breaks callers.
+        - Speed: process_cpu profiles a process, program or test; symbol_asm (pgoWorkload for long-running code), symbol_il,
+          type_layout; process_calls counts calls; benchmark compares versions.
+        - Memory: process_counters, process_allocations, process_heap twice with compareTo (what grows), process_objects, process_roots.
+        - Processes: dotnet_processes finds them; process_threads (hangs, deadlocks), process_async (stuck awaits), process_events
+          (exceptions, logs, contention, GCs, HTTP), process_dump. Inspection tools read dumps too; process_cpu, process_allocations and
+          process_events a .nettrace (trace).
+        - Debugger, one session: debug_start, debug_test or debug_attach; debug_inspect, debug_set, debug_resume, debug_breakpoints;
+          debug_stop.
+        - Quality: unused_symbols, find_duplicates, code_metrics, namespace_graph (layering cycles), resources (.resx gaps, unused ones).
+        - regex_test tries a .NET regex. evaluate runs C# against the code, benchmark measures it; both need ROSLYNAUT_ALLOW_EVALUATE=true.
         """;
+
+    /// <summary>What follows <see cref="Instructions"/> when the tools' schemas leave out descriptions.</summary>
+    internal const string ExplainInstructions = "\nSome tools' schemas lack or shorten descriptions: explain_tool gives them in full, with their parameters'.";
+
+    /// <summary>
+    /// Below where Claude Code cuts <see cref="Instructions"/> and <see cref="ExplainInstructions"/> off (seen at 4,130 characters), with room
+    /// for edits.
+    /// </summary>
+    internal const int MaxInstructionsLength = 3900;
 
     /// <summary>How deep the JSON of tool results may nest, instead of the 64 levels of System.Text.Json's default.</summary>
     internal const int MaxJsonDepth = 256;
@@ -89,18 +96,143 @@ public sealed class McpServerService(IEnumerable<IMcpTool> tools, JsonSerializer
     public IReadOnlyList<(McpServerTool Tool, string? Unavailable)> Tools { get; } =
     [
         .. tools.Select(tool => ((McpServerTool)new ExplainingTool(
-            McpServerTool.Create(tool.Handler, new() { SerializerOptions = serializerOptions }), tool.Handler.Method, serializerOptions), tool.Unavailable)),
+            Create(tool.Handler, serializerOptions), tool.Handler.Method, serializerOptions), tool.Unavailable)),
     ];
 
+    private static McpServerTool Create(Delegate handler, JsonSerializerOptions serializerOptions)
+    {
+        var tool = McpServerTool.Create(handler, new() { SerializerOptions = serializerOptions });
+        tool.ProtocolTool.InputSchema = WithoutNulls(tool.ProtocolTool.InputSchema);
+        return tool;
+    }
+
+    /// <summary>
+    /// The schema without null in the types of optional parameters, and without their "default": null. Leaving a parameter out of required
+    /// already says it may be left out, and agents read every schema they load into their context: these were 5,000 characters over all tools.
+    /// Null still binds, for a client that passes it.
+    /// </summary>
+    internal static JsonElement WithoutNulls(JsonElement schema)
+    {
+        var node = JsonNode.Parse(schema.GetRawText());
+        Strip(node);
+        return JsonSerializer.SerializeToElement(node);
+
+        static void Strip(JsonNode? node)
+        {
+            if (node is JsonArray array)
+            {
+                foreach (var item in array)
+                    Strip(item);
+                return;
+            }
+            if (node is not JsonObject obj)
+                return;
+
+            if (obj["properties"] is JsonObject properties)
+            {
+                var required = (obj["required"] as JsonArray)?.Select(name => (string?)name).ToHashSet() ?? [];
+                foreach (var (name, value) in properties)
+                {
+                    if (required.Contains(name) || value is not JsonObject property)
+                        continue;
+                    if (property.TryGetPropertyValue("default", out var @default) && @default is null)
+                        property.Remove("default");
+                    if (property["type"] is JsonArray types && types.Any(type => (string?)type == "null"))
+                    {
+                        var rest = types.Select(type => (string?)type).Where(type => type != "null").ToList();
+                        property["type"] = rest is [var only] ? only : new JsonArray([.. rest.Select(type => (JsonNode?)type)]);
+                    }
+                    if (property["enum"] is JsonArray values && values.Any(item => item is null))
+                        property["enum"] = new JsonArray([.. values.Where(item => item is not null).Select(item => item!.DeepClone())]);
+                }
+            }
+
+            foreach (var (_, child) in obj)
+                Strip(child);
+        }
+    }
+
+    /// <summary>
+    /// The tool as served, with its description and its parameters' as the modes say, which <see cref="ExplainToolTool"/> gives in full
+    /// instead. That one keeps its own, as agents would not know what it is for.
+    /// </summary>
+    internal static McpServerTool Described(McpServerTool tool, DescriptionMode toolDescription, DescriptionMode fieldDescriptions)
+    {
+        if (toolDescription == DescriptionMode.Full && fieldDescriptions == DescriptionMode.Full || tool.ProtocolTool.Name == ExplainToolTool.Name)
+            return tool;
+        // A copy, as explain_tool reads the descriptions from the original.
+        var served = JsonSerializer.Deserialize<Tool>(JsonSerializer.SerializeToElement(tool.ProtocolTool, McpJsonUtilities.DefaultOptions), McpJsonUtilities.DefaultOptions)!;
+        served.Description = Describe(served.Description, toolDescription);
+        if (fieldDescriptions != DescriptionMode.Full)
+            served.InputSchema = WithDescriptions(served.InputSchema, text => Describe(text, fieldDescriptions));
+        return new ServedTool(tool, served);
+    }
+
+    /// <summary>The description as <paramref name="mode"/> serves it, or null to leave it out.</summary>
+    internal static string? Describe(string? text, DescriptionMode mode) => text is null ? null : mode switch
+    {
+        DescriptionMode.Full => text,
+        DescriptionMode.Short => FirstSentence(text),
+        // McpServerServiceTests fails on a description without its caveman text, which would be served in full.
+        DescriptionMode.Caveman => CavemanDescriptions.Text.GetValueOrDefault(text, text),
+        _ => null,
+    };
+
+    /// <summary>Up to the first period that ends a sentence, which the period of "e.g." and "i.e." does not.</summary>
+    internal static string FirstSentence(string text) => SentenceEnd().Match(text) is { Success: true } end ? text[..(end.Index + 1)] : text;
+
+    [GeneratedRegex(@"(?<!\be\.g|\bi\.e)\.\s")]
+    private static partial Regex SentenceEnd();
+
+    /// <summary>
+    /// The schema with the descriptions of its parameters, and of the fields of parameters that are records, as <paramref name="describe"/>
+    /// rewrites them; null removes one.
+    /// </summary>
+    internal static JsonElement WithDescriptions(JsonElement schema, Func<string, string?> describe)
+    {
+        var node = JsonNode.Parse(schema.GetRawText());
+        Rewrite(node);
+        return JsonSerializer.SerializeToElement(node);
+
+        void Rewrite(JsonNode? node)
+        {
+            if (node is JsonArray array)
+            {
+                foreach (var item in array)
+                    Rewrite(item);
+                return;
+            }
+            if (node is not JsonObject obj)
+                return;
+
+            if (obj["description"] is JsonValue value && value.TryGetValue<string>(out var text))
+            {
+                if (describe(text) is { } described)
+                    obj["description"] = described;
+                else
+                    obj.Remove("description");
+            }
+            foreach (var (key, child) in obj)
+            {
+                // Its keys are parameters' names, one of which may be description.
+                if (key == "properties" && child is JsonObject properties)
+                    foreach (var (_, property) in properties)
+                        Rewrite(property);
+                else if (key != "description")
+                    Rewrite(child);
+            }
+        }
+    }
+
     /// <summary>Starts the server with some of <see cref="Tools"/>; the returned task completes when the server shuts down.</summary>
-    public async Task StartAsync(McpProtocol protocol, IReadOnlyList<McpServerTool> serverTools, bool instructions)
+    public async Task StartAsync(McpProtocol protocol, IReadOnlyList<McpServerTool> serverTools, string? instructions)
     {
         if (protocol == McpProtocol.Stdio)
         {
             // stdout carries the protocol, so log to stderr only.
             var host = Host.CreateEmptyApplicationBuilder(settings: null);
             host.Logging.AddConsole(options => options.LogToStandardErrorThreshold = LogLevel.Trace);
-            host.Services.AddMcpServer(options => options.ServerInstructions = instructions ? Instructions : null).WithStdioServerTransport().WithTools(serverTools);
+            host.Services.AddMcpServer(options => options.ServerInstructions = instructions).WithStdioServerTransport().WithTools(serverTools);
             await host.Build().RunAsync();
             return;
         }
@@ -109,7 +241,7 @@ public sealed class McpServerService(IEnumerable<IMcpTool> tools, JsonSerializer
         // Kestrel listens on localhost, but takes any Host header: a web page whose name resolves to 127.0.0.1 (DNS rebinding) could call the
         // tools, which run builds. The environment variable AllowedHosts overrides this, for a server that listens on another address.
         builder.Configuration["AllowedHosts"] ??= "localhost;127.0.0.1;[::1]";
-        builder.Services.AddMcpServer(options => options.ServerInstructions = instructions ? Instructions : null)
+        builder.Services.AddMcpServer(options => options.ServerInstructions = instructions)
             .WithHttpTransport(options =>
             {
                 // Legacy SSE needs in-memory sessions, so it cannot run stateless.
@@ -125,6 +257,12 @@ public sealed class McpServerService(IEnumerable<IMcpTool> tools, JsonSerializer
         app.MapMcp();
         await app.RunAsync();
     }
+}
+
+/// <summary>A tool that clients see as <paramref name="served"/>, such as without its descriptions, and that runs as before.</summary>
+internal sealed class ServedTool(McpServerTool tool, Tool served) : DelegatingMcpServerTool(tool)
+{
+    public override Tool ProtocolTool => served;
 }
 
 /// <summary>

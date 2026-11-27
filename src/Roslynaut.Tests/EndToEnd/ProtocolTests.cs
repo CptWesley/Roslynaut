@@ -128,11 +128,11 @@ public class ProtocolTests : EndToEndTest
     public async Task ToolCalls_WithArgumentsOfTheWrongType_SayWhichAndWhat()
     {
         (await Server.CallFailingAsync("document_symbols", new() { ["projectPath"] = Sample.Solution, ["filePath"] = Sample.CircleFile, ["depth"] = "deep" }))
-            .Should().Be("An error occurred invoking 'document_symbols': Argument depth has to be integer or null, not \"deep\".");
+            .Should().Be("An error occurred invoking 'document_symbols': Argument depth has to be integer, not \"deep\".");
         (await Server.CallFailingAsync("type_hierarchy", new() { ["projectPath"] = Sample.Solution, ["symbol"] = "Circle", ["direction"] = "Sideways" }))
             .Should().Be("An error occurred invoking 'type_hierarchy': Argument direction has to be one of Supertypes, Subtypes, not \"Sideways\".");
         (await Server.CallFailingAsync("find_symbols", new() { ["projectPath"] = Sample.Solution, ["modifiers"] = "static" }))
-            .Should().Be("An error occurred invoking 'find_symbols': Argument modifiers has to be array or null, not \"static\".");
+            .Should().Be("An error occurred invoking 'find_symbols': Argument modifiers has to be array, not \"static\".");
     }
 
     [Test]

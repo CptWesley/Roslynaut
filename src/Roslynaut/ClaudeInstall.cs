@@ -220,13 +220,49 @@ internal static partial class ClaudeInstall
     /// </summary>
     internal static string? Hint(JsonNode? call)
     {
-        if (Suggest(call) is not { } suggestion)
+        var suggestion = Suggest(call);
+        if (!FirstInSession(call, suggestion?.ToString()) || suggestion is null)
             return null;
         var load = $" If their schemas are not loaded, load them with ToolSearch: \"select:{string.Join(",", suggestion.Tools.Select(tool => $"mcp__{Name}__{tool}"))}\".";
         return new JsonObject
         {
             ["hookSpecificOutput"] = new JsonObject { ["hookEventName"] = Text(call?["hook_event_name"]) ?? "PreToolUse", ["additionalContext"] = suggestion + load },
         }.ToJsonString();
+    }
+
+    /// <summary>The hints each Claude Code session has seen, a file per session, one hint per line.</summary>
+    internal static readonly string HintsSeen = Path.Combine(Path.GetTempPath(), "Roslynaut", "Hooks");
+
+    /// <summary>
+    /// Whether the session has not seen this hint yet. Repeated on every read of a C# file, it would cost Claude's context each time for what it
+    /// already knows. A session's start forgets the hints, as it also follows a compaction, which can drop them from the context.
+    /// </summary>
+    private static bool FirstInSession(JsonNode? call, string? hint)
+    {
+        if (Text(call?["session_id"]) is not { Length: > 0 } session || session.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+            return true;
+        try
+        {
+            Directory.CreateDirectory(HintsSeen);
+            var path = Path.Combine(HintsSeen, session + ".txt");
+            if (Text(call?["hook_event_name"]) == "SessionStart")
+            {
+                foreach (var old in new DirectoryInfo(HintsSeen).EnumerateFiles("*.txt").Where(file => file.LastWriteTimeUtc < DateTime.UtcNow.AddDays(-7)))
+                    old.Delete();
+                File.WriteAllText(path, hint is null ? "" : hint + "\n");
+                return true;
+            }
+            if (hint is null || File.Exists(path) && File.ReadLines(path).Contains(hint))
+                return false;
+            // ponytail: hooks of parallel tool calls can both miss and both hint; a lock file if that repeats too often.
+            File.AppendAllText(path, hint + "\n");
+            return true;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            // A hook that fails would fail on every call it matches.
+            return true;
+        }
     }
 
     /// <summary>

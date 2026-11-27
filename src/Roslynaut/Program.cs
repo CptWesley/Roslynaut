@@ -35,6 +35,8 @@ public static class Program
             Description = "Leave these tools out, also when --enable-tools names them.", HelpName = "tool", AllowMultipleArgumentsPerToken = true,
         }.AcceptOnlyFromAmong(names);
         var noInstructions = new Option<bool>("--no-instructions") { Description = "Leave out the server instructions, which tell agents which tool to use for what." };
+        var toolDescriptionsOption = DescriptionsOption("--tool-descriptions", "The tools' descriptions");
+        var fieldDescriptionsOption = DescriptionsOption("--field-descriptions", "The parameters' descriptions");
         var install = new Option<string>("--install")
         {
             Description =
@@ -50,16 +52,23 @@ public static class Program
         {
             Description = "Remove the server and its hook or plugin from this agent, as before uninstalling the tool, and exit.", HelpName = "agent",
         }.AcceptOnlyFromAmong(Agents);
-        var root = new RootCommand("An MCP server that exposes Roslyn and MSBuild to agents.") { protocol, enable, disable, noInstructions, install, noHooks, uninstall };
+        var root = new RootCommand("An MCP server that exposes Roslyn and MSBuild to agents.") { protocol, enable, disable, noInstructions, toolDescriptionsOption, fieldDescriptionsOption, install, noHooks, uninstall };
         root.SetAction(async parsed =>
         {
             var (installAgent, uninstallAgent) = (parsed.GetValue(install), parsed.GetValue(uninstall));
             var (only, without) = (parsed.GetValue(enable) ?? [], parsed.GetValue(disable) ?? []);
+            var (toolDescriptions, fieldDescriptions) = (parsed.GetValue(toolDescriptionsOption)!, parsed.GetValue(fieldDescriptionsOption)!);
+            var described = toolDescriptions == "full" && fieldDescriptions == "full";
             if (installAgent is not null || uninstallAgent is not null)
             {
                 var (agent, uninstall) = (uninstallAgent ?? installAgent!, uninstallAgent is not null);
-                // The agent starts the server with the same choice of tools.
-                string[] arguments = [.. only is [] ? [] : (string[])["--enable-tools", .. only], .. without is [] ? [] : (string[])["--disable-tools", .. without]];
+                // The agent starts the server with the same choice of tools and descriptions.
+                string[] arguments =
+                [
+                    .. only is [] ? [] : (string[])["--enable-tools", .. only], .. without is [] ? [] : (string[])["--disable-tools", .. without],
+                    .. toolDescriptions == "full" ? [] : (string[])[toolDescriptionsOption.Name, toolDescriptions],
+                    .. fieldDescriptions == "full" ? [] : (string[])[fieldDescriptionsOption.Name, fieldDescriptions],
+                ];
                 var hooks = !parsed.GetValue(noHooks);
                 if (agent == "claude")
                     ClaudeInstall.Run(uninstall, arguments, hooks);
@@ -72,6 +81,7 @@ public static class Program
                 return;
             }
 
+            var (toolMode, fieldMode) = (Enum.Parse<DescriptionMode>(toolDescriptions, ignoreCase: true), Enum.Parse<DescriptionMode>(fieldDescriptions, ignoreCase: true));
             var tools = new List<McpServerTool>();
             foreach (var (tool, unavailable) in server.Tools)
             {
@@ -79,18 +89,30 @@ public static class Program
                 if ((only is [] || only.Contains(name)) && !without.Contains(name))
                 {
                     if (unavailable is null)
-                        tools.Add(tool);
+                        tools.Add(McpServerService.Described(tool, toolMode, fieldMode));
                     else
                         await Console.Error.WriteLineAsync($"Left out the tool {name}: {unavailable}");
                 }
             }
 
-            await server.StartAsync(Enum.Parse<McpProtocol>(parsed.GetValue(protocol)!, ignoreCase: true), tools, !parsed.GetValue(noInstructions));
+            var instructions = parsed.GetValue(noInstructions) ? null
+                : described ? McpServerService.Instructions
+                : McpServerService.Instructions + McpServerService.ExplainInstructions;
+            await server.StartAsync(Enum.Parse<McpProtocol>(parsed.GetValue(protocol)!, ignoreCase: true), tools, instructions);
         });
 
         // The host handles Ctrl+C and SIGTERM itself and shuts down gracefully; System.CommandLine would give up on it after 2 seconds.
         return await root.Parse(args).InvokeAsync(new() { ProcessTerminationTimeout = null });
     }
+
+    // A string, not the enum, which would take numbers too.
+    private static Option<string> DescriptionsOption(string name, string what) =>
+        new Option<string>(name)
+        {
+            Description = $"{what} in the tools' schemas: full, short (the first sentence), caveman (terse, keeping identifiers and keywords) or "
+                + "none, for less of agents' context; explain_tool gives them in full.",
+            DefaultValueFactory = _ => "full",
+        }.AcceptOnlyFromAmong("full", "short", "caveman", "none");
 
     private static IServiceCollection AddCache(this IServiceCollection services)
     {
@@ -109,7 +131,7 @@ public static class Program
         return services.AddSingleton<ICache>(sp => new LayeredCache(sp.GetRequiredService<InMemoryCache>(), sp.GetRequiredService<LiteDbCache>()));
     }
 
-    private static ServiceProvider Services() =>
+    internal static ServiceProvider Services() =>
         new ServiceCollection()
             .AddSingleton(new JsonSerializerOptions(McpJsonUtilities.DefaultOptions) { MaxDepth = McpServerService.MaxJsonDepth })
             .AddSingleton<WorkspaceService>()
@@ -225,6 +247,7 @@ public static class Program
             .AddSingleton<IMcpTool, VerifyPendingTool>()
             .AddSingleton<IMcpTool, RegexTestTool>()
             .AddSingleton<IMcpTool, ResourcesTool>()
+            .AddSingleton<IMcpTool, ExplainToolTool>()
             .AddSingleton<McpServerService>()
             .BuildServiceProvider();
 }
