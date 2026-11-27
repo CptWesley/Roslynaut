@@ -100,7 +100,7 @@ public class TransportTests : EndToEndTest
         var config = Directory.CreateTempSubdirectory().FullName;
         try
         {
-            var start = new System.Diagnostics.ProcessStartInfo("dotnet", ["exec", ServerAssembly, "--install", "claude", "--no-hooks", "--no-tool-descriptions", "--no-field-descriptions"])
+            var start = new System.Diagnostics.ProcessStartInfo("dotnet", ["exec", ServerAssembly, "--install", "claude", "--no-hooks", "--tool-descriptions", "none", "--field-descriptions", "caveman"])
             {
                 RedirectStandardOutput = true, Environment = { ["CLAUDE_CONFIG_DIR"] = config },
             };
@@ -111,7 +111,7 @@ public class TransportTests : EndToEndTest
             process.ExitCode.Should().Be(0, output);
             System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(Path.Combine(config, ".claude.json")))!["mcpServers"]!["roslynaut"]!["args"]!.ToJsonString()
                 .Should().EndWith("""
-                    "--no-tool-descriptions","--no-field-descriptions"]
+                    "--tool-descriptions","none","--field-descriptions","caveman"]
                     """);
         }
         finally
@@ -124,7 +124,7 @@ public class TransportTests : EndToEndTest
     [Test]
     public async Task NoDescriptions_LeaveThemToExplainTool()
     {
-        await using var server = await ServerProcess.StartAsync(null, "--enable-tools", "references", "explain_tool", "--no-tool-descriptions", "--no-field-descriptions");
+        await using var server = await ServerProcess.StartAsync(null, "--enable-tools", "references", "explain_tool", "--tool-descriptions", "none", "--field-descriptions", "none");
 
         var tools = (await server.Client.ListToolsAsync()).ToDictionary(tool => tool.Name);
         tools["references"].Description.Should().BeNullOrEmpty();

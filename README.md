@@ -106,8 +106,8 @@ On Linux, each loaded project or solution watches its files through a few inotif
 | `--enable-tools <tool>...` | Serve only these tools. With `--install`, the agent starts the server with them. |
 | `--disable-tools <tool>...` | Leave these tools out. With `--install`, the agent starts the server without them. |
 | `--no-instructions` | Leave out the server instructions that tell agents which tool to use for what. |
-| `--no-tool-descriptions` | Leave the tools' descriptions out of their schemas (30% of them); agents get them from `explain_tool`. With `--install`, the agent starts the server so. |
-| `--no-field-descriptions` | Leave the parameters' descriptions out of the tools' schemas (43% of them); agents get them from `explain_tool`. With `--install`, the agent starts the server so. |
+| `--tool-descriptions full\|short\|caveman\|none` | The tools' descriptions (30% of their schemas): in full (the default), their first sentence, in caveman style (terse, keeping identifiers and search keywords), or none. Agents get them in full from `explain_tool`. With `--install`, the agent starts the server so. |
+| `--field-descriptions full\|short\|caveman\|none` | The same for the parameters' descriptions (43% of the schemas). |
 | `--install <agent>` | Register with an agent (`claude`, `opencode`, `codex`, `vscode`, `visualstudio`, `copilot`, `cursor`, `gemini`, `junie`), then exit. |
 | `--no-hooks` | With `--install`, register the server alone: Claude Code gets no hooks and OpenCode no plugin, and those of an earlier installation are removed. |
 | `--uninstall <agent>` | Remove that registration, then exit. |

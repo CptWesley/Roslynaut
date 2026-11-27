@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -19,9 +20,20 @@ public enum McpProtocol
     Stdio,
 }
 
+/// <summary>How much of the tools' or their parameters' descriptions the schemas carry; explain_tool gives them in full.</summary>
+public enum DescriptionMode
+{
+    Full,
+    /// <summary>The first sentence.</summary>
+    Short,
+    /// <summary>The text of <see cref="CavemanDescriptions"/>: without articles and filler, keeping identifiers and search keywords.</summary>
+    Caveman,
+    None,
+}
+
 /// <summary>Owns the lifetime of the MCP server. Tools are discovered through DI.</summary>
 /// <param name="serializerOptions">How tools read their arguments and write their results.</param>
-public sealed class McpServerService(IEnumerable<IMcpTool> tools, JsonSerializerOptions serializerOptions)
+public sealed partial class McpServerService(IEnumerable<IMcpTool> tools, JsonSerializerOptions serializerOptions)
 {
     /// <summary>
     /// What clients put in front of the agent before it calls any tool, such as in its system prompt, where it may only see tool names: which
@@ -69,7 +81,7 @@ public sealed class McpServerService(IEnumerable<IMcpTool> tools, JsonSerializer
         """;
 
     /// <summary>What follows <see cref="Instructions"/> when the tools' schemas leave out descriptions.</summary>
-    internal const string ExplainInstructions = "\nSome tools' schemas lack descriptions: explain_tool gives them, with their parameters'.";
+    internal const string ExplainInstructions = "\nSome tools' schemas lack or shorten descriptions: explain_tool gives them in full, with their parameters'.";
 
     /// <summary>
     /// Below where Claude Code cuts <see cref="Instructions"/> and <see cref="ExplainInstructions"/> off (seen at 4,130 characters), with room
@@ -141,49 +153,73 @@ public sealed class McpServerService(IEnumerable<IMcpTool> tools, JsonSerializer
     }
 
     /// <summary>
-    /// The tool as served, without its description or its parameters' when those are false, which <see cref="ExplainToolTool"/> gives
+    /// The tool as served, with its description and its parameters' as the modes say, which <see cref="ExplainToolTool"/> gives in full
     /// instead. That one keeps its own, as agents would not know what it is for.
     /// </summary>
-    internal static McpServerTool Described(McpServerTool tool, bool toolDescription, bool fieldDescriptions)
+    internal static McpServerTool Described(McpServerTool tool, DescriptionMode toolDescription, DescriptionMode fieldDescriptions)
     {
-        if (toolDescription && fieldDescriptions || tool.ProtocolTool.Name == ExplainToolTool.Name)
+        if (toolDescription == DescriptionMode.Full && fieldDescriptions == DescriptionMode.Full || tool.ProtocolTool.Name == ExplainToolTool.Name)
             return tool;
         // A copy, as explain_tool reads the descriptions from the original.
         var served = JsonSerializer.Deserialize<Tool>(JsonSerializer.SerializeToElement(tool.ProtocolTool, McpJsonUtilities.DefaultOptions), McpJsonUtilities.DefaultOptions)!;
-        if (!toolDescription)
-            served.Description = null;
-        if (!fieldDescriptions)
-            served.InputSchema = WithoutDescriptions(served.InputSchema);
+        served.Description = Describe(served.Description, toolDescription);
+        if (fieldDescriptions != DescriptionMode.Full)
+            served.InputSchema = WithDescriptions(served.InputSchema, text => Describe(text, fieldDescriptions));
         return new ServedTool(tool, served);
     }
 
-    /// <summary>The schema without the descriptions of its parameters, and of the fields of parameters that are records.</summary>
-    internal static JsonElement WithoutDescriptions(JsonElement schema)
+    /// <summary>The description as <paramref name="mode"/> serves it, or null to leave it out.</summary>
+    internal static string? Describe(string? text, DescriptionMode mode) => text is null ? null : mode switch
+    {
+        DescriptionMode.Full => text,
+        DescriptionMode.Short => FirstSentence(text),
+        // McpServerServiceTests fails on a description without its caveman text, which would be served in full.
+        DescriptionMode.Caveman => CavemanDescriptions.Text.GetValueOrDefault(text, text),
+        _ => null,
+    };
+
+    /// <summary>Up to the first period that ends a sentence, which the period of "e.g." and "i.e." does not.</summary>
+    internal static string FirstSentence(string text) => SentenceEnd().Match(text) is { Success: true } end ? text[..(end.Index + 1)] : text;
+
+    [GeneratedRegex(@"(?<!\be\.g|\bi\.e)\.\s")]
+    private static partial Regex SentenceEnd();
+
+    /// <summary>
+    /// The schema with the descriptions of its parameters, and of the fields of parameters that are records, as <paramref name="describe"/>
+    /// rewrites them; null removes one.
+    /// </summary>
+    internal static JsonElement WithDescriptions(JsonElement schema, Func<string, string?> describe)
     {
         var node = JsonNode.Parse(schema.GetRawText());
-        Strip(node);
+        Rewrite(node);
         return JsonSerializer.SerializeToElement(node);
 
-        static void Strip(JsonNode? node)
+        void Rewrite(JsonNode? node)
         {
             if (node is JsonArray array)
             {
                 foreach (var item in array)
-                    Strip(item);
+                    Rewrite(item);
                 return;
             }
             if (node is not JsonObject obj)
                 return;
 
-            obj.Remove("description");
+            if (obj["description"] is JsonValue value && value.TryGetValue<string>(out var text))
+            {
+                if (describe(text) is { } described)
+                    obj["description"] = described;
+                else
+                    obj.Remove("description");
+            }
             foreach (var (key, child) in obj)
             {
                 // Its keys are parameters' names, one of which may be description.
                 if (key == "properties" && child is JsonObject properties)
                     foreach (var (_, property) in properties)
-                        Strip(property);
-                else
-                    Strip(child);
+                        Rewrite(property);
+                else if (key != "description")
+                    Rewrite(child);
             }
         }
     }

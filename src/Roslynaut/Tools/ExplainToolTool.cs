@@ -8,7 +8,8 @@ using ModelContextProtocol.Server;
 namespace Roslynaut.Tools;
 
 /// <summary>
-/// The descriptions that --no-tool-descriptions and --no-field-descriptions leave out of the tools' schemas, for the tools an agent calls.
+/// The descriptions in full that --tool-descriptions and --field-descriptions shorten or leave out of the tools' schemas, for the tools an
+/// agent calls.
 /// </summary>
 /// <param name="services">Gives the server's tools when called, as the server is made of the tools, this one included.</param>
 public sealed class ExplainToolTool(IServiceProvider services) : IMcpTool
