@@ -184,6 +184,39 @@ public class CacheTests
         cache.Computed.Should().Be(1);
     }
 
+    // The JIT inlines from the assemblies next to a file, and ILSpy resolves its references there.
+    [Test]
+    public void ContentKey_OfFile_ChangesWithAssembliesNextToIt()
+    {
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, "Roslynaut.Tests.dll");
+        System.IO.File.Copy(typeof(CacheTests).Assembly.Location, path);
+        var dependency = Path.Combine(directory, "Dependency.dll");
+        System.IO.File.WriteAllText(dependency, "one");
+        using var assemblies = new AssemblyLoader();
+        var key = AssemblyLoader.ContentKey(assemblies.Read(path));
+
+        System.IO.File.WriteAllText(Path.Combine(directory, "notes.txt"), "not loaded");
+        AssemblyLoader.ContentKey(assemblies.Read(path)).Should().Be(key);
+
+        System.IO.File.WriteAllText(dependency, "other");
+        AssemblyLoader.ContentKey(assemblies.Read(path)).Should().NotBe(key);
+    }
+
+    // Each emit writes a file of another name, beside every other compilation's.
+    [Test]
+    public async Task ContentKey_OfCompilation_IsTheSameForEveryEmit()
+    {
+        var compilation = Microsoft.CodeAnalysis.CSharp.CSharpCompilation.Create("Lib",
+            [Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree.ParseText("public class C { }")],
+            [Microsoft.CodeAnalysis.MetadataReference.CreateFromFile(typeof(object).Assembly.Location)],
+            new(Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary, deterministic: true));
+        using var one = new AssemblyLoader();
+        using var other = new AssemblyLoader();
+
+        AssemblyLoader.ContentKey(await one.CompileAsync(compilation)).Should().Be(AssemblyLoader.ContentKey(await other.CompileAsync(compilation)));
+    }
+
     private sealed class Unusable : ICache
     {
         public string GetOrAdd(string key, Func<string, string> get) => throw new InvalidOperationException("Not to be asked.");

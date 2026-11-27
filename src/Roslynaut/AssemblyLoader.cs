@@ -1,9 +1,12 @@
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.Emit;
 using ModelContextProtocol;
 using Mono.Cecil;
 using Mono.Cecil.Cil;
+using Roslynaut.Caching;
 
 namespace Roslynaut;
 
@@ -12,7 +15,8 @@ namespace Roslynaut;
 /// <param name="Dependencies">
 /// Paths of referenced assemblies, by name, that a runtime would not find next to the assembly. The framework is left out: runtimes have their own.
 /// </param>
-public sealed record LoadedAssembly(ModuleDefinition Module, Lazy<string> Path, Lazy<IReadOnlyDictionary<string, string>> Dependencies);
+/// <param name="Compiled">Whether it was emitted from a compilation, rather than read from a file.</param>
+public sealed record LoadedAssembly(ModuleDefinition Module, Lazy<string> Path, Lazy<IReadOnlyDictionary<string, string>> Dependencies, bool Compiled = false);
 
 /// <summary>
 /// Reads assemblies with Mono.Cecil: files, which are read again once they change, and compilations, which are emitted from current source.
@@ -101,7 +105,26 @@ public sealed class AssemblyLoader(int capacity = 32) : IDisposable
         var image = pe.ToArray();
         pdb.Position = 0;
         var module = ModuleDefinition.ReadModule(new MemoryStream(image), new ReaderParameters { ReadSymbols = true, SymbolStream = pdb });
-        return new(module, new(() => Write(image)), new(() => ReferencePaths(compilation, optimize)));
+        return new(module, new(() => Write(image)), new(() => ReferencePaths(compilation, optimize)), Compiled: true);
+    }
+
+    /// <summary>
+    /// A cache key for what is computed from the assembly as a runtime or decompiler loads it, by content: of a compilation and the
+    /// dependencies it is given; of a file and what sits next to it, the assemblies it references and the .deps.json and .runtimeconfig.json
+    /// that pick its packages and runtime, which can all change while the file does not. Computed on every call for that reason.
+    /// </summary>
+    public static string ContentKey(LoadedAssembly assembly)
+    {
+        var path = assembly.Path.Value;
+        // Compilations are written under names of their own each time, so their dependencies go by assembly name.
+        var others = assembly.Compiled
+            ? assembly.Dependencies.Value.Select(dependency => (dependency.Key, dependency.Value))
+            : Directory.EnumerateFiles(System.IO.Path.GetDirectoryName(path)!)
+                .Where(file => file.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) || file.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
+                    || file.EndsWith(".deps.json", StringComparison.OrdinalIgnoreCase) || file.EndsWith(".runtimeconfig.json", StringComparison.OrdinalIgnoreCase))
+                .Select(file => (System.IO.Path.GetFileName(file), file));
+        var hashes = others.Select(other => $"{other.Item1}={CacheExtensions.HashOf(other.Item2)}").Order(StringComparer.Ordinal);
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join('\n', hashes.Prepend(CacheExtensions.HashOf(path))))));
     }
 
     private string Write(byte[] image)

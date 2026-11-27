@@ -4,7 +4,7 @@ Every release of the [Roslynaut](https://www.nuget.org/packages/Roslynaut/) pack
 
 ## 0.4.0 (unreleased)
 
-- decompile, assembly_asm, symbol_asm (without pgoWorkload) and type_layout keep their results in a cache under %TEMP%/Roslynaut/Cache, by the content of the assembly and of its dependencies, and for listings the runtime that compiles them. A later call for the same code, from this or another server, answers at once instead of decompiling again or starting the JIT host.
+- decompile, assembly_asm, symbol_asm (without pgoWorkload) and type_layout keep their results in a cache under %TEMP%/Roslynaut/Cache, by the content of the assembly and of the assemblies, .deps.json and .runtimeconfig.json next to it (or the dependencies of code compiled from source), and for listings the runtime that compiles them. A later call for the same code, from this or another server, answers at once instead of decompiling again or starting the JIT host.
 
 ## 0.3.2 (2026-11-23)
 

@@ -43,16 +43,15 @@ public sealed class DecompileTool(AssemblyLoader assemblies, PdbService pdbs, Re
     }
 
     /// <param name="lowered">Decompiles without rebuilding what the compiler lowered, and adds the generated types a method's code lives in.</param>
-    /// <param name="cache">Keeps the result by the assembly's content, whether it has a PDB, and the arguments.</param>
-    internal static List<DecompiledMember> Decompile(LoadedAssembly assembly, IReadOnlyCollection<string> names, Pdb? pdb = null, bool lowered = false, ICache? cache = null)
-    {
-        // ponytail: the referenced assemblies ILSpy resolves are not in the key, a dependency updated next to an unchanged assembly can leave
-        // a type name or overload choice as it was; hash the resolved references if that bites. A PDB only matches its assembly, so its presence will do.
-        return cache is null
+    /// <param name="cache">
+    /// Keeps the result by <see cref="AssemblyLoader.ContentKey"/>, which covers the references resolved next to the assembly, whether it has a
+    /// PDB (one only matches its assembly), and the arguments.
+    /// </param>
+    internal static List<DecompiledMember> Decompile(LoadedAssembly assembly, IReadOnlyCollection<string> names, Pdb? pdb = null, bool lowered = false, ICache? cache = null) =>
+        cache is null
             ? DecompileUncached(assembly, names, pdb, lowered)
-            : cache.GetOrAdd($"decompile|{CacheExtensions.HashOf(assembly.Path.Value)}|{pdb is not null}|{lowered}|{string.Join('|', names)}",
+            : cache.GetOrAdd($"decompile|{AssemblyLoader.ContentKey(assembly)}|{pdb is not null}|{lowered}|{string.Join('|', names)}",
                 () => DecompileUncached(assembly, names, pdb, lowered));
-    }
 
     private static List<DecompiledMember> DecompileUncached(LoadedAssembly assembly, IReadOnlyCollection<string> names, Pdb? pdb, bool lowered)
     {

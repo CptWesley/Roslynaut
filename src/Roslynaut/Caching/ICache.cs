@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text.Json;
 
@@ -23,10 +24,20 @@ public static class CacheExtensions
     public static T GetOrAdd<T>(this ICache cache, string key, Func<T> get) =>
         JsonSerializer.Deserialize<T>(cache.GetOrAdd(key, _ => JsonSerializer.Serialize(get())))!;
 
-    /// <summary>The SHA-256 of a file's content, for keys of values computed from it: unlike its MVID, it changes when an IL weaver rewrites it.</summary>
+    // ponytail: remembers every file it hashed for the life of the process; evict the oldest if long sessions hash a lot of them.
+    private static readonly ConcurrentDictionary<(string Path, DateTime Written, long Length), string> Hashes = new();
+
+    /// <summary>
+    /// The SHA-256 of a file's content, for keys of values computed from it: unlike its MVID, it changes when an IL weaver rewrites it.
+    /// Remembered by the file's time and size, so a key over a framework's directory costs a hash per file once.
+    /// </summary>
     public static string HashOf(string path)
     {
-        using var file = File.OpenRead(path);
-        return Convert.ToHexString(SHA256.HashData(file));
+        var file = new FileInfo(path);
+        return Hashes.GetOrAdd((file.FullName, file.LastWriteTimeUtc, file.Length), _ =>
+        {
+            using var stream = file.OpenRead();
+            return Convert.ToHexString(SHA256.HashData(stream));
+        });
     }
 }

@@ -37,19 +37,14 @@ internal static class JitDisassembler
                 () => DisassembleUncached(assembly, names, options));
 
     /// <summary>
-    /// What the JIT's output depends on besides the arguments: the content of the assembly and of the dependencies it is given, and the
-    /// runtime that compiles it, which a newly installed patch changes.
+    /// What the JIT's output depends on besides the arguments: the content of the assembly and of the dependencies the JIT can inline from
+    /// (<see cref="AssemblyLoader.ContentKey"/>), and the runtime that compiles it, which a newly installed patch changes.
     /// </summary>
-    // ponytail: dependencies a file finds next to itself are not in the key, so rebuilding only one of them, which the JIT inlines from, can
-    // serve the listing from before; hash the assemblies in its directory if that bites.
     private static string CacheKey(LoadedAssembly assembly)
     {
-        var path = assembly.Path.Value;
-        var (netCore, aspNetCore) = RuntimeFor(path, TargetMajor(assembly));
-        var dependencies = assembly.Dependencies.Value.OrderBy(dependency => dependency.Key, StringComparer.Ordinal)
-            .Select(dependency => $"{dependency.Key}={CacheExtensions.HashOf(dependency.Value)}");
+        var (netCore, aspNetCore) = RuntimeFor(assembly.Path.Value, TargetMajor(assembly));
         // The cache is on this machine, so the CPU the JIT compiles for stays the same.
-        return string.Join('|', (string?[])[CacheExtensions.HashOf(path), netCore.ToNormalizedString(), aspNetCore?.ToNormalizedString(), .. dependencies]);
+        return $"{AssemblyLoader.ContentKey(assembly)}|{netCore.ToNormalizedString()}|{aspNetCore?.ToNormalizedString()}";
     }
 
     private static List<MethodAsm> DisassembleUncached(LoadedAssembly assembly, IReadOnlyCollection<string> names, JitOptions? options)
