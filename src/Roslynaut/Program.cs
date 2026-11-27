@@ -2,6 +2,7 @@ using System.CommandLine;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol;
+using Roslynaut.Caching;
 using Roslynaut.Debugging;
 using Roslynaut.Tools;
 
@@ -71,11 +72,29 @@ public static class Program
         return await root.Parse(args).InvokeAsync(new() { ProcessTerminationTimeout = null });
     }
 
+    private static IServiceCollection AddCache(this IServiceCollection services)
+    {
+        services.AddSingleton(_ => new InMemoryCache(256));
+        services.AddSingleton(_ =>
+        {
+            var version = typeof(Program).Assembly.GetName().Version!.ToString(3);
+            var path = Path.Combine(
+                Path.GetTempPath(),
+                "Roslynaut",
+                "Cache",
+                version,
+                "cache.db");
+            return new LiteDbCache(path);
+        });
+        return services.AddSingleton<ICache>(sp => new LayeredCache(sp.GetRequiredService<InMemoryCache>(), sp.GetRequiredService<LiteDbCache>()));
+    }
+
     private static ServiceProvider Services() =>
         new ServiceCollection()
             .AddSingleton(new JsonSerializerOptions(McpJsonUtilities.DefaultOptions) { MaxDepth = McpServerService.MaxJsonDepth })
             .AddSingleton<WorkspaceService>()
             .AddSingleton<ResultCache>()
+            .AddCache()
             .AddSingleton<AssemblyLoader>()
             .AddSingleton<CodeActionService>()
             .AddSingleton<DebugService>()

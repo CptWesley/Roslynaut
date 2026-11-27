@@ -1,4 +1,6 @@
 using ModelContextProtocol;
+using Roslynaut.Caching;
+using Roslynaut.Tests.Caching;
 using Roslynaut.Tools;
 
 namespace Roslynaut.Tests.Tools;
@@ -9,6 +11,19 @@ public class DecompileTests
 
     // The test assembly serves as a file on disk.
     private LoadedAssembly TestAssembly => assemblies.Read(typeof(DecompileTests).Assembly.Location);
+
+    [Test]
+    public void Decompile_WithCache_DecompilesOnce()
+    {
+        var cache = new CountingCache(new InMemoryCache(10));
+
+        var first = DecompileTool.Decompile(TestAssembly, ["TestSolution.PathOf"], cache: cache);
+        DecompileTool.Decompile(TestAssembly, ["TestSolution.PathOf"], cache: cache).Should().Equal(first);
+        cache.Computed.Should().Be(1);
+
+        DecompileTool.Decompile(TestAssembly, ["TestSolution.PathOf"], lowered: true, cache: cache);
+        cache.Computed.Should().Be(2);
+    }
 
     [Test]
     public void Decompile_Type_ReturnsItWhole()

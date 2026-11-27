@@ -2,7 +2,11 @@
 
 Every release of the [Roslynaut](https://www.nuget.org/packages/Roslynaut/) package, newest first. The entry of the latest version is also its `PackageReleaseNotes` in `src/Roslynaut/Roslynaut.csproj`, which nuget.org shows.
 
-## 0.3.2 (unreleased)
+## 0.4.0 (unreleased)
+
+- decompile, assembly_asm, symbol_asm (without pgoWorkload) and type_layout keep their results in a cache under %TEMP%/Roslynaut/Cache, by the content of the assembly and of the assemblies, .deps.json and .runtimeconfig.json next to it (or the dependencies of code compiled from source), and for listings the runtime that compiles them. A later call for the same code, from this or another server, answers at once instead of decompiling again or starting the JIT host.
+
+## 0.3.2 (2026-11-23)
 
 - A solution whose projects reference each other loads all of them when none was restored yet. The design-time builds restored in parallel, each also restoring the projects it references, and could break one another's restore (NETSDK1004): a project then loaded without its code, so tools missed it, as change_signature missed the calls in a referencing project.
 

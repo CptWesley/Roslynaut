@@ -15,6 +15,10 @@ Azure.Core, Azure.Identity, System.ClientModel
   https://github.com/Azure/azure-sdk-for-net
   © Microsoft Corporation. All rights reserved.
 
+BitFaster.Caching
+  https://github.com/bitfaster/BitFaster.Caching
+  Copyright (c) 2020 Alex Peck
+
 Buildalyzer, Buildalyzer.Logger
   https://github.com/phmonte/Buildalyzer
   Copyright (c) Dave Glick
@@ -26,6 +30,10 @@ Humanizer.Core
 ICSharpCode.Decompiler
   https://github.com/icsharpcode/ILSpy
   Copyright 2011-2026 AlphaSierraPapa
+
+LiteDB
+  https://github.com/litedb-org/LiteDB
+  Copyright (c) 2014-2022 Mauricio David
 
 Microsoft.Bcl.AsyncInterfaces, Microsoft.Extensions.DependencyInjection,
 Microsoft.Extensions.DependencyInjection.Abstractions, System.CodeDom,

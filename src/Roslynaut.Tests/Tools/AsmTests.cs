@@ -3,6 +3,8 @@ using System.Text;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Text;
+using Roslynaut.Caching;
+using Roslynaut.Tests.Caching;
 using Roslynaut.Tools;
 using TypeLayout = Roslynaut.Tools.TypeLayout;
 
@@ -268,6 +270,22 @@ public class AsmTests
 
         JitDisassembler.Disassemble(assembly, ["TestSolution.Create"]).Should().ContainSingle()
             .Which.Asm.Should().Contain("Roslynaut.Tests.TestSolution:Create(System.String):Microsoft.CodeAnalysis.Solution (MinOpts)");
+    }
+
+    // Another loader reads the file again, as a server that starts later does.
+    [Test]
+    public void AssemblyAsm_WithCache_JitsOnce()
+    {
+        var cache = new CountingCache(new InMemoryCache(10));
+        using var other = new AssemblyLoader();
+
+        var first = JitDisassembler.Disassemble(assemblies.Read(typeof(AsmTests).Assembly.Location), ["TestSolution.Create"], cache: cache);
+        var again = JitDisassembler.Disassemble(other.Read(typeof(AsmTests).Assembly.Location), ["TestSolution.Create"], cache: cache);
+
+        again.Should().Equal(first);
+        cache.Computed.Should().Be(1);
+        JitDisassembler.Disassemble(other.Read(typeof(AsmTests).Assembly.Location), ["TestSolution.PathOf"], cache: cache);
+        cache.Computed.Should().Be(2);
     }
 
     private static readonly string NetCoreDirectory = Path.Combine(Path.GetDirectoryName(DotnetCli.Executable)!, "shared", "Microsoft.NETCore.App");

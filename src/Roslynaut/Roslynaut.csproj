@@ -10,9 +10,9 @@
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>roslynaut</ToolCommandName>
     <RollForward>Major</RollForward>
-    <Version>0.3.2</Version>
+    <Version>0.4.0</Version>
     <PackageReleaseNotes>
-- A solution whose projects reference each other loads all of them when none was restored yet. The design-time builds restored in parallel, each also restoring the projects it references, and could break one another's restore (NETSDK1004): a project then loaded without its code, so tools missed it, as change_signature missed the calls in a referencing project.
+- decompile, assembly_asm, symbol_asm (without pgoWorkload) and type_layout keep their results in a cache under %TEMP%/Roslynaut/Cache, by the content of the assembly and of the assemblies, .deps.json and .runtimeconfig.json next to it (or the dependencies of code compiled from source), and for listings the runtime that compiles them. A later call for the same code, from this or another server, answers at once instead of decompiling again or starting the JIT host.
     </PackageReleaseNotes>
     <Authors>Wesley Baartman</Authors>
     <Copyright>Copyright (c) 2026 Wesley Baartman</Copyright>
@@ -40,8 +40,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="BitFaster.Caching" Version="2.6.1" />
     <PackageReference Include="Buildalyzer" Version="9.0.0" />
     <PackageReference Include="ICSharpCode.Decompiler" Version="11.1.0.9782" />
+    <PackageReference Include="LiteDB" Version="5.0.21" />
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Features" Version="5.12.0" />
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" Version="5.12.0" />
     <PackageReference Include="Microsoft.CodeAnalysis.VisualBasic.Workspaces" Version="5.12.0" />

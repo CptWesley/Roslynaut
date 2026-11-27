@@ -4,10 +4,11 @@ using Microsoft.CodeAnalysis.CSharp;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
 using Mono.Cecil;
+using Roslynaut.Caching;
 
 namespace Roslynaut.Tools;
 
-public sealed class SymbolAsmTool(WorkspaceService workspace, AssemblyLoader assemblies, ResultCache cache) : IMcpTool
+public sealed class SymbolAsmTool(WorkspaceService workspace, AssemblyLoader assemblies, ResultCache cache, ICache persistent) : IMcpTool
 {
     public const string TypeArguments = "Type arguments for generic code, as code where the symbol is declared would write them, such as ['float'] "
         + "or ['int', 'Vec2?']: the outermost type's parameters first, then a generic method's own.";
@@ -33,16 +34,17 @@ public sealed class SymbolAsmTool(WorkspaceService workspace, AssemblyLoader ass
     {
         var solution = (await workspace.GetAsync(projectPath)).Solution;
         return await cache.GetPageAsync(solution, $"symbol_asm|{symbol}|{string.Join(';', typeArguments ?? [])}|{pgoWorkload}", page, pageSize,
-            () => DisassembleAsync(solution, assemblies, symbol, typeArguments ?? [], pgoWorkload, cancellationToken));
+            () => DisassembleAsync(solution, assemblies, symbol, typeArguments ?? [], pgoWorkload, cancellationToken, persistent));
     }
 
     internal static async Task<IEnumerable<MethodAsm>> DisassembleAsync(
-        Solution solution, AssemblyLoader assemblies, string symbol, IReadOnlyList<string> typeArguments, string? pgoWorkload, CancellationToken cancellationToken)
+        Solution solution, AssemblyLoader assemblies, string symbol, IReadOnlyList<string> typeArguments, string? pgoWorkload, CancellationToken cancellationToken,
+        ICache? cache = null)
     {
         var options = new JitOptions(
             typeArguments.Count > 0 ? await BindTypeArgumentsAsync(solution, (await SymbolTree.ResolveAsync(solution, symbol, cancellationToken))[0], typeArguments, cancellationToken) : [],
             pgoWorkload is null ? null : await WorkloadAsync(solution, assemblies, pgoWorkload, cancellationToken));
-        return await SymbolIlTool.DisassembleAsync(solution, assemblies, symbol, (assembly, ids) => JitDisassembler.Disassemble(assembly, ids, options),
+        return await SymbolIlTool.DisassembleAsync(solution, assemblies, symbol, (assembly, ids) => JitDisassembler.Disassemble(assembly, ids, options, cache),
             optimize: true, cancellationToken);
     }
 
