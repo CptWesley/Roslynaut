@@ -4,6 +4,47 @@ namespace Roslynaut.Tests;
 
 public class McpConfigInstallTests
 {
+    private static readonly string Root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "x"));
+
+    private static string Under(params string[] parts) => Path.Combine([Root, .. parts]);
+
+    private static string Slashed(string path) => OperatingSystem.IsWindows() ? path.Replace('\\', '/') : path;
+
+    [Test]
+    public void Command_OfATool_IsItsExecutable()
+    {
+        var shim = Under(".dotnet", "tools", "roslynaut.exe");
+
+        AgentInstall.Command(shim, Under(".dotnet", "tools", ".store", "roslynaut", "0.3.2", "roslynaut", "0.3.2", "tools", "net10.0", "any", "Roslynaut.dll"))
+            .Should().Equal(Slashed(shim));
+    }
+
+    [Test]
+    public void Command_OfABuild_IsDotnetAndTheAssembly()
+    {
+        var (dotnet, assembly) = (Under("dotnet", "dotnet.exe"), Under("src", "Roslynaut", "bin", "Debug", "net10.0", "Roslynaut.dll"));
+
+        AgentInstall.Command(dotnet, assembly).Should().Equal(Slashed(dotnet), Slashed(assembly));
+    }
+
+    [TestCase("roslynaut.win-x64", "0.3.2", "win-x64")]
+    [TestCase("roslynaut", "0.4.0-preview.1", "any")]
+    public void Command_OfAPackageThatDnxRuns_IsDnxOfThatVersion(string id, string version, string platform)
+    {
+        var dotnet = Under("dotnet", "dotnet");
+
+        AgentInstall.Command(dotnet, Under(".nuget", "packages", id, version, "tools", "net10.0", platform, "Roslynaut.dll"))
+            .Should().Equal(Slashed(dotnet), "dnx", $"roslynaut@{version}", "--yes", "--");
+    }
+
+    [Test]
+    [Platform("Win")]
+    public void Command_OnWindows_HasForwardSlashes_ForShells()
+    {
+        AgentInstall.Command(@"C:\Program Files\dotnet\dotnet.exe", @"C:\Users\me\src\Roslynaut\bin\Debug\net10.0\Roslynaut.dll")
+            .Should().Equal("C:/Program Files/dotnet/dotnet.exe", "C:/Users/me/src/Roslynaut/bin/Debug/net10.0/Roslynaut.dll");
+    }
+
     [Test]
     public void Register_AddsUpdatesAndRemovesServer_KeepingTheRest()
     {

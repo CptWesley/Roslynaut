@@ -114,7 +114,8 @@ public class ToolPackageTests
 
         process.ExitCode.Should().Be(0, output);
         var server = JsonNode.Parse(File.ReadAllText(In("claude", ".claude.json")))!["mcpServers"]!["roslynaut"]!;
-        server["command"]!.GetValue<string>().Should().Be(_command);
+        // With forward slashes on Windows, for agents that run it through a shell.
+        server["command"]!.GetValue<string>().Should().Be(OperatingSystem.IsWindows() ? _command.Replace('\\', '/') : _command);
         server["args"]!.AsArray().Should().BeEmpty();
     }
 }
