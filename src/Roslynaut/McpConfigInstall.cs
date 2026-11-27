@@ -26,13 +26,14 @@ internal static class McpConfigInstall
         ["junie"] = new(() => Home(".junie", "mcp", "mcp.json"), ["mcpServers"], Plain),
     };
 
-    public static void Run(string name, bool uninstall)
+    /// <param name="arguments">What the server starts with, after the command, such as the tools to serve.</param>
+    public static void Run(string name, bool uninstall, string[] arguments)
     {
         var agent = Agents[name];
         if (uninstall)
             AgentInstall.Unregister(agent.File(), agent.Servers, Console.Out);
         else
-            AgentInstall.Register(agent.File(), agent.Servers, agent.Server(AgentInstall.Command()), Console.Out);
+            AgentInstall.Register(agent.File(), agent.Servers, agent.Server([.. AgentInstall.Command(), .. arguments]), Console.Out);
     }
 
     private static JsonObject Plain(string[] command) => new() { ["command"] = command[0], ["args"] = JsonFile.Strings(command[1..]) };

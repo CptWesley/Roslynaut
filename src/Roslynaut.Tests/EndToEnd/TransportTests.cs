@@ -8,7 +8,7 @@ namespace Roslynaut.Tests.EndToEnd;
 
 /// <summary>
 /// The server over HTTP, stateless, and over legacy SSE, each in a process of its own on a free port; and the command line it rejects.
-/// These servers do not allow evaluate.
+/// These servers do not allow evaluate, so they leave it out.
 /// </summary>
 public class TransportTests : EndToEndTest
 {
@@ -18,13 +18,17 @@ public class TransportTests : EndToEndTest
     [TestCase("sse", HttpTransportMode.Sse, "/sse")]
     public async Task Http_ServesTheTools(string protocol, HttpTransportMode mode, string path)
     {
-        using var server = Process.Start(new ProcessStartInfo(DotnetCli.Executable)
+        var start = new ProcessStartInfo(DotnetCli.Executable)
         {
             ArgumentList = { "exec", ServerAssembly, "--protocol", protocol },
             RedirectStandardOutput = true,
             RedirectStandardError = true,
-            Environment = { ["ASPNETCORE_URLS"] = "http://127.0.0.1:0", [EvaluateTool.AllowVariable] = "false" },
-        })!;
+        };
+        foreach (var (name, value) in EndToEndSetup.AllTools())
+            start.Environment[name] = value;
+        start.Environment["ASPNETCORE_URLS"] = "http://127.0.0.1:0";
+        start.Environment[EvaluateTool.AllowVariable] = "false";
+        using var server = Process.Start(start)!;
         try
         {
             // Kestrel logs where it listens once it does; the rest of the log has to be read too, or the server blocks writing it.
@@ -37,13 +41,11 @@ public class TransportTests : EndToEndTest
 
             await using var client = await McpClient.CreateAsync(new HttpClientTransport(new() { Endpoint = url!, TransportMode = mode }));
 
-            (await client.ListToolsAsync()).Select(tool => tool.Name).Should().BeEquivalentTo((await Server.Client.ListToolsAsync()).Select(tool => tool.Name));
+            // Without evaluate allowed, the tools that run code are left out.
+            (await client.ListToolsAsync()).Select(tool => tool.Name).Should().BeEquivalentTo(
+                (await Server.Client.ListToolsAsync()).Select(tool => tool.Name).Except(["evaluate", "benchmark"]));
             var graph = await client.CallToolAsync("project_graph", new Dictionary<string, object?> { ["projectPath"] = Sample.Solution });
             graph.Content.OfType<TextContentBlock>().Single().Text.Should().Contain("\"name\":\"Shapes.App\"");
-            var evaluate = await client.CallToolAsync("evaluate", new Dictionary<string, object?> { ["projectPath"] = Sample.Solution, ["code"] = "1 + 1" });
-            evaluate.IsError.Should().BeTrue();
-            evaluate.Content.OfType<TextContentBlock>().Single().Text.Should().Be(
-                "An error occurred invoking 'evaluate': evaluate runs code, so it is off; start the server with the environment variable ROSLYNAUT_ALLOW_EVALUATE=true to allow it.");
 
             // As a page on another name that resolves to this machine would ask.
             using var http = new HttpClient();
@@ -72,6 +74,14 @@ public class TransportTests : EndToEndTest
     public async Task ToolOptions_PickTheTools()
     {
         await using var server = await ServerProcess.StartAsync(null, "--enable-tools", "project_graph", "find_tests", "--disable-tools", "find_tests");
+
+        (await server.Client.ListToolsAsync()).Select(tool => tool.Name).Should().Equal("project_graph");
+    }
+
+    [Test]
+    public async Task ToolOptions_LeaveOutToolsThatCannotWork()
+    {
+        await using var server = await ServerProcess.StartAsync(new() { [EvaluateTool.AllowVariable] = "false" }, "--enable-tools", "project_graph", "evaluate");
 
         (await server.Client.ListToolsAsync()).Select(tool => tool.Name).Should().Equal("project_graph");
     }

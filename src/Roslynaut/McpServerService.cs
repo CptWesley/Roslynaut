@@ -85,11 +85,11 @@ public sealed class McpServerService(IEnumerable<IMcpTool> tools, JsonSerializer
     /// <summary>How deep the JSON of tool results may nest, instead of the 64 levels of System.Text.Json's default.</summary>
     internal const int MaxJsonDepth = 256;
 
-    /// <summary>Every tool, as the server serves it.</summary>
-    public IReadOnlyList<McpServerTool> Tools { get; } =
+    /// <summary>Every tool, as the server serves it, with why it cannot work in this server (<see cref="IMcpTool.Unavailable"/>).</summary>
+    public IReadOnlyList<(McpServerTool Tool, string? Unavailable)> Tools { get; } =
     [
-        .. tools.Select(tool => (McpServerTool)new ExplainingTool(
-            McpServerTool.Create(tool.Handler, new() { SerializerOptions = serializerOptions }), tool.Handler.Method, serializerOptions)),
+        .. tools.Select(tool => ((McpServerTool)new ExplainingTool(
+            McpServerTool.Create(tool.Handler, new() { SerializerOptions = serializerOptions }), tool.Handler.Method, serializerOptions), tool.Unavailable)),
     ];
 
     /// <summary>Starts the server with some of <see cref="Tools"/>; the returned task completes when the server shuts down.</summary>

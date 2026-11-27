@@ -13,7 +13,7 @@ dotnet test src/Roslynaut.Tests --filter "FullyQualifiedName~NavigationTests" # 
 dotnet test src/Roslynaut.Tests --filter "Name=References_HaveContainerAndAccess"
 dotnet test src/Roslynaut.Tests --filter "TestCategory!=EndToEnd"                    # without the end-to-end tests
 dotnet run --project src/Roslynaut -- --protocol stdio|http|sse              # no args = stdio
-dotnet run --project src/Roslynaut -- --enable-tools build run_tests         # only these tools; --disable-tools leaves tools out
+dotnet run --project src/Roslynaut -- --enable-tools build run_tests         # only these tools; --disable-tools leaves tools out; both pass on to --install
 dotnet run --project src/Roslynaut -- --no-instructions                      # no server instructions
 dotnet run --project src/Roslynaut -- --install claude                       # register with Claude Code and exit
 dotnet run --project src/Roslynaut -- --install opencode                     # register with OpenCode and exit (also: codex, vscode, visualstudio, copilot, cursor, gemini, junie)
@@ -37,7 +37,9 @@ The package is a dotnet tool (`PackAsTool`, command `roslynaut`) of the server's
 
 Environment variables:
 - `ROSLYNAUT_ALLOW_EVALUATE=true` enables the `evaluate` and `benchmark` tools, which run arbitrary code. They are off by default.
-- `NETCOREDBG` is the path to netcoredbg, which the debug tools need (or put it on the PATH). `DebugTests` are skipped through `Assume` when it is not set.
+- `NETCOREDBG` is the path to netcoredbg, which the debug tools need (or put it on the PATH). `DebugTests` are skipped through `Assume` when it is not set; the end-to-end server gets a stand-in then (`EndToEndSetup.AllTools`), so it still lists the debug tools.
+
+A tool that cannot work without such a setting says why in `IMcpTool.Unavailable`, and the server leaves it out, logging the reason to stderr.
 
 Tests use NUnit with AwesomeAssertions (`.Should()`). Both are global usings.
 

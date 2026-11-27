@@ -12,12 +12,19 @@ public sealed class EvaluateTool(WorkspaceService workspace, AssemblyLoader asse
 
     private static readonly string HostPath = Path.Combine(AppContext.BaseDirectory, "Roslynaut.ScriptHost.dll");
 
+    /// <summary>Why evaluate and benchmark are off: they run code, unless <see cref="AllowVariable"/> allows it.</summary>
+    internal static string? NotAllowed =>
+        string.Equals(Environment.GetEnvironmentVariable(AllowVariable), "true", StringComparison.OrdinalIgnoreCase)
+            ? null
+            : $"it runs code; start the server with the environment variable {AllowVariable}=true to serve it.";
+
     public Delegate Handler => EvaluateCodeAsync;
+
+    public string? Unavailable => NotAllowed;
 
     [McpServerTool(Name = "evaluate", Destructive = true, OpenWorld = true)]
     [Description("Runs C# script code, such as an expression or a few statements, in a separate process that references the projects' current "
-        + "code and their dependencies; returns what it wrote to the console and the value of its last expression. It runs real code, so it "
-        + "only works when the server was started with the environment variable " + AllowVariable + "=true.")]
+        + "code and their dependencies; returns what it wrote to the console and the value of its last expression.")]
     private async Task<Evaluation> EvaluateCodeAsync(
         [Description(ToolDefaults.ProjectPath)] string projectPath,
         [Description("C# script code. A last expression without a semicolon is the value, e.g. 'new MyApp.Parser().Parse(\"1+2\")'. "
@@ -25,8 +32,6 @@ public sealed class EvaluateTool(WorkspaceService workspace, AssemblyLoader asse
         [Description("How long it may run before it is stopped.")] int timeoutSeconds = 30,
         CancellationToken cancellationToken = default)
     {
-        if (!string.Equals(Environment.GetEnvironmentVariable(AllowVariable), "true", StringComparison.OrdinalIgnoreCase))
-            throw new McpException($"evaluate runs code, so it is off; start the server with the environment variable {AllowVariable}=true to allow it.");
         if (timeoutSeconds < 1)
             throw new McpException("timeoutSeconds must be at least 1.");
 

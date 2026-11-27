@@ -1,3 +1,4 @@
+using Roslynaut.Debugging;
 using Roslynaut.Tools;
 
 namespace Roslynaut.Tests.EndToEnd;
@@ -18,11 +19,19 @@ public class EndToEndSetup
 
     internal static string BuildLog => Sample.In("build.binlog");
 
+    /// <summary>
+    /// What the server needs to serve every tool: evaluate allowed, and a stand-in for netcoredbg on a machine without it, so the tests of the
+    /// tools' schemas see the debug tools too. DebugTests, which run netcoredbg, are skipped then.
+    /// </summary>
+    internal static Dictionary<string, string?> AllTools() => DebugService.Unavailable is null
+        ? new() { [EvaluateTool.AllowVariable] = "true" }
+        : new() { [EvaluateTool.AllowVariable] = "true", [DebugService.AdapterVariable] = typeof(EndToEndSetup).Assembly.Location };
+
     [OneTimeSetUp]
     public async Task StartAsync()
     {
         Sample = await SampleSolution.CreateAsync();
-        Server = await ServerProcess.StartAsync(new() { [EvaluateTool.AllowVariable] = "true" });
+        Server = await ServerProcess.StartAsync(AllTools());
         Build = await Server.CallAsync<BuildTool.BuildResult>("build", new() { ["projectPath"] = Sample.Solution, ["binlogPath"] = BuildLog });
         Build.Succeeded.Should().BeTrue(Build.Output ?? string.Join("\n", Build.Messages));
         await Sample.CommitAsync();
