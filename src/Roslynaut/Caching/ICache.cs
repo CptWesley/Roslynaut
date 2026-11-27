@@ -1,0 +1,15 @@
+namespace Roslynaut.Caching;
+
+/// <summary>
+/// A cache of string results by string key, for tool calls that are slow and always give the same result for the same key.
+/// </summary>
+/// <remarks>
+/// The key has to name everything the result depends on, such as an assembly's MVID besides its path, as entries can outlive the
+/// process. A cache is best effort: when it fails, it computes the value instead.
+/// </remarks>
+public interface ICache
+{
+    /// <summary>Returns the value cached for <paramref name="key"/>, or computes it with <paramref name="get"/> and caches it.</summary>
+    /// <remarks><paramref name="get"/> can run more than once for a key that threads ask for at the same time.</remarks>
+    string GetOrAdd(string key, Func<string, string> get);
+}

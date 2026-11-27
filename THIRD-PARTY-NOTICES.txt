@@ -27,6 +27,10 @@ ICSharpCode.Decompiler
   https://github.com/icsharpcode/ILSpy
   Copyright 2011-2026 AlphaSierraPapa
 
+LiteDB
+  https://github.com/litedb-org/LiteDB
+  Copyright (c) 2014-2022 Mauricio David
+
 Microsoft.Bcl.AsyncInterfaces, Microsoft.Extensions.DependencyInjection,
 Microsoft.Extensions.DependencyInjection.Abstractions, System.CodeDom,
 System.Composition.AttributedModel, System.Composition.Convention,
