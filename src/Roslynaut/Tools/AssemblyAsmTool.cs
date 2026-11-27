@@ -1,9 +1,10 @@
 using System.ComponentModel;
 using ModelContextProtocol.Server;
+using Roslynaut.Caching;
 
 namespace Roslynaut.Tools;
 
-public sealed class AssemblyAsmTool(AssemblyLoader assemblies, ResultCache cache) : IMcpTool
+public sealed class AssemblyAsmTool(AssemblyLoader assemblies, ResultCache cache, ICache persistent) : IMcpTool
 {
     public Delegate Handler => GetAsmAsync;
 
@@ -18,6 +19,6 @@ public sealed class AssemblyAsmTool(AssemblyLoader assemblies, ResultCache cache
     {
         var assembly = assemblies.Read(assemblyPath);
         return cache.GetPageAsync(assembly, $"assembly_asm|{name}", page, pageSize,
-            () => Task.Run<IEnumerable<MethodAsm>>(() => JitDisassembler.Disassemble(assembly, [name])));
+            () => Task.Run<IEnumerable<MethodAsm>>(() => JitDisassembler.Disassemble(assembly, [name], cache: persistent)));
     }
 }

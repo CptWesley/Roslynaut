@@ -1,3 +1,6 @@
+using System.Security.Cryptography;
+using System.Text.Json;
+
 namespace Roslynaut.Caching;
 
 /// <summary>
@@ -12,4 +15,18 @@ public interface ICache
     /// <summary>Returns the value cached for <paramref name="key"/>, or computes it with <paramref name="get"/> and caches it.</summary>
     /// <remarks><paramref name="get"/> can run more than once for a key that threads ask for at the same time.</remarks>
     string GetOrAdd(string key, Func<string, string> get);
+}
+
+public static class CacheExtensions
+{
+    /// <summary>Returns the value cached for <paramref name="key"/>, or computes it with <paramref name="get"/> and caches it, as JSON.</summary>
+    public static T GetOrAdd<T>(this ICache cache, string key, Func<T> get) =>
+        JsonSerializer.Deserialize<T>(cache.GetOrAdd(key, _ => JsonSerializer.Serialize(get())))!;
+
+    /// <summary>The SHA-256 of a file's content, for keys of values computed from it: unlike its MVID, it changes when an IL weaver rewrites it.</summary>
+    public static string HashOf(string path)
+    {
+        using var file = File.OpenRead(path);
+        return Convert.ToHexString(SHA256.HashData(file));
+    }
 }

@@ -171,8 +171,33 @@ public class CacheTests
         computed.Should().Equal("a", "a");
     }
 
+    [Test]
+    public void Typed_RoundTripsRecordsThroughJson()
+    {
+        var cache = new CountingCache(new InMemoryCache(10));
+        var layout = new Roslynaut.Tools.TypeLayout("T", 24, 1, ".NET 10", [new("x", "System.Int32", 0, 4, 0), new("(padding)", null, 4, 4, 0)]);
+
+        cache.GetOrAdd("a", () => layout);
+        var cached = cache.GetOrAdd<Roslynaut.Tools.TypeLayout>("a", () => throw new InvalidOperationException("Not to be computed."));
+
+        cached.Should().BeEquivalentTo(layout);
+        cache.Computed.Should().Be(1);
+    }
+
     private sealed class Unusable : ICache
     {
         public string GetOrAdd(string key, Func<string, string> get) => throw new InvalidOperationException("Not to be asked.");
     }
+}
+
+/// <summary>Counts the values its cache computes.</summary>
+internal sealed class CountingCache(ICache inner) : ICache
+{
+    public int Computed { get; private set; }
+
+    public string GetOrAdd(string key, Func<string, string> get) => inner.GetOrAdd(key, k =>
+    {
+        Computed++;
+        return get(k);
+    });
 }

@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using ModelContextProtocol;
 using NuGet.Versioning;
+using Roslynaut.Caching;
 
 namespace Roslynaut.Tools;
 
@@ -28,7 +29,30 @@ internal static class JitDisassembler
     private static readonly string FrameworkDirectory = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(typeof(object).Assembly.Location)!, "..", ".."));
 
     /// <param name="options">Type arguments for generic code, and a workload to compile the methods with Dynamic PGO after.</param>
-    public static List<MethodAsm> Disassemble(LoadedAssembly assembly, IReadOnlyCollection<string> names, JitOptions? options = null)
+    /// <param name="cache">Keeps the listings by <see cref="CacheKey"/> and the arguments; not with a workload, whose tiers depend on timing.</param>
+    public static List<MethodAsm> Disassemble(LoadedAssembly assembly, IReadOnlyCollection<string> names, JitOptions? options = null, ICache? cache = null) =>
+        cache is null || options?.Workload is not null
+            ? DisassembleUncached(assembly, names, options)
+            : cache.GetOrAdd($"asm|{CacheKey(assembly)}|{string.Join(';', options?.TypeArguments ?? [])}|{string.Join('|', names)}",
+                () => DisassembleUncached(assembly, names, options));
+
+    /// <summary>
+    /// What the JIT's output depends on besides the arguments: the content of the assembly and of the dependencies it is given, and the
+    /// runtime that compiles it, which a newly installed patch changes.
+    /// </summary>
+    // ponytail: dependencies a file finds next to itself are not in the key, so rebuilding only one of them, which the JIT inlines from, can
+    // serve the listing from before; hash the assemblies in its directory if that bites.
+    private static string CacheKey(LoadedAssembly assembly)
+    {
+        var path = assembly.Path.Value;
+        var (netCore, aspNetCore) = RuntimeFor(path, TargetMajor(assembly));
+        var dependencies = assembly.Dependencies.Value.OrderBy(dependency => dependency.Key, StringComparer.Ordinal)
+            .Select(dependency => $"{dependency.Key}={CacheExtensions.HashOf(dependency.Value)}");
+        // The cache is on this machine, so the CPU the JIT compiles for stays the same.
+        return string.Join('|', (string?[])[CacheExtensions.HashOf(path), netCore.ToNormalizedString(), aspNetCore?.ToNormalizedString(), .. dependencies]);
+    }
+
+    private static List<MethodAsm> DisassembleUncached(LoadedAssembly assembly, IReadOnlyCollection<string> names, JitOptions? options)
     {
         List<Method> methods;
         lock (assembly.Module)
@@ -70,7 +94,11 @@ internal static class JitDisassembler
 
     /// <summary>Where the runtime the assembly is built for puts the fields of a type, which the assembly or its dependencies declare.</summary>
     /// <param name="type">The assembly-qualified name of the type, with its type arguments.</param>
-    public static TypeLayout LayOut(LoadedAssembly assembly, string type)
+    /// <param name="cache">Keeps the layout by <see cref="CacheKey"/> and the type.</param>
+    public static TypeLayout LayOut(LoadedAssembly assembly, string type, ICache? cache = null) =>
+        cache is null ? LayOutUncached(assembly, type) : cache.GetOrAdd($"layout|{CacheKey(assembly)}|{type}", () => LayOutUncached(assembly, type));
+
+    private static TypeLayout LayOutUncached(LoadedAssembly assembly, string type)
     {
         var response = RunHost(assembly, [], listingFile: null, new([], null), type);
         var layout = response.Layout!;
@@ -127,6 +155,21 @@ internal static class JitDisassembler
                 : [];
     }
 
+    /// <summary>
+    /// The .NET an assembly is built for: the version of the System.Runtime it references. Framework assemblies reference System.Private.CoreLib
+    /// instead, or are it.
+    /// </summary>
+    private static int? TargetMajor(LoadedAssembly assembly)
+    {
+        lock (assembly.Module)
+        {
+            var module = assembly.Module;
+            return (module.Assembly.Name.Name == "System.Private.CoreLib"
+                ? module.Assembly.Name
+                : module.AssemblyReferences.FirstOrDefault(reference => reference.Name is "System.Runtime" or "System.Private.CoreLib"))?.Version.Major;
+        }
+    }
+
     /// <summary>A runtimeconfig.json that runs the host on exactly these frameworks; the host is built for the oldest supported .NET.</summary>
     private static string RuntimeConfig((NuGetVersion NetCore, NuGetVersion? AspNetCore) runtime) => JsonSerializer.Serialize(new
     {
@@ -145,22 +188,11 @@ internal static class JitDisassembler
         if (!File.Exists(HostPath))
             throw new McpException($"The JIT host is missing: {HostPath}");
 
-        int? runtimeVersion;
-        lock (assembly.Module)
-        {
-            // The .NET an assembly is built for: the version of the System.Runtime it references. Framework assemblies reference
-            // System.Private.CoreLib instead, or are it.
-            var module = assembly.Module;
-            runtimeVersion = (module.Assembly.Name.Name == "System.Private.CoreLib"
-                ? module.Assembly.Name
-                : module.AssemblyReferences.FirstOrDefault(reference => reference.Name is "System.Runtime" or "System.Private.CoreLib"))?.Version.Major;
-        }
-
         var path = assembly.Path.Value;
         var runtimeConfig = Path.Combine(Path.GetTempPath(), $"roslynaut-jithost-{Guid.NewGuid():N}.runtimeconfig.json");
         try
         {
-            File.WriteAllText(runtimeConfig, RuntimeConfig(RuntimeFor(path, runtimeVersion)));
+            File.WriteAllText(runtimeConfig, RuntimeConfig(RuntimeFor(path, TargetMajor(assembly))));
             var start = new ProcessStartInfo(DotnetCli.Executable)
             {
                 RedirectStandardInput = true,

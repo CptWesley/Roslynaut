@@ -86,7 +86,7 @@ public static class Program
                 "cache.db");
             return new LiteDbCache(path);
         });
-        services.AddSingleton<ICache>(sp => new LayeredCache(sp.GetRequiredService<InMemoryCache>(), sp.GetRequiredService<LiteDbCache>()));
+        return services.AddSingleton<ICache>(sp => new LayeredCache(sp.GetRequiredService<InMemoryCache>(), sp.GetRequiredService<LiteDbCache>()));
     }
 
     private static ServiceProvider Services() =>

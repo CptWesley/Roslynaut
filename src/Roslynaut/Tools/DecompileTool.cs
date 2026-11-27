@@ -7,6 +7,7 @@ using ICSharpCode.Decompiler.CSharp;
 using ICSharpCode.Decompiler.DebugInfo;
 using ICSharpCode.Decompiler.Metadata;
 using ModelContextProtocol.Server;
+using Roslynaut.Caching;
 
 namespace Roslynaut.Tools;
 
@@ -14,7 +15,7 @@ namespace Roslynaut.Tools;
 /// <param name="Code">The decompiled C#, or a comment saying why there is none.</param>
 public sealed record DecompiledMember(string Member, string Code);
 
-public sealed class DecompileTool(AssemblyLoader assemblies, PdbService pdbs, ResultCache cache) : IMcpTool
+public sealed class DecompileTool(AssemblyLoader assemblies, PdbService pdbs, ResultCache cache, ICache persistent) : IMcpTool
 {
     public Delegate Handler => DecompileAsync;
 
@@ -38,11 +39,22 @@ public sealed class DecompileTool(AssemblyLoader assemblies, PdbService pdbs, Re
     {
         var assembly = assemblies.Read(assemblyPath);
         return cache.GetPageAsync(assembly, $"decompile|{name}|{lowered}", page, pageSize,
-            () => Task.Run<IEnumerable<DecompiledMember>>(() => Decompile(assembly, [name], pdbs.FindPdb(assembly.Path.Value), lowered)));
+            () => Task.Run<IEnumerable<DecompiledMember>>(() => Decompile(assembly, [name], pdbs.FindPdb(assembly.Path.Value), lowered, persistent)));
     }
 
     /// <param name="lowered">Decompiles without rebuilding what the compiler lowered, and adds the generated types a method's code lives in.</param>
-    internal static List<DecompiledMember> Decompile(LoadedAssembly assembly, IReadOnlyCollection<string> names, Pdb? pdb = null, bool lowered = false)
+    /// <param name="cache">Keeps the result by the assembly's content, whether it has a PDB, and the arguments.</param>
+    internal static List<DecompiledMember> Decompile(LoadedAssembly assembly, IReadOnlyCollection<string> names, Pdb? pdb = null, bool lowered = false, ICache? cache = null)
+    {
+        // ponytail: the referenced assemblies ILSpy resolves are not in the key, a dependency updated next to an unchanged assembly can leave
+        // a type name or overload choice as it was; hash the resolved references if that bites. A PDB only matches its assembly, so its presence will do.
+        return cache is null
+            ? DecompileUncached(assembly, names, pdb, lowered)
+            : cache.GetOrAdd($"decompile|{CacheExtensions.HashOf(assembly.Path.Value)}|{pdb is not null}|{lowered}|{string.Join('|', names)}",
+                () => DecompileUncached(assembly, names, pdb, lowered));
+    }
+
+    private static List<DecompiledMember> DecompileUncached(LoadedAssembly assembly, IReadOnlyCollection<string> names, Pdb? pdb, bool lowered)
     {
         List<(string Name, int Token)> members;
         lock (assembly.Module)

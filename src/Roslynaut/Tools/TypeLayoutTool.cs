@@ -2,10 +2,11 @@ using System.ComponentModel;
 using Microsoft.CodeAnalysis;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
+using Roslynaut.Caching;
 
 namespace Roslynaut.Tools;
 
-public sealed class TypeLayoutTool(WorkspaceService workspace, AssemblyLoader assemblies) : IMcpTool
+public sealed class TypeLayoutTool(WorkspaceService workspace, AssemblyLoader assemblies, ICache persistent) : IMcpTool
 {
     public Delegate Handler => GetLayoutAsync;
 
@@ -19,9 +20,10 @@ public sealed class TypeLayoutTool(WorkspaceService workspace, AssemblyLoader as
         [Description("The class or struct, by symbol path. " + ToolDefaults.SymbolPath)] string symbol,
         [Description(SymbolAsmTool.TypeArguments + " Those left out are System.Object, as all reference types lay out alike.")] string[]? typeArguments = null,
         CancellationToken cancellationToken = default) =>
-        await LayOutAsync((await workspace.GetAsync(projectPath)).Solution, assemblies, symbol, typeArguments ?? [], cancellationToken);
+        await LayOutAsync((await workspace.GetAsync(projectPath)).Solution, assemblies, symbol, typeArguments ?? [], cancellationToken, persistent);
 
-    internal static async Task<TypeLayout> LayOutAsync(Solution solution, AssemblyLoader assemblies, string path, IReadOnlyList<string> typeArguments, CancellationToken cancellationToken)
+    internal static async Task<TypeLayout> LayOutAsync(
+        Solution solution, AssemblyLoader assemblies, string path, IReadOnlyList<string> typeArguments, CancellationToken cancellationToken, ICache? cache = null)
     {
         if ((await SymbolTree.ResolveAsync(solution, path, cancellationToken)).OfType<INamedTypeSymbol>().FirstOrDefault() is not { } type
             || solution.GetProject(type.ContainingAssembly, cancellationToken) is not { } project)
@@ -35,6 +37,6 @@ public sealed class TypeLayoutTool(WorkspaceService workspace, AssemblyLoader as
         var arguments = (await SymbolAsmTool.BindTypeArgumentsAsync(solution, type, typeArguments, cancellationToken))
             .Concat(Enumerable.Repeat(SymbolAsmTool.AssemblyQualifiedName(compilation.GetSpecialType(SpecialType.System_Object)), parameters - typeArguments.Count));
         var compiled = await assemblies.CompileAsync(compilation, optimize: true);
-        return await Task.Run(() => JitDisassembler.LayOut(compiled, SymbolAsmTool.AssemblyQualifiedName(type, arguments)), cancellationToken);
+        return await Task.Run(() => JitDisassembler.LayOut(compiled, SymbolAsmTool.AssemblyQualifiedName(type, arguments), cache), cancellationToken);
     }
 }
