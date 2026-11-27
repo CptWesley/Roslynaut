@@ -181,4 +181,28 @@ public class ClaudeInstallTests
             Directory.Delete(dir, recursive: true);
         }
     }
+
+    // Claude knows a hint once it has seen it; a session's start, which follows a compaction too, gives them again.
+    [Test]
+    public void Hints_ComeOncePerSession_UntilItStartsAgain()
+    {
+        var session = Guid.NewGuid().ToString();
+        string? Hint(string tool, string file, string @event = "PreToolUse") => ClaudeInstall.Hint(JsonNode.Parse(
+            $$"""{ "session_id": "{{session}}", "hook_event_name": "{{@event}}", "tool_name": "{{tool}}", "tool_input": { "file_path": "{{file}}" } }"""));
+        try
+        {
+            Hint("Read", "C:/src/Order.cs").Should().NotBeNull();
+            Hint("Read", "C:/src/Customer.cs").Should().BeNull("the session has seen this hint");
+            Hint("Edit", "C:/src/Order.cs", "PostToolUse").Should().NotBeNull("it is another hint");
+
+            var empty = Directory.CreateTempSubdirectory().FullName.Replace("\\", "/");
+            ClaudeInstall.Hint(JsonNode.Parse($$"""{ "session_id": "{{session}}", "hook_event_name": "SessionStart", "source": "compact", "cwd": "{{empty}}" }"""));
+            Directory.Delete(empty);
+            Hint("Read", "C:/src/Order.cs").Should().NotBeNull("the compaction can have dropped it");
+        }
+        finally
+        {
+            File.Delete(Path.Combine(ClaudeInstall.HintsSeen, session + ".txt"));
+        }
+    }
 }

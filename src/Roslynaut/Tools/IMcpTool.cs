@@ -20,11 +20,11 @@ internal static class ToolDefaults
     public const string FilePath = "Path to a C# source file in the project.";
     public const string Line = "1-based line number.";
     public const string Column = "1-based column number of the symbol.";
-    public const string SymbolPath = "Symbol path: a dotted name, optionally partially qualified, with a parameter list to pick an overload, "
-        + "e.g. 'Roslynaut.Tools', 'WorkspaceService', 'WorkspaceService.GetAsync(string)' or 'WorkspaceService.GetAsync.path'; "
-        + "a constructor is 'WorkspaceService..ctor' or 'WorkspaceService.WorkspaceService', an indexer 'Type.this[]' or 'Type.this[int]'. "
-        + "A result's Container plus '.' plus its Name is a valid path.";
-    public const string Target = "The symbol, by symbol path; or leave this out and point at it with filePath, line and column. " + SymbolPath;
+    // Repeated in many tools' schemas, so every word costs agents' context many times over; the server instructions say the same at length.
+    public const string SymbolPath = "Symbol path: a dotted name, optionally partly qualified, e.g. 'OrderService', 'OrderService.Submit(Order)' "
+        + "for one overload, 'OrderService.Submit.order' for a parameter or local, 'OrderService..ctor', 'Type.this[int]'. "
+        + "A result's Container + '.' + Name is a path.";
+    public const string Target = "The symbol, by path; or leave this out and give filePath, line and column. " + SymbolPath;
     public const string TargetFilePath = "With line and column, instead of a symbol path: the C# file that contains the symbol.";
     public const string Page ="0-based page number; hasMore in the result tells whether a next page exists.";
     public const string PageSize = "Number of results per page.";
