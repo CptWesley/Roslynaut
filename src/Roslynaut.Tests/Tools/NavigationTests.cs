@@ -54,6 +54,70 @@ public class NavigationTests
                 reference.Access == "Call" && reference.Container == "Shapes.Use.Total(Shapes.IShape[])");
     }
 
+    [TestCase("Docs.Circle.Area", "<summary>The area.</summary>", "<returns>Square units.</returns>")]
+    [TestCase("Docs.Circle.Name", "<summary>What to call it.</summary>")]
+    [TestCase("Docs.Circle.Describe", "<summary>Circle's own.</summary>", "<param name=\"style\">How to write it.</param>")]
+    [TestCase("Docs.Circle.Scale", "<summary>The area.</summary>")]
+    [TestCase("Docs.Circle", "<summary>A shape.</summary>")]
+    [TestCase("Docs.Circle.Circle", "<summary>Makes one.</summary>")]
+    [TestCase("Docs.Loop.Ping", "<inheritdoc cref=\"M:Docs.Loop.Ping\" />")]
+    public async Task Documentation_ExpandsInheritdoc(string path, params string[] expected)
+    {
+        var solution = TestSolution.Create("""
+            namespace Docs
+            {
+                /// <summary>A shape.</summary>
+                public interface IShape
+                {
+                    /// <summary>The area.</summary>
+                    /// <returns>Square units.</returns>
+                    double Area();
+                    /// <summary>What to call it.</summary>
+                    string Name { get; }
+                }
+                public abstract class Shape : IShape
+                {
+                    /// <summary>Makes one.</summary>
+                    protected Shape(int sides) { }
+                    /// <inheritdoc/>
+                    public abstract double Area();
+                    string IShape.Name => "";
+                    /// <summary>Describes it.</summary>
+                    /// <param name="style">How to write it.</param>
+                    public virtual string Describe(int style) => "";
+                }
+                /// <inheritdoc/>
+                public class Circle : Shape
+                {
+                    /// <inheritdoc/>
+                    public Circle(int sides) : base(sides) { }
+                    /// <inheritdoc/>
+                    public override double Area() => 0;
+                    /// <inheritdoc cref="IShape.Name"/>
+                    public string Name => "";
+                    /// <summary>Circle's own.</summary>
+                    /// <inheritdoc/>
+                    public override string Describe(int style) => "";
+                    /// <summary><inheritdoc cref="Area" path="/summary/node()"/></summary>
+                    public void Scale() { }
+                }
+                public class Loop
+                {
+                    /// <inheritdoc cref="Pong"/>
+                    public void Ping() { }
+                    /// <inheritdoc cref="Ping"/>
+                    public void Pong() { }
+                }
+            }
+            """);
+        var symbol = (await SymbolTree.ResolveAsync(solution, path, CancellationToken.None)).First();
+
+        var documentation = await DefinitionTool.DocumentationOfAsync(solution, symbol, CancellationToken.None);
+
+        expected.Should().AllSatisfy(part => documentation.Should().Contain(part));
+        documentation.Should().NotContain("Describes it.");
+    }
+
     [Test]
     public async Task SymbolSource_ReturnsWholeDeclarationFromStartOfLine()
     {
