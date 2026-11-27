@@ -38,13 +38,29 @@ public class CacheTests
     [Test]
     public void InMemory_ComputesEachKeyOnce()
     {
-        var cache = new InMemoryCache();
+        var cache = new InMemoryCache(10);
 
         cache.GetOrAdd("a", Compute).Should().Be("value of a");
         cache.GetOrAdd("a", Compute).Should().Be("value of a");
         cache.GetOrAdd("b", Compute).Should().Be("value of b");
 
         computed.Should().Equal("a", "b");
+    }
+
+    [Test]
+    public void InMemory_EvictsLeastRecentlyUsedBeyondCapacity()
+    {
+        var cache = new InMemoryCache(3);
+        cache.GetOrAdd("a", Compute);
+
+        for (var i = 0; i < 100; i++)
+        {
+            cache.GetOrAdd($"key {i}", Compute);
+        }
+
+        cache.GetOrAdd("a", Compute);
+
+        computed.Should().HaveCount(102).And.StartWith("a").And.EndWith("a");
     }
 
     [Test]
@@ -61,8 +77,8 @@ public class CacheTests
     [Test]
     public void Layered_Miss_AddsToEveryCache()
     {
-        var first = new InMemoryCache();
-        var second = new InMemoryCache();
+        var first = new InMemoryCache(10);
+        var second = new InMemoryCache(10);
 
         new LayeredCache(first, second).GetOrAdd("a", Compute).Should().Be("value of a");
 
@@ -74,8 +90,8 @@ public class CacheTests
     [Test]
     public void Layered_HitInLaterCache_AddsToEarlierWithoutComputing()
     {
-        var first = new InMemoryCache();
-        var second = new InMemoryCache();
+        var first = new InMemoryCache(10);
+        var second = new InMemoryCache(10);
         second.GetOrAdd("a", _ => "cached");
 
         new LayeredCache(first, second).GetOrAdd("a", Compute).Should().Be("cached");
@@ -87,9 +103,9 @@ public class CacheTests
     [Test]
     public void Layered_HitInFirstCache_SkipsLaterCaches()
     {
-        var first = new InMemoryCache();
+        var first = new InMemoryCache(10);
         first.GetOrAdd("a", _ => "cached");
-        var later = new LayeredCache(new InMemoryCache(), new Unusable());
+        var later = new LayeredCache(new InMemoryCache(10), new Unusable());
 
         new LayeredCache(first, later).GetOrAdd("a", Compute).Should().Be("cached");
 

@@ -15,6 +15,10 @@ Azure.Core, Azure.Identity, System.ClientModel
   https://github.com/Azure/azure-sdk-for-net
   © Microsoft Corporation. All rights reserved.
 
+BitFaster.Caching
+  https://github.com/bitfaster/BitFaster.Caching
+  Copyright (c) 2020 Alex Peck
+
 Buildalyzer, Buildalyzer.Logger
   https://github.com/phmonte/Buildalyzer
   Copyright (c) Dave Glick
