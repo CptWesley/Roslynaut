@@ -102,16 +102,16 @@ On Linux, each loaded project or solution watches its files through a few inotif
 | Option | Effect |
 | --- | --- |
 | `--protocol stdio\|http\|sse` | The transport. The default is `stdio`. |
-| `--enable-tools <tool>...` | Serve only these tools. |
-| `--disable-tools <tool>...` | Leave these tools out. |
+| `--enable-tools <tool>...` | Serve only these tools. With `--install`, the agent starts the server with them. |
+| `--disable-tools <tool>...` | Leave these tools out. With `--install`, the agent starts the server without them. |
 | `--no-instructions` | Leave out the server instructions that tell agents which tool to use for what. |
 | `--install <agent>` | Register with an agent (`claude`, `opencode`, `codex`, `vscode`, `visualstudio`, `copilot`, `cursor`, `gemini`, `junie`), then exit. |
 | `--uninstall <agent>` | Remove that registration, then exit. |
 
 | Environment variable | Effect |
 | --- | --- |
-| `ROSLYNAUT_ALLOW_EVALUATE=true` | Turns on `evaluate` and `benchmark`, which run arbitrary code. |
-| `NETCOREDBG` | The path of netcoredbg, for the debug tools. |
+| `ROSLYNAUT_ALLOW_EVALUATE=true` | Serves `evaluate` and `benchmark`, which run arbitrary code. |
+| `NETCOREDBG` | The path of netcoredbg, for the debug tools, which the server leaves out when it finds netcoredbg neither here nor on the `PATH`. |
 | `_NT_SYMBOL_PATH` | Symbol servers and directories to find PDBs in, before the Microsoft and NuGet symbol servers. |
 | `ASPNETCORE_URLS`, `AllowedHosts` | Where the HTTP server listens, and the host names it answers to. |
 
@@ -121,7 +121,7 @@ Use Roslynaut on code you trust, as you would `dotnet build`:
 
 - Loading a project runs its MSBuild targets, and loads its analyzers and source generators into the server.
 - `build`, `run_tests`, the debug tools and the process tools that launch a program run the project's code.
-- `evaluate` and `benchmark` run code that the agent writes. They are off unless `ROSLYNAUT_ALLOW_EVALUATE=true`.
+- `evaluate` and `benchmark` run code that the agent writes. The server leaves them out unless `ROSLYNAUT_ALLOW_EVALUATE=true`.
 - Over HTTP, anyone who can reach the port can use all of this.
 
 Some tools download:

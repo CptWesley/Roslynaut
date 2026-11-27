@@ -2,6 +2,7 @@ using System.CommandLine;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol;
+using ModelContextProtocol.Server;
 using Roslynaut.Caching;
 using Roslynaut.Debugging;
 using Roslynaut.Tools;
@@ -22,7 +23,7 @@ public static class Program
 
         await using var services = Services();
         var server = services.GetRequiredService<McpServerService>();
-        var names = server.Tools.Select(tool => tool.ProtocolTool.Name).ToArray();
+        var names = server.Tools.Select(tool => tool.Tool.ProtocolTool.Name).ToArray();
 
         // A string, not the enum, which would take numbers too.
         var protocol = new Option<string>("--protocol") { Description = "The transport that carries MCP.", DefaultValueFactory = _ => "stdio" }
@@ -49,23 +50,37 @@ public static class Program
         root.SetAction(async parsed =>
         {
             var (installAgent, uninstallAgent) = (parsed.GetValue(install), parsed.GetValue(uninstall));
+            var (only, without) = (parsed.GetValue(enable) ?? [], parsed.GetValue(disable) ?? []);
             if (installAgent is not null || uninstallAgent is not null)
             {
                 var (agent, uninstall) = (uninstallAgent ?? installAgent!, uninstallAgent is not null);
+                // The agent starts the server with the same choice of tools.
+                string[] arguments = [.. only is [] ? [] : (string[])["--enable-tools", .. only], .. without is [] ? [] : (string[])["--disable-tools", .. without]];
                 if (agent == "claude")
-                    ClaudeInstall.Run(uninstall);
+                    ClaudeInstall.Run(uninstall, arguments);
                 else if (agent == "opencode")
-                    OpenCodeInstall.Run(uninstall);
+                    OpenCodeInstall.Run(uninstall, arguments);
                 else if (agent == "codex")
-                    CodexInstall.Run(uninstall);
+                    CodexInstall.Run(uninstall, arguments);
                 else
-                    McpConfigInstall.Run(agent, uninstall);
+                    McpConfigInstall.Run(agent, uninstall, arguments);
                 return;
             }
 
-            var (only, without) = (parsed.GetValue(enable), parsed.GetValue(disable) ?? []);
-            var tools = server.Tools.Where(tool => (only is not [_, ..] || only.Contains(tool.ProtocolTool.Name)) && !without.Contains(tool.ProtocolTool.Name));
-            await server.StartAsync(Enum.Parse<McpProtocol>(parsed.GetValue(protocol)!, ignoreCase: true), [.. tools], !parsed.GetValue(noInstructions));
+            var tools = new List<McpServerTool>();
+            foreach (var (tool, unavailable) in server.Tools)
+            {
+                var name = tool.ProtocolTool.Name;
+                if ((only is [] || only.Contains(name)) && !without.Contains(name))
+                {
+                    if (unavailable is null)
+                        tools.Add(tool);
+                    else
+                        await Console.Error.WriteLineAsync($"Left out the tool {name}: {unavailable}");
+                }
+            }
+
+            await server.StartAsync(Enum.Parse<McpProtocol>(parsed.GetValue(protocol)!, ignoreCase: true), tools, !parsed.GetValue(noInstructions));
         });
 
         // The host handles Ctrl+C and SIGTERM itself and shuts down gracefully; System.CommandLine would give up on it after 2 seconds.

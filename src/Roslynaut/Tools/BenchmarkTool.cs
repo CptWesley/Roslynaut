@@ -11,12 +11,14 @@ public sealed partial class BenchmarkTool(WorkspaceService workspace, NuGetServi
 {
     public Delegate Handler => BenchmarkAsync;
 
+    public string? Unavailable => EvaluateTool.NotAllowed;
+
     [McpServerTool(Name = "benchmark", Destructive = true, OpenWorld = true)]
     [Description("Measures how fast pieces of C# are with BenchmarkDotNet, in Release, against the project's current code: per case, the mean "
         + "time with its error and standard deviation, the ratio to the first case, and the bytes allocated per operation with the Gen0 "
         + "collections. Pass cases to compare implementations, as before keeping an optimization; or leave them out to run the project's own "
         + "[Benchmark] classes, if it is a BenchmarkDotNet project. A short job takes about a minute per case; differences within the error "
-        + "are noise. It runs real code, so it only works when the server was started with " + EvaluateTool.AllowVariable + "=true.")]
+        + "are noise.")]
     private async Task<BenchmarkRun> BenchmarkAsync(
         [Description("Path to a .csproj: the project whose code the cases use, or a BenchmarkDotNet project to run.")] string projectPath,
         [Description("The cases by name, each C# code to measure: an expression whose value is kept, such as 'Parser.Parse(text)', or statements "
@@ -28,8 +30,6 @@ public sealed partial class BenchmarkTool(WorkspaceService workspace, NuGetServi
         [Description("Short (3 iterations, quick and rough) or Default (until the results are stable, minutes per case).")] string job = "Short",
         CancellationToken cancellationToken = default)
     {
-        if (!string.Equals(Environment.GetEnvironmentVariable(EvaluateTool.AllowVariable), "true", StringComparison.OrdinalIgnoreCase))
-            throw new McpException($"benchmark runs code, so it is off; start the server with the environment variable {EvaluateTool.AllowVariable}=true to allow it.");
         if (job is not ("Short" or "Default"))
             throw new McpException("job is Short or Default.");
 

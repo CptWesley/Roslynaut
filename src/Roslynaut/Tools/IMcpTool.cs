@@ -9,6 +9,9 @@ namespace Roslynaut.Tools;
 public interface IMcpTool
 {
     Delegate Handler { get; }
+
+    /// <summary>Why the tool cannot work in this server, such as a setting it needs that is missing; the server leaves it out then.</summary>
+    string? Unavailable => null;
 }
 
 internal static class ToolDefaults

@@ -18,6 +18,8 @@ public sealed class DebugAttachTool(DebugService debugger) : IMcpTool
 {
     public Delegate Handler => AttachAsync;
 
+    public string? Unavailable => DebugService.Unavailable;
+
     [McpServerTool(Name = "debug_attach", Destructive = true)]
     [Description("Attaches the debugger to a running .NET process, such as a service that misbehaves, sets breakpoints, and waits until it stops "
         + "or exits. Returns its state as debug_start does. debug_stop detaches and leaves the process running. Ends an earlier session.")]
@@ -33,6 +35,8 @@ public sealed class DebugAttachTool(DebugService debugger) : IMcpTool
 public sealed class DebugTestTool(DebugService debugger) : IMcpTool
 {
     public Delegate Handler => TestAsync;
+
+    public string? Unavailable => DebugService.Unavailable;
 
     [McpServerTool(Name = "debug_test", Destructive = true, OpenWorld = true)]
     [Description("Debugs tests: builds and runs them with dotnet test, attaches the debugger to the test host, sets breakpoints, and waits until "
@@ -52,6 +56,8 @@ public sealed class DebugStartTool(DebugService debugger) : IMcpTool
 {
     public Delegate Handler => StartAsync;
 
+    public string? Unavailable => DebugService.Unavailable;
+
     [McpServerTool(Name = "debug_start", Destructive = true, OpenWorld = true)]
     [Description("Starts debugging a program with netcoredbg: builds a project (or takes a .dll), sets breakpoints, runs it, and waits until it "
         + "stops at a breakpoint, an unhandled exception or its entry, or exits. Returns its state: why it stopped, the call stack, the locals of "
@@ -70,6 +76,8 @@ public sealed class DebugStartTool(DebugService debugger) : IMcpTool
 public sealed class DebugBreakpointsTool(DebugService debugger) : IMcpTool
 {
     public Delegate Handler => SetAsync;
+
+    public string? Unavailable => DebugService.Unavailable;
 
     [McpServerTool(Name = "debug_breakpoints", Idempotent = true)]
     [Description("Replaces the breakpoints in one file of the program being debugged, or else all the breakpoints at methods; none removes them. "
@@ -99,6 +107,8 @@ public sealed class DebugSetTool(DebugService debugger) : IMcpTool
 {
     public Delegate Handler => SetAsync;
 
+    public string? Unavailable => DebugService.Unavailable;
+
     [McpServerTool(Name = "debug_set", Destructive = true)]
     [Description("Sets a variable, field or property of the stopped program to the value of a C# expression, such as order.Total to 0, to try a "
         + "fix or a case before resuming. Returns the new value.")]
@@ -114,6 +124,8 @@ public sealed class DebugResumeTool(DebugService debugger) : IMcpTool
 {
     public Delegate Handler => ResumeAsync;
 
+    public string? Unavailable => DebugService.Unavailable;
+
     [McpServerTool(Name = "debug_resume", Destructive = true)]
     [Description("Resumes the program being debugged: Continue to the next breakpoint, StepOver, StepInto or StepOut; or Pause it while it runs. "
         + "Waits until it stops or exits, and returns its state as debug_start does. Continue on a running program just waits again.")]
@@ -127,6 +139,8 @@ public sealed class DebugResumeTool(DebugService debugger) : IMcpTool
 public sealed class DebugInspectTool(DebugService debugger) : IMcpTool
 {
     public Delegate Handler => InspectAsync;
+
+    public string? Unavailable => DebugService.Unavailable;
 
     [McpServerTool(Name = "debug_inspect", ReadOnly = true)]
     [Description("Inspects the stopped program: evaluates an expression in a frame, such as 'order.Total * 2' or 'items.Count'; or lists what a "
@@ -142,6 +156,8 @@ public sealed class DebugInspectTool(DebugService debugger) : IMcpTool
 public sealed class DebugStopTool(DebugService debugger) : IMcpTool
 {
     public Delegate Handler => StopAsync;
+
+    public string? Unavailable => DebugService.Unavailable;
 
     [McpServerTool(Name = "debug_stop", Destructive = true, Idempotent = true)]
     [Description("Stops debugging: ends the program and the debugger.")]

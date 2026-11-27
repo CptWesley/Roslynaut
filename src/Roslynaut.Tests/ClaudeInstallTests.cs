@@ -5,19 +5,19 @@ namespace Roslynaut.Tests;
 public class ClaudeInstallTests
 {
     [Test]
-    public void Install_AddsServerAndHook_KeepingTheRest()
+    public void Install_AddsServerAndHook_KeepingTheRest_WithTheServersArguments()
     {
         var dir = Directory.CreateTempSubdirectory().FullName;
         var (config, settings) = (Path.Combine(dir, ".claude.json"), Path.Combine(dir, ".claude", "settings.json"));
         File.WriteAllText(config, """{ "numStartups": 3, "mcpServers": { "other": { "command": "x" } } }""");
         try
         {
-            ClaudeInstall.Install(config, settings, ["dotnet", "Roslynaut.dll"], TextWriter.Null);
+            ClaudeInstall.Install(config, settings, ["dotnet", "Roslynaut.dll"], TextWriter.Null, ["--enable-tools", "build"]);
 
             var written = JsonNode.Parse(File.ReadAllText(config))!;
             written["numStartups"]!.GetValue<int>().Should().Be(3);
             written["mcpServers"]!.AsObject().Select(server => server.Key).Should().Equal("other", "roslynaut");
-            written["mcpServers"]!["roslynaut"]!["args"]!.ToJsonString().Should().Be("""["Roslynaut.dll"]""");
+            written["mcpServers"]!["roslynaut"]!["args"]!.ToJsonString().Should().Be("""["Roslynaut.dll","--enable-tools","build"]""");
             var events = JsonNode.Parse(File.ReadAllText(settings))!["hooks"]!.AsObject();
             events.Select(entry => entry.Key).Should().Equal("PreToolUse", "PostToolUse", "SessionStart");
             foreach (var (_, groups) in events)

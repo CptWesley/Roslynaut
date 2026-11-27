@@ -74,7 +74,8 @@ internal static partial class ClaudeInstall
         + "find_symbols, workspace_symbols, references and callers to reading and grepping .cs files, and diagnostics to building after an edit.",
         ["document_symbols", "symbol_source", "find_symbols", "workspace_symbols", "references", "callers", "diagnostics"]);
 
-    public static void Run(bool uninstall)
+    /// <param name="arguments">What the server starts with, after the command, such as the tools to serve; the hooks do not get them.</param>
+    public static void Run(bool uninstall, string[] arguments)
     {
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         // CLAUDE_CONFIG_DIR moves both files, as it does for Claude Code.
@@ -86,14 +87,14 @@ internal static partial class ClaudeInstall
             return;
         }
 
-        Install(configFile, settingsFile, AgentInstall.Command(), Console.Out);
+        Install(configFile, settingsFile, AgentInstall.Command(), Console.Out, arguments);
     }
 
-    internal static void Install(string configFile, string settingsFile, string[] command, TextWriter log)
+    internal static void Install(string configFile, string settingsFile, string[] command, TextWriter log, string[]? arguments = null)
     {
         var config = JsonFile.Read(configFile);
         var servers = (config["mcpServers"] ??= new JsonObject()).AsObject();
-        var server = new JsonObject { ["type"] = "stdio", ["command"] = command[0], ["args"] = JsonFile.Strings(command[1..]) };
+        var server = new JsonObject { ["type"] = "stdio", ["command"] = command[0], ["args"] = JsonFile.Strings([.. command[1..], .. arguments ?? []]) };
         var found = Servers(servers);
         if (found is [{ Key: Name, Value: var value }] && JsonNode.DeepEquals(value, server))
             log.WriteLine($"The MCP server {Name} in {configFile} is up to date.");

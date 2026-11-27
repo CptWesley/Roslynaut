@@ -10,14 +10,15 @@ namespace Roslynaut;
 /// <remarks>It edits the file's syntax tree, so the rest of it keeps its comments and layout.</remarks>
 internal static class CodexInstall
 {
-    public static void Run(bool uninstall)
+    /// <param name="arguments">What the server starts with, after the command, such as the tools to serve.</param>
+    public static void Run(bool uninstall, string[] arguments)
     {
         // CODEX_HOME moves Codex's configuration directory, as it does for Codex itself.
         var configFile = Path.Combine(McpConfigInstall.Variable("CODEX_HOME") ?? McpConfigInstall.Home(".codex"), "config.toml");
         if (uninstall)
             Uninstall(configFile, Console.Out);
         else
-            Install(configFile, AgentInstall.Command(), Console.Out);
+            Install(configFile, [.. AgentInstall.Command(), .. arguments], Console.Out);
     }
 
     internal static void Install(string configFile, string[] command, TextWriter log)

@@ -463,14 +463,20 @@ public sealed partial class DebugService(WorkspaceService workspace, PdbService 
         return result?.GetProperty("TargetPath") is { Length: > 0 } target ? target : throw new McpException($"{fullPath} has no TargetPath to run.");
     }
 
-    private static string FindAdapter()
+    /// <summary>Why the debug tools cannot work: netcoredbg is missing.</summary>
+    internal static string? Unavailable => Adapter() is null
+        ? $"debugging needs netcoredbg, from https://github.com/Samsung/netcoredbg/releases: put it on the PATH, or set {AdapterVariable} to its path, and restart the server."
+        : null;
+
+    private static string? Adapter()
     {
         var names = OperatingSystem.IsWindows() ? new[] { "netcoredbg.exe" } : ["netcoredbg"];
         var candidates = new[] { Environment.GetEnvironmentVariable(AdapterVariable) }
             .Concat((Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator).SelectMany(directory => names.Select(name => Path.Combine(directory, name))));
-        return candidates.FirstOrDefault(File.Exists)
-            ?? throw new McpException($"Debugging needs netcoredbg, from https://github.com/Samsung/netcoredbg/releases: put it on the PATH, or set {AdapterVariable} to its path, and restart the server.");
+        return candidates.FirstOrDefault(File.Exists);
     }
+
+    private static string FindAdapter() => Adapter() ?? throw new McpException(Unavailable!);
 
     private static int Reference(JsonElement element) => element.TryGetProperty("variablesReference", out var reference) ? reference.GetInt32() : 0;
 
