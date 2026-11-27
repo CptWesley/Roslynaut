@@ -5,6 +5,8 @@ Every release of the [Roslynaut](https://www.nuget.org/packages/Roslynaut/) pack
 ## 0.4.0 (unreleased)
 
 - decompile, assembly_asm, symbol_asm (without pgoWorkload) and type_layout keep their results in a cache under %TEMP%/Roslynaut/Cache, by the content of the assembly and of the assemblies, .deps.json and .runtimeconfig.json next to it (or the dependencies of code compiled from source), and for listings the runtime that compiles them. A later call for the same code, from this or another server, answers at once instead of decompiling again or starting the JIT host.
+- --install run through dnx registers dotnet dnx with the version that runs (such as Roslynaut@0.4.0 --yes), which downloads it again when the NuGet caches were cleared. It registered the copy in the NuGet packages folder, which clearing the caches deleted, so the agent could no longer start the server or its hooks.
+- --install on Windows writes the paths of its commands with forward slashes. Agents that run a command through a shell, as Claude Code runs its hooks through Git Bash, read the backslashes as escapes, and the hooks failed.
 
 ## 0.3.2 (2026-11-23)
 
