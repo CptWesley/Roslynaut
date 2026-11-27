@@ -68,8 +68,14 @@ public sealed class McpServerService(IEnumerable<IMcpTool> tools, JsonSerializer
         - regex_test tries a .NET regex. evaluate runs C# against the code, benchmark measures it; both need ROSLYNAUT_ALLOW_EVALUATE=true.
         """;
 
-    /// <summary>Below where Claude Code cuts <see cref="Instructions"/> off (seen at 4,130 characters), with room for edits.</summary>
-    internal const int MaxInstructionsLength = 3800;
+    /// <summary>What follows <see cref="Instructions"/> when the tools' schemas leave out descriptions.</summary>
+    internal const string ExplainInstructions = "\nSome tools' schemas lack descriptions: explain_tool gives them, with their parameters'.";
+
+    /// <summary>
+    /// Below where Claude Code cuts <see cref="Instructions"/> and <see cref="ExplainInstructions"/> off (seen at 4,130 characters), with room
+    /// for edits.
+    /// </summary>
+    internal const int MaxInstructionsLength = 3900;
 
     /// <summary>How deep the JSON of tool results may nest, instead of the 64 levels of System.Text.Json's default.</summary>
     internal const int MaxJsonDepth = 256;
@@ -134,15 +140,63 @@ public sealed class McpServerService(IEnumerable<IMcpTool> tools, JsonSerializer
         }
     }
 
+    /// <summary>
+    /// The tool as served, without its description or its parameters' when those are false, which <see cref="ExplainToolTool"/> gives
+    /// instead. That one keeps its own, as agents would not know what it is for.
+    /// </summary>
+    internal static McpServerTool Described(McpServerTool tool, bool toolDescription, bool fieldDescriptions)
+    {
+        if (toolDescription && fieldDescriptions || tool.ProtocolTool.Name == ExplainToolTool.Name)
+            return tool;
+        // A copy, as explain_tool reads the descriptions from the original.
+        var served = JsonSerializer.Deserialize<Tool>(JsonSerializer.SerializeToElement(tool.ProtocolTool, McpJsonUtilities.DefaultOptions), McpJsonUtilities.DefaultOptions)!;
+        if (!toolDescription)
+            served.Description = null;
+        if (!fieldDescriptions)
+            served.InputSchema = WithoutDescriptions(served.InputSchema);
+        return new ServedTool(tool, served);
+    }
+
+    /// <summary>The schema without the descriptions of its parameters, and of the fields of parameters that are records.</summary>
+    internal static JsonElement WithoutDescriptions(JsonElement schema)
+    {
+        var node = JsonNode.Parse(schema.GetRawText());
+        Strip(node);
+        return JsonSerializer.SerializeToElement(node);
+
+        static void Strip(JsonNode? node)
+        {
+            if (node is JsonArray array)
+            {
+                foreach (var item in array)
+                    Strip(item);
+                return;
+            }
+            if (node is not JsonObject obj)
+                return;
+
+            obj.Remove("description");
+            foreach (var (key, child) in obj)
+            {
+                // Its keys are parameters' names, one of which may be description.
+                if (key == "properties" && child is JsonObject properties)
+                    foreach (var (_, property) in properties)
+                        Strip(property);
+                else
+                    Strip(child);
+            }
+        }
+    }
+
     /// <summary>Starts the server with some of <see cref="Tools"/>; the returned task completes when the server shuts down.</summary>
-    public async Task StartAsync(McpProtocol protocol, IReadOnlyList<McpServerTool> serverTools, bool instructions)
+    public async Task StartAsync(McpProtocol protocol, IReadOnlyList<McpServerTool> serverTools, string? instructions)
     {
         if (protocol == McpProtocol.Stdio)
         {
             // stdout carries the protocol, so log to stderr only.
             var host = Host.CreateEmptyApplicationBuilder(settings: null);
             host.Logging.AddConsole(options => options.LogToStandardErrorThreshold = LogLevel.Trace);
-            host.Services.AddMcpServer(options => options.ServerInstructions = instructions ? Instructions : null).WithStdioServerTransport().WithTools(serverTools);
+            host.Services.AddMcpServer(options => options.ServerInstructions = instructions).WithStdioServerTransport().WithTools(serverTools);
             await host.Build().RunAsync();
             return;
         }
@@ -151,7 +205,7 @@ public sealed class McpServerService(IEnumerable<IMcpTool> tools, JsonSerializer
         // Kestrel listens on localhost, but takes any Host header: a web page whose name resolves to 127.0.0.1 (DNS rebinding) could call the
         // tools, which run builds. The environment variable AllowedHosts overrides this, for a server that listens on another address.
         builder.Configuration["AllowedHosts"] ??= "localhost;127.0.0.1;[::1]";
-        builder.Services.AddMcpServer(options => options.ServerInstructions = instructions ? Instructions : null)
+        builder.Services.AddMcpServer(options => options.ServerInstructions = instructions)
             .WithHttpTransport(options =>
             {
                 // Legacy SSE needs in-memory sessions, so it cannot run stateless.
@@ -167,6 +221,12 @@ public sealed class McpServerService(IEnumerable<IMcpTool> tools, JsonSerializer
         app.MapMcp();
         await app.RunAsync();
     }
+}
+
+/// <summary>A tool that clients see as <paramref name="served"/>, such as without its descriptions, and that runs as before.</summary>
+internal sealed class ServedTool(McpServerTool tool, Tool served) : DelegatingMcpServerTool(tool)
+{
+    public override Tool ProtocolTool => served;
 }
 
 /// <summary>

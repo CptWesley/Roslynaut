@@ -35,6 +35,14 @@ public static class Program
             Description = "Leave these tools out, also when --enable-tools names them.", HelpName = "tool", AllowMultipleArgumentsPerToken = true,
         }.AcceptOnlyFromAmong(names);
         var noInstructions = new Option<bool>("--no-instructions") { Description = "Leave out the server instructions, which tell agents which tool to use for what." };
+        var noToolDescriptions = new Option<bool>("--no-tool-descriptions")
+        {
+            Description = "Leave the tools' descriptions out of their schemas, for less of agents' context; explain_tool gives them.",
+        };
+        var noFieldDescriptions = new Option<bool>("--no-field-descriptions")
+        {
+            Description = "Leave the parameters' descriptions out of the tools' schemas, for less of agents' context; explain_tool gives them.",
+        };
         var install = new Option<string>("--install")
         {
             Description =
@@ -50,16 +58,21 @@ public static class Program
         {
             Description = "Remove the server and its hook or plugin from this agent, as before uninstalling the tool, and exit.", HelpName = "agent",
         }.AcceptOnlyFromAmong(Agents);
-        var root = new RootCommand("An MCP server that exposes Roslyn and MSBuild to agents.") { protocol, enable, disable, noInstructions, install, noHooks, uninstall };
+        var root = new RootCommand("An MCP server that exposes Roslyn and MSBuild to agents.") { protocol, enable, disable, noInstructions, noToolDescriptions, noFieldDescriptions, install, noHooks, uninstall };
         root.SetAction(async parsed =>
         {
             var (installAgent, uninstallAgent) = (parsed.GetValue(install), parsed.GetValue(uninstall));
             var (only, without) = (parsed.GetValue(enable) ?? [], parsed.GetValue(disable) ?? []);
+            var (toolDescriptions, fieldDescriptions) = (!parsed.GetValue(noToolDescriptions), !parsed.GetValue(noFieldDescriptions));
             if (installAgent is not null || uninstallAgent is not null)
             {
                 var (agent, uninstall) = (uninstallAgent ?? installAgent!, uninstallAgent is not null);
-                // The agent starts the server with the same choice of tools.
-                string[] arguments = [.. only is [] ? [] : (string[])["--enable-tools", .. only], .. without is [] ? [] : (string[])["--disable-tools", .. without]];
+                // The agent starts the server with the same choice of tools and descriptions.
+                string[] arguments =
+                [
+                    .. only is [] ? [] : (string[])["--enable-tools", .. only], .. without is [] ? [] : (string[])["--disable-tools", .. without],
+                    .. toolDescriptions ? [] : (string[])[noToolDescriptions.Name], .. fieldDescriptions ? [] : (string[])[noFieldDescriptions.Name],
+                ];
                 var hooks = !parsed.GetValue(noHooks);
                 if (agent == "claude")
                     ClaudeInstall.Run(uninstall, arguments, hooks);
@@ -79,13 +92,16 @@ public static class Program
                 if ((only is [] || only.Contains(name)) && !without.Contains(name))
                 {
                     if (unavailable is null)
-                        tools.Add(tool);
+                        tools.Add(McpServerService.Described(tool, toolDescriptions, fieldDescriptions));
                     else
                         await Console.Error.WriteLineAsync($"Left out the tool {name}: {unavailable}");
                 }
             }
 
-            await server.StartAsync(Enum.Parse<McpProtocol>(parsed.GetValue(protocol)!, ignoreCase: true), tools, !parsed.GetValue(noInstructions));
+            var instructions = parsed.GetValue(noInstructions) ? null
+                : toolDescriptions && fieldDescriptions ? McpServerService.Instructions
+                : McpServerService.Instructions + McpServerService.ExplainInstructions;
+            await server.StartAsync(Enum.Parse<McpProtocol>(parsed.GetValue(protocol)!, ignoreCase: true), tools, instructions);
         });
 
         // The host handles Ctrl+C and SIGTERM itself and shuts down gracefully; System.CommandLine would give up on it after 2 seconds.
@@ -225,6 +241,7 @@ public static class Program
             .AddSingleton<IMcpTool, VerifyPendingTool>()
             .AddSingleton<IMcpTool, RegexTestTool>()
             .AddSingleton<IMcpTool, ResourcesTool>()
+            .AddSingleton<IMcpTool, ExplainToolTool>()
             .AddSingleton<McpServerService>()
             .BuildServiceProvider();
 }

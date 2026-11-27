@@ -9,7 +9,34 @@ public class McpServerServiceTests
     [Test]
     public void Instructions_FitBeforeClaudeCodeCutsThemOff()
     {
-        McpServerService.Instructions.Length.Should().BeLessThanOrEqualTo(McpServerService.MaxInstructionsLength);
+        (McpServerService.Instructions + McpServerService.ExplainInstructions).Length.Should().BeLessThanOrEqualTo(McpServerService.MaxInstructionsLength);
+    }
+
+    // A parameter may be called description, and is no description to remove.
+    [Test]
+    public void WithoutDescriptions_RemovesThoseOfParametersAndTheirFields()
+    {
+        var schema = JsonDocument.Parse("""
+            {
+              "type": "object",
+              "properties": {
+                "description": { "type": "string", "description": "A name." },
+                "edits": { "type": "array", "description": "Edits.", "items": { "type": "object", "properties": { "note": { "type": "string", "description": "A note." } } } }
+              },
+              "required": ["description"]
+            }
+            """).RootElement;
+
+        JsonSerializer.Serialize(McpServerService.WithoutDescriptions(schema)).Should().Be(JsonSerializer.Serialize(JsonDocument.Parse("""
+            {
+              "type": "object",
+              "properties": {
+                "description": { "type": "string" },
+                "edits": { "type": "array", "items": { "type": "object", "properties": { "note": { "type": "string" } } } }
+              },
+              "required": ["description"]
+            }
+            """).RootElement));
     }
 
     [Test]

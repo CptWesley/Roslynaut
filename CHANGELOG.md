@@ -13,6 +13,7 @@ Every release of the [Roslynaut](https://www.nuget.org/packages/Roslynaut/) pack
 - The server instructions fit in the 4,000 characters Claude Code keeps of them. It cut them off after the packages tools, so agents lacked the guidance for the profiling, memory, process, debugger and quality tools.
 - Tool schemas take about 7% less of agents' context: optional parameters leave null out of their types and defaults, and the symbol path description they share is shorter.
 - The Claude Code hooks give each hint once per session, and again after it starts anew or compacts. They repeated it on every read, grep or edit of C# code.
+- --no-tool-descriptions and --no-field-descriptions leave the tools' descriptions or their parameters' out of the schemas, which with both take a quarter of the context, and the new tool explain_tool gives them for the tools an agent calls. --install registers the server with them.
 
 ## 0.3.2 (2026-11-23)
 
