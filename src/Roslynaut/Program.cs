@@ -42,11 +42,15 @@ public static class Program
                 + "its tools when the agent reads or greps C# files.",
             HelpName = "agent",
         }.AcceptOnlyFromAmong(Agents);
+        var noHooks = new Option<bool>("--no-hooks")
+        {
+            Description = "With --install, register the server alone: Claude Code gets no hooks and OpenCode no plugin, and those of an earlier installation are removed.",
+        };
         var uninstall = new Option<string>("--uninstall")
         {
             Description = "Remove the server and its hook or plugin from this agent, as before uninstalling the tool, and exit.", HelpName = "agent",
         }.AcceptOnlyFromAmong(Agents);
-        var root = new RootCommand("An MCP server that exposes Roslyn and MSBuild to agents.") { protocol, enable, disable, noInstructions, install, uninstall };
+        var root = new RootCommand("An MCP server that exposes Roslyn and MSBuild to agents.") { protocol, enable, disable, noInstructions, install, noHooks, uninstall };
         root.SetAction(async parsed =>
         {
             var (installAgent, uninstallAgent) = (parsed.GetValue(install), parsed.GetValue(uninstall));
@@ -56,10 +60,11 @@ public static class Program
                 var (agent, uninstall) = (uninstallAgent ?? installAgent!, uninstallAgent is not null);
                 // The agent starts the server with the same choice of tools.
                 string[] arguments = [.. only is [] ? [] : (string[])["--enable-tools", .. only], .. without is [] ? [] : (string[])["--disable-tools", .. without]];
+                var hooks = !parsed.GetValue(noHooks);
                 if (agent == "claude")
-                    ClaudeInstall.Run(uninstall, arguments);
+                    ClaudeInstall.Run(uninstall, arguments, hooks);
                 else if (agent == "opencode")
-                    OpenCodeInstall.Run(uninstall, arguments);
+                    OpenCodeInstall.Run(uninstall, arguments, hooks);
                 else if (agent == "codex")
                     CodexInstall.Run(uninstall, arguments);
                 else

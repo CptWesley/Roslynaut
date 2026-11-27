@@ -16,6 +16,7 @@ dotnet run --project src/Roslynaut -- --protocol stdio|http|sse              # n
 dotnet run --project src/Roslynaut -- --enable-tools build run_tests         # only these tools; --disable-tools leaves tools out; both pass on to --install
 dotnet run --project src/Roslynaut -- --no-instructions                      # no server instructions
 dotnet run --project src/Roslynaut -- --install claude                       # register with Claude Code and exit
+dotnet run --project src/Roslynaut -- --install claude --no-hooks            # the server alone: no hooks (Claude Code) or plugin (OpenCode), and removes earlier ones
 dotnet run --project src/Roslynaut -- --install opencode                     # register with OpenCode and exit (also: codex, vscode, visualstudio, copilot, cursor, gemini, junie)
 dotnet run --project src/Roslynaut -- --uninstall claude                     # remove that registration and exit
 dotnet pack src/Roslynaut -o artifacts                                       # the dotnet tool package

@@ -9,6 +9,7 @@ Every release of the [Roslynaut](https://www.nuget.org/packages/Roslynaut/) pack
 - --install on Windows writes the paths of its commands with forward slashes. Agents that run a command through a shell, as Claude Code runs its hooks through Git Bash, read the backslashes as escapes, and the hooks failed.
 - The server leaves out the tools that cannot work, and says why on standard error: evaluate and benchmark without ROSLYNAUT_ALLOW_EVALUATE=true, and the debug tools without netcoredbg. Agents saw them, and calling them failed.
 - --install with --enable-tools or --disable-tools registers the server with those options, so the agent gets only those tools. It registered all tools.
+- --install with --no-hooks registers the server alone: Claude Code gets no hooks and OpenCode no plugin, and those an earlier installation added are removed. The other agents get no hook either way.
 
 ## 0.3.2 (2026-11-23)
 

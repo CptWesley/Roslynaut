@@ -75,7 +75,8 @@ internal static partial class ClaudeInstall
         ["document_symbols", "symbol_source", "find_symbols", "workspace_symbols", "references", "callers", "diagnostics"]);
 
     /// <param name="arguments">What the server starts with, after the command, such as the tools to serve; the hooks do not get them.</param>
-    public static void Run(bool uninstall, string[] arguments)
+    /// <param name="hooks">False registers the server alone, and removes the hooks an earlier installation added.</param>
+    public static void Run(bool uninstall, string[] arguments, bool hooks = true)
     {
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         // CLAUDE_CONFIG_DIR moves both files, as it does for Claude Code.
@@ -87,10 +88,10 @@ internal static partial class ClaudeInstall
             return;
         }
 
-        Install(configFile, settingsFile, AgentInstall.Command(), Console.Out, arguments);
+        Install(configFile, settingsFile, AgentInstall.Command(), Console.Out, arguments, hooks);
     }
 
-    internal static void Install(string configFile, string settingsFile, string[] command, TextWriter log, string[]? arguments = null)
+    internal static void Install(string configFile, string settingsFile, string[] command, TextWriter log, string[]? arguments = null, bool hooks = true)
     {
         var config = JsonFile.Read(configFile);
         var servers = (config["mcpServers"] ??= new JsonObject()).AsObject();
@@ -105,6 +106,12 @@ internal static partial class ClaudeInstall
             servers[Name] = server;
             JsonFile.Write(configFile, config);
             log.WriteLine($"{(found is [] ? "Added" : "Updated")} the MCP server {Name} in {configFile}.");
+        }
+
+        if (!hooks)
+        {
+            Unhook(settingsFile, log);
+            return;
         }
 
         var settings = JsonFile.Read(settingsFile);
@@ -153,6 +160,11 @@ internal static partial class ClaudeInstall
         else
             log.WriteLine($"There is no MCP server {Name} in {configFile}.");
 
+        Unhook(settingsFile, log);
+    }
+
+    private static void Unhook(string settingsFile, TextWriter log)
+    {
         var settings = JsonFile.Read(settingsFile);
         var removed = false;
         // From any event, as an older version may have used others.

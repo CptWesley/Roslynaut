@@ -64,6 +64,25 @@ public class ClaudeInstallTests
     }
 
     [Test]
+    public void Install_WithoutHooks_AddsServerAlone_AndRemovesEarlierHooks()
+    {
+        var dir = Directory.CreateTempSubdirectory().FullName;
+        var (config, settings) = (Path.Combine(dir, ".claude.json"), Path.Combine(dir, "settings.json"));
+        try
+        {
+            ClaudeInstall.Install(config, settings, ["dotnet", "Roslynaut.dll"], TextWriter.Null);
+            ClaudeInstall.Install(config, settings, ["dotnet", "Roslynaut.dll"], TextWriter.Null, hooks: false);
+
+            JsonNode.Parse(File.ReadAllText(config))!["mcpServers"]!["roslynaut"].Should().NotBeNull();
+            JsonNode.Parse(File.ReadAllText(settings))!["hooks"]!.ToJsonString().Should().Be("{}");
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Test]
     public void Uninstall_RemovesServerAndHook_KeepingTheRest()
     {
         var dir = Directory.CreateTempSubdirectory().FullName;
