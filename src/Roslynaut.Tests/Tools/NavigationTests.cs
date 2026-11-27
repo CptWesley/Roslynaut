@@ -61,9 +61,41 @@ public class NavigationTests
     [TestCase("Docs.Circle", "<summary>A shape.</summary>")]
     [TestCase("Docs.Circle.Circle", "<summary>Makes one.</summary>")]
     [TestCase("Docs.Loop.Ping", "<inheritdoc cref=\"M:Docs.Loop.Ping\" />")]
+    [TestCase("Docs.Square.Area", "<summary>The area.</summary>")]
+    [TestCase("Docs.Square.Name", "<summary>What to call it.</summary>")]
+    [TestCase("Docs.Big.Area", "<summary>The area.</summary>")]
+    [TestCase("Docs.Shape.Grow", "<param name=\"by\">How much.</param>")]
     public async Task Documentation_ExpandsInheritdoc(string path, params string[] expected)
     {
-        var solution = TestSolution.Create("""
+        var symbol = (await SymbolTree.ResolveAsync(Docs, path, CancellationToken.None)).First();
+
+        var documentation = await DefinitionTool.DocumentationOfAsync(Docs, symbol, CancellationToken.None);
+
+        expected.Should().AllSatisfy(part => documentation.Should().Contain(part));
+        documentation.Should().NotContain("Describes it.");
+    }
+
+    [Test]
+    public async Task Documentation_UndocumentedMemberThatInheritsNothing_IsEmpty()
+    {
+        var plain = (await SymbolTree.ResolveAsync(Docs, "Docs.Big.Plain", CancellationToken.None)).Single();
+
+        (await DefinitionTool.DocumentationOfAsync(Docs, plain, CancellationToken.None)).Should().BeNullOrEmpty();
+    }
+
+    [Test]
+    public async Task SignatureHelp_InheritsDocumentation()
+    {
+        var document = Docs.Projects.Single().Documents.Single();
+        var code = (await document.GetTextAsync()).ToString();
+
+        var grow = (await SignatureHelpTool.GetAsync(document, code.IndexOf("Grow(2", StringComparison.Ordinal) + 5, CancellationToken.None)).Should().ContainSingle().Subject;
+
+        grow.Summary.Should().Be("Grows it.");
+        grow.Parameters.Should().ContainSingle().Which.Documentation.Should().Be("How much.");
+    }
+
+    private static readonly Solution Docs = TestSolution.Create("""
             namespace Docs
             {
                 /// <summary>A shape.</summary>
@@ -74,6 +106,9 @@ public class NavigationTests
                     double Area();
                     /// <summary>What to call it.</summary>
                     string Name { get; }
+                    /// <summary>Grows it.</summary>
+                    /// <param name="by">How much.</param>
+                    void Grow(double by);
                 }
                 public abstract class Shape : IShape
                 {
@@ -82,6 +117,7 @@ public class NavigationTests
                     /// <inheritdoc/>
                     public abstract double Area();
                     string IShape.Name => "";
+                    public void Grow(double by) { }
                     /// <summary>Describes it.</summary>
                     /// <param name="style">How to write it.</param>
                     public virtual string Describe(int style) => "";
@@ -108,15 +144,21 @@ public class NavigationTests
                     /// <inheritdoc cref="Ping"/>
                     public void Pong() { }
                 }
+                public class Square : IShape
+                {
+                    public double Area() => 0;
+                    public string Name => "";
+                    public void Grow(double by) { }
+                }
+                public class Big : Circle
+                {
+                    public Big() : base(1) { }
+                    public override double Area() => 1;
+                    public void Plain() { }
+                    public static void Use(Square square) => square.Grow(2);
+                }
             }
             """);
-        var symbol = (await SymbolTree.ResolveAsync(solution, path, CancellationToken.None)).First();
-
-        var documentation = await DefinitionTool.DocumentationOfAsync(solution, symbol, CancellationToken.None);
-
-        expected.Should().AllSatisfy(part => documentation.Should().Contain(part));
-        documentation.Should().NotContain("Describes it.");
-    }
 
     [Test]
     public async Task SymbolSource_ReturnsWholeDeclarationFromStartOfLine()

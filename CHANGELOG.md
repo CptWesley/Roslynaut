@@ -14,7 +14,7 @@ Every release of the [Roslynaut](https://www.nuget.org/packages/Roslynaut/) pack
 - Tool schemas take about 7% less of agents' context: optional parameters leave null out of their types and defaults, and the symbol path description they share is shorter.
 - The Claude Code hooks give each hint once per session, and again after it starts anew or compacts. They repeated it on every read, grep or edit of C# code.
 - --tool-descriptions and --field-descriptions serve the tools' descriptions or their parameters' in full, as their first sentence (short), in caveman style (terse, keeping identifiers and search keywords) or not at all (none), for less of agents' context, and the new tool explain_tool gives them in full for the tools an agent calls. --install registers the server with them.
-- definition expands <inheritdoc/> in the documentation it returns: with its cref, path, or the member the symbol overrides or implements, its base types and interfaces. It returned the tag as it was, without the inherited text.
+- definition and signature_help expand <inheritdoc/> in the documentation they return: with its cref, path, or the member the symbol overrides or implements, its base types and interfaces. An undocumented method, property or event that overrides or implements another gets that one's documentation. They returned the tag as it was, and nothing for an undocumented override or implementation.
 
 ## 0.3.2 (2026-11-23)
 

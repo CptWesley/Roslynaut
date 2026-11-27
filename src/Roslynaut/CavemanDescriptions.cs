@@ -63,8 +63,8 @@ internal static class CavemanDescriptions
             "Opt modifiers, all must apply: static|abstract|virtual|override|sealed|extern|async|readonly|const|extension|generic",
 
         // definition
-        ["Resolves a symbol: its signature, documentation and declaration locations (go to definition + hover). For a symbol from a referenced assembly, AssemblyPath is the file to pass to assembly_il, assembly_asm or decompile; and if its PDB leads to source, Locations point into local copies of the files that Sources describe."] =
-            "Resolve symbol: signature, docs, decl locations (go to definition+hover). Referenced assembly: AssemblyPath for assembly_il/assembly_asm/decompile; PDB source->Locations in local copies (Sources)",
+        ["Resolves a symbol: its signature, documentation (with <inheritdoc/> expanded, and inherited by an undocumented override or implementation) and declaration locations (go to definition + hover). For a symbol from a referenced assembly, AssemblyPath is the file to pass to assembly_il, assembly_asm or decompile; and if its PDB leads to source, Locations point into local copies of the files that Sources describe."] =
+            "Resolve symbol: signature, docs (inheritdoc expanded, undocumented overrides inherit), decl locations (go to definition+hover). Referenced assembly: AssemblyPath for assembly_il/assembly_asm/decompile; PDB source->Locations in local copies (Sources)",
         ["The symbol, by path; or leave this out and give filePath, line and column. Symbol path: a dotted name, optionally partly qualified, e.g. 'OrderService', 'OrderService.Submit(Order)' for one overload, 'OrderService.Submit.order' for a parameter or local, 'OrderService..ctor', 'Type.this[int]'. A result's Container + '.' + Name is a path."] =
             "Symbol path, or omit + filePath+line+column. Symbol path: dotted, partial ok; 'OrderService.Submit(Order)' overload, 'OrderService.Submit.order' param/local, 'Type..ctor', 'Type.this[int]'; result Container+'.'+Name=path",
         ["With line and column, instead of a symbol path: the C# file that contains the symbol."] =

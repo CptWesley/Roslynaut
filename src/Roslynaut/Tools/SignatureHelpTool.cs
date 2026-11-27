@@ -59,28 +59,30 @@ public sealed class SignatureHelpTool(WorkspaceService workspace) : IMcpTool
         if (chosen is IMethodSymbol { IsGenericMethod: true } generic)
             chosen = generic.ConstructedFrom;
 
-        return overloads.Select(overload =>
+        var signatures = new List<Signature>();
+        foreach (var overload in overloads)
         {
             var parameters = overload switch { IMethodSymbol method => method.Parameters, IPropertySymbol indexer => indexer.Parameters, _ => [] };
-            var (summary, parameterDocs) = Documentation(overload, cancellationToken);
+            var (summary, parameterDocs) = Documentation(await DefinitionTool.DocumentationOfAsync(document.Project.Solution, overload, cancellationToken));
 
             // A named argument goes to its parameter; others by position, extra ones into a params array.
             int? active = argument?.NameColon is { } name
                 ? parameters.Select((parameter, i) => (parameter.Name, i)).Where(entry => entry.Name == name.Name.Identifier.ValueText).Select(entry => (int?)entry.i).FirstOrDefault()
                 : index < parameters.Length ? index : parameters is [.., { IsParams: true }] ? parameters.Length - 1 : null;
-            return new Signature(
+            signatures.Add(new Signature(
                 overload.ToDisplayString(),
                 summary,
                 [.. parameters.Select(parameter => new Parameter(parameter.Name, parameter.Type.ToDisplayString(), parameterDocs.GetValueOrDefault(parameter.Name), parameter.IsOptional))],
                 active,
-                SymbolEqualityComparer.Default.Equals(overload, chosen));
-        }).ToList();
+                SymbolEqualityComparer.Default.Equals(overload, chosen)));
+        }
+
+        return signatures;
     }
 
     /// <summary>The summary and parameter descriptions of a documentation comment, as plain text.</summary>
-    private static (string? Summary, Dictionary<string, string> Parameters) Documentation(ISymbol symbol, CancellationToken cancellationToken)
+    private static (string? Summary, Dictionary<string, string> Parameters) Documentation(string? xml)
     {
-        var xml = symbol.GetDocumentationCommentXml(cancellationToken: cancellationToken);
         if (string.IsNullOrWhiteSpace(xml))
             return (null, []);
 

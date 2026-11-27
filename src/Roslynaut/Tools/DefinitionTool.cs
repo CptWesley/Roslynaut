@@ -13,7 +13,7 @@ public sealed class DefinitionTool(WorkspaceService workspace, AssemblyLoader as
     public Delegate Handler => GetDefinitionsAsync;
 
     [McpServerTool(Name = "definition", ReadOnly = true, OpenWorld = true)]
-    [Description("Resolves a symbol: its signature, documentation (with <inheritdoc/> expanded) and declaration locations (go to definition + hover). "
+    [Description("Resolves a symbol: its signature, documentation (with <inheritdoc/> expanded, and inherited by an undocumented override or implementation) and declaration locations (go to definition + hover). "
         + "For a symbol from a referenced assembly, AssemblyPath is the file to pass to assembly_il, assembly_asm or decompile; "
         + "and if its PDB leads to source, Locations point into local copies of the files that Sources describe.")]
     private async Task<IEnumerable<Definition>> GetDefinitionsAsync(
@@ -71,13 +71,26 @@ public sealed class DefinitionTool(WorkspaceService workspace, AssemblyLoader as
     /// member it overrides or implements, the base type's constructor with the same parameters, or a type's base types and interfaces.
     /// At the top level it inherits the sections the symbol does not write itself, within a section that section; path picks by XPath.
     /// An &lt;inheritdoc/&gt; that leads nowhere stays as it is.
+    /// A method, property or event without documentation that overrides or implements another inherits its documentation, as with an &lt;inheritdoc/&gt;.
     /// </summary>
     internal static async Task<string?> DocumentationOfAsync(Solution solution, ISymbol symbol, CancellationToken cancellationToken)
     {
-        var xml = symbol.GetDocumentationCommentXml(cancellationToken: cancellationToken);
+        var (xml, _) = XmlOf(symbol, cancellationToken);
         if (xml is null || !xml.Contains("<inheritdoc", StringComparison.Ordinal))
             return xml;
-        return Expand(symbol, await CompilationOfAsync(solution, symbol.ContainingAssembly, cancellationToken), [], cancellationToken)?.ToString() ?? xml;
+        return Expand(symbol, await CompilationOfAsync(solution, symbol.ContainingAssembly, cancellationToken), [], cancellationToken)?.ToString()
+            ?? symbol.GetDocumentationCommentXml(cancellationToken: cancellationToken);
+    }
+
+    /// <summary>The symbol's documentation XML, or for an undocumented override or implementation an &lt;inheritdoc/&gt; (Implicit).</summary>
+    private static (string? Xml, bool Implicit) XmlOf(ISymbol symbol, CancellationToken cancellationToken)
+    {
+        var xml = symbol.GetDocumentationCommentXml(cancellationToken: cancellationToken);
+        if (!string.IsNullOrWhiteSpace(xml)
+            || symbol is not (IMethodSymbol { MethodKind: not MethodKind.Constructor and not MethodKind.StaticConstructor } or IPropertySymbol or IEventSymbol)
+            || !InheritedFrom(symbol).Any(source => source is not null))
+            return (xml, false);
+        return (new XElement("member", new XAttribute("name", symbol.GetDocumentationCommentId() ?? ""), new XElement("inheritdoc")).ToString(), true);
     }
 
     /// <summary>A compilation that sees the assembly, to resolve its crefs: its own project's, else the first that references it.</summary>
@@ -101,9 +114,10 @@ public sealed class DefinitionTool(WorkspaceService workspace, AssemblyLoader as
     private static XElement? Expand(ISymbol symbol, Compilation? compilation, HashSet<ISymbol> expanding, CancellationToken cancellationToken)
     {
         XElement root;
+        var (xml, @implicit) = XmlOf(symbol, cancellationToken);
         try
         {
-            root = XElement.Parse(symbol.GetDocumentationCommentXml(cancellationToken: cancellationToken) ?? "");
+            root = XElement.Parse(xml ?? "");
         }
         catch (XmlException)
         {
@@ -132,7 +146,8 @@ public sealed class DefinitionTool(WorkspaceService workspace, AssemblyLoader as
         }
 
         expanding.Remove(symbol);
-        return root;
+        // An implicit inheritdoc that leads nowhere is no documentation.
+        return @implicit && root.Element("inheritdoc") is not null ? null : root;
     }
 
     private static IEnumerable<XNode> Inherited(XElement root, XElement inheritdoc, XElement inherited)
