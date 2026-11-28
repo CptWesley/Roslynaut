@@ -516,6 +516,7 @@ internal static class ProcessTracing
         {
             var watch = System.Diagnostics.Stopwatch.StartNew();
             var reading = Task.Run(() => read(session.EventStream), CancellationToken.None);
+            TimeSpan elapsed;
             try
             {
                 // The stream ends when the process exits, whether launched or attached to.
@@ -524,6 +525,9 @@ internal static class ProcessTracing
             }
             finally
             {
+                // Listening ends here: stopping waits for the rundown, which takes a second or more on a slow machine.
+                elapsed = watch.Elapsed;
+
                 // Stopping ends the stream, after the rundown if there is one; a process that exited has ended it already.
                 try
                 {
@@ -543,7 +547,7 @@ internal static class ProcessTracing
                 }
             }
 
-            return watch.Elapsed;
+            return elapsed;
         }
     }
 
